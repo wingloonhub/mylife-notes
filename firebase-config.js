@@ -13,11 +13,11 @@ export const FIREBASE = {
   ENABLED: false,
 
   config: {
-    apiKey: "PASTE_API_KEY",
-    authDomain: "PASTE_PROJECT.firebaseapp.com",
-    projectId: "PASTE_PROJECT_ID",
-    storageBucket: "PASTE_PROJECT.appspot.com",
-    messagingSenderId: "PASTE_SENDER_ID",
-    appId: "PASTE_APP_ID"
+    apiKey: "AIzaSyAPWqJaH3hexwmO0PjtzUf17I-FpyLDO-A",
+    authDomain: "mylife-notes.firebaseapp.com",
+    projectId: "mylife-notes",
+    storageBucket: "mylife-notes.firebasestorage.app",
+    messagingSenderId: "307276490717",
+    appId: "1:307276490717:web:725635a2f5e5b339edb834"
   }
 };
