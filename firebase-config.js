@@ -10,7 +10,7 @@
 // ============================================================
 
 export const FIREBASE = {
-  ENABLED: false,
+  ENABLED: true,
 
   config: {
     apiKey: "AIzaSyAPWqJaH3hexwmO0PjtzUf17I-FpyLDO-A",
