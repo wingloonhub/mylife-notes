@@ -245,7 +245,8 @@ const CATS = [
   { key: 'recipes', name: 'Recipes', emoji: '🍳' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
-  { key: 'party', name: 'Party Planner', emoji: '🎉' },
+  { key: 'warranty', name: 'Warranty Tracker', emoji: '🧾' },
+  { key: 'party', name: 'Party Event', emoji: '🎉' },
   { key: 'trips', name: 'Trip Planner', emoji: '🧳' },
   { key: 'shopping', name: 'Shopping List', emoji: '🛒' },
   { key: 'quick', name: 'Quick Note', emoji: '📝' },
@@ -386,18 +387,29 @@ function buildEditor(cat, data) {
       break;
     }
     case 'party': {
-      a(field('Event name', data, 'title', { placeholder: "e.g. Mia's 5th birthday" }));
-      a(field('Location', data, 'location', {}));
+      a(field('Party event name', data, 'title', { placeholder: "e.g. Mia's 5th birthday" }));
+      a(field('Event date', data, 'eventDate', { type: 'date', hint: 'After this date it moves to the Archive tab.' }));
+      a(selectField('Location', data, 'locType',
+        [{ value: 'My house', label: 'My house' }, { value: 'Other', label: 'Other location' }],
+        () => rerenderEditor(cat, data)));
+      if (data.locType === 'Other') a(field('Where', data, 'location', { placeholder: 'Venue / address' }));
+      const totalSpan = h('span');
+      const updTotal = () => {
+        const ad = parseInt(data.adults) || 0, kd = parseInt(data.kids) || 0;
+        totalSpan.textContent = (ad + kd) + ' pax — ' + ad + ' adults; ' + kd + ' kids';
+      };
+      const numInput = (key) => h('input', { type: 'number', inputmode: 'numeric', placeholder: '0',
+        value: data[key] != null ? data[key] : '', oninput: e => { data[key] = e.target.value; updTotal(); } });
       a(h('div', { class: 'row2' },
-        field('Adults', data, 'adults', { type: 'number', inputmode: 'numeric' }),
-        field('Kids', data, 'kids', { type: 'number', inputmode: 'numeric' })));
-      a(h('div', { class: 'row2' },
-        field('Total guests', data, 'guests', { type: 'number', inputmode: 'numeric' }),
-        field('Budget', data, 'budget', { placeholder: 'RM' })));
+        h('div', { class: 'field' }, h('label', null, 'Adults'), numInput('adults')),
+        h('div', { class: 'field' }, h('label', null, 'Kids'), numInput('kids'))));
+      updTotal();
+      a(h('div', { class: 'field' }, h('label', null, 'Total guests'), h('div', { class: 'total-box' }, totalSpan)));
+      a(field('Budget', data, 'budget', { placeholder: 'RM' }));
       a(field('Theme', data, 'theme', {}));
       a(h('div', { class: 'section-title' }, 'Guest list'));
       a(stringList(data, 'guestList', 'Guest name'));
-      a(h('div', { class: 'section-title' }, 'Food menu (+ cooking prep)'));
+      a(h('div', { class: 'section-title' }, 'Food menu'));
       a(foodMenuEditor(data));
       a(h('div', { class: 'section-title' }, 'Drinks'));
       a(stringList(data, 'drinks', 'e.g. Orange juice'));
@@ -405,6 +417,17 @@ function buildEditor(cat, data) {
       a(stringList(data, 'toPrepare', 'e.g. Balloons'));
       a(h('div', { class: 'section-title' }, 'Items to buy'));
       a(stringList(data, 'toBuy', 'e.g. Paper cups'));
+      break;
+    }
+    case 'warranty': {
+      a(field('Item name', data, 'title', { placeholder: 'e.g. Samsung TV' }));
+      a(field('Shop', data, 'shop', { placeholder: 'Where you bought it' }));
+      a(h('div', { class: 'row2' },
+        field('Purchased on', data, 'boughtDate', { type: 'date' }),
+        field('Warranty expiry', data, 'expiry', { type: 'date' })));
+      a(h('div', { class: 'section-title' }, 'Receipt / photo'));
+      a(imagePicker(data, 'images'));
+      a(field('Notes', data, 'notes', { type: 'textarea' }));
       break;
     }
     case 'trips': {
@@ -424,7 +447,8 @@ function buildEditor(cat, data) {
     }
     case 'quick': {
       a(field('Title', data, 'title', { placeholder: 'Title' }));
-      a(field('Note', data, 'body', { type: 'textarea', placeholder: 'Write anything…' }));
+      a(h('div', { class: 'section-title' }, 'Note'));
+      a(richTextEditor(data, 'bodyHtml', data.body));
       break;
     }
     case 'events': {
@@ -470,20 +494,26 @@ function stepsEditor(data) {
   return wrap;
 }
 
-/* party food menu: name + cooking prep each */
+/* party food menu: name + cook/buy toggle + prep each */
 function foodMenuEditor(data) {
   if (!Array.isArray(data.food)) data.food = [];
   const wrap = h('div');
   function draw() {
     wrap.innerHTML = '';
     data.food.forEach((f, i) => {
+      if (!f.mode) f.mode = 'cook';
+      const modeBtn = h('button', { class: 'btn small ' + (f.mode === 'cook' ? '' : 'secondary'), type: 'button' });
+      const paint = () => modeBtn.textContent = f.mode === 'cook' ? '👨‍🍳 Cook' : '🛍️ Buy out';
+      paint();
+      modeBtn.onclick = () => { f.mode = f.mode === 'cook' ? 'buy' : 'cook'; modeBtn.className = 'btn small ' + (f.mode === 'cook' ? '' : 'secondary'); paint(); };
       wrap.appendChild(h('div', { class: 'sub-item' },
         h('div', { class: 'sub-head' },
           h('input', { class: 'grow', placeholder: 'Dish name', value: f.name || '', oninput: e => f.name = e.target.value }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { data.food.splice(i, 1); draw(); } }, '✕')),
-        h('textarea', { placeholder: 'Cooking preparation / notes', oninput: e => f.prep = e.target.value }, f.prep || '')));
+        h('div', { style: { marginBottom: '8px' } }, modeBtn),
+        h('textarea', { placeholder: 'Cooking prep / notes', oninput: e => f.prep = e.target.value }, f.prep || '')));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.food.push({ name: '', prep: '' }); draw(); } }, '+ Add dish'));
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.food.push({ name: '', prep: '', mode: 'cook' }); draw(); } }, '+ Add dish'));
   }
   draw();
   return wrap;
@@ -502,9 +532,10 @@ function whereToBuyEditor(data) {
           h('button', { class: 'del-x', type: 'button', onclick: () => { data.buy.splice(i, 1); draw(); } }, '✕')),
         h('div', { class: 'row2', style: { marginTop: '8px' } },
           h('input', { placeholder: 'Shop', value: b.shop || '', oninput: e => b.shop = e.target.value }),
-          h('input', { type: 'tel', inputmode: 'tel', placeholder: 'Phone', value: b.phone || '', oninput: e => b.phone = e.target.value }))));
+          h('input', { placeholder: 'Contact name', value: b.contact || '', oninput: e => b.contact = e.target.value })),
+        h('input', { type: 'tel', inputmode: 'tel', placeholder: 'Phone', value: b.phone || '', oninput: e => b.phone = e.target.value, style: { marginTop: '8px' } })));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.buy.push({ item: '', shop: '', phone: '' }); draw(); } }, '+ Add place'));
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.buy.push({ item: '', shop: '', contact: '', phone: '' }); draw(); } }, '+ Add place'));
   }
   draw();
   return wrap;
@@ -598,11 +629,14 @@ async function renderDetail(cat, item) {
       const buys = (data.buy || []).filter(b => b.item || b.shop || b.phone);
       if (buys.length) {
         const c = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Where to buy'));
-        buys.forEach(b => c.appendChild(h('div', { class: 'kv' },
-          h('span', { class: 'k' }, b.item || ''),
-          h('span', { class: 'v' },
-            b.shop ? h('span', null, b.shop) : null,
-            b.phone ? h('a', { class: 'link-a', href: 'tel:' + b.phone.replace(/[^\d+]/g, ''), style: { marginLeft: b.shop ? '10px' : '0' } }, '📞 ' + b.phone) : null))));
+        buys.forEach(b => {
+          const info = [b.shop, b.contact].filter(Boolean).join(' · ');
+          c.appendChild(h('div', { class: 'kv' },
+            h('span', { class: 'k' }, b.item || ''),
+            h('span', { class: 'v' },
+              info ? h('span', null, info) : null,
+              b.phone ? h('a', { class: 'link-a', href: 'tel:' + b.phone.replace(/[^\d+]/g, ''), style: { marginLeft: info ? '10px' : '0' } }, '📞 ' + b.phone) : null)));
+        });
         a(c);
       }
       if (data.notes) a(h('div', { class: 'detail-card' },
@@ -638,20 +672,37 @@ async function renderDetail(cat, item) {
       break;
     }
     case 'party': {
+      const loc = data.locType === 'Other' ? data.location : (data.locType || data.location);
+      const ad = parseInt(data.adults) || 0, kd = parseInt(data.kids) || 0;
+      const totalStr = (ad + kd) + ' (' + ad + ' adults; ' + kd + ' kids)';
       a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Party'),
-        kv('Location', data.location), kv('Theme', data.theme), kv('Budget', data.budget),
-        kv('Adults', data.adults), kv('Kids', data.kids), kv('Total guests', data.guests)));
+        kv('Event date', data.eventDate ? fmtDate(data.eventDate) : null),
+        kv('Location', loc), kv('Theme', data.theme), kv('Budget', data.budget),
+        kv('Total guests', totalStr)));
       const sec = (title, arr) => (arr || []).filter(Boolean).length ? h('div', { class: 'detail-card' },
         h('div', { class: 'section-title' }, title), h('ul', { class: 'bullets' }, arr.filter(Boolean).map(x => h('li', null, x)))) : null;
       a(sec('Guest list', data.guestList));
       if ((data.food || []).length) {
         const c = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Food menu'));
-        data.food.forEach(f => c.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, f.name || ''), h('span', { class: 'v' }, f.prep || ''))));
+        data.food.forEach(f => c.appendChild(h('div', { class: 'kv' },
+          h('span', { class: 'k' }, (f.mode === 'buy' ? '🛍️ ' : '👨‍🍳 ') + (f.name || '')),
+          h('span', { class: 'v' }, f.prep || ''))));
         a(c);
       }
       a(sec('Drinks', data.drinks));
       a(sec('To prepare', data.toPrepare));
       a(sec('To buy', data.toBuy));
+      break;
+    }
+    case 'warranty': {
+      const card = h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Item'),
+        kv('Shop', data.shop),
+        kv('Purchased', data.boughtDate ? fmtDate(data.boughtDate) : null),
+        kv('Warranty expiry', data.expiry ? fmtDate(data.expiry) : null),
+        warrantyStatus(data.expiry),
+        kv('Notes', data.notes));
+      for (const im of await imgs(data.images)) card.appendChild(im);
+      a(card);
       break;
     }
     case 'trips': {
@@ -665,8 +716,9 @@ async function renderDetail(cat, item) {
       break;
     }
     case 'quick': {
+      const html = data.bodyHtml != null ? data.bodyHtml : escapeHtml(data.body || '').replace(/\n/g, '<br>');
       a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Note'),
-        h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: '1.5', marginTop: '6px' } }, data.body || '')));
+        h('div', { class: 'rte-view', style: { marginTop: '6px' }, html: html })));
       break;
     }
     case 'events': {
@@ -728,10 +780,11 @@ function summary(cat, data) {
     case 'recipes': return { title: data.title || 'Recipe', meta: (data.ingredients || []).filter(Boolean).length + ' ingredients · ' + (data.steps || []).length + ' steps', thumb: (data.steps || []).flatMap(s => s.imgs || [])[0], fav: data.fav };
     case 'records': return { title: data.title || 'Record', meta: data.recType === 'address' ? (data.recipient || 'Address') : (data.bank || 'Bank account') };
     case 'memberships': return { title: data.title || 'Membership', meta: data.member || data.number || '', thumb: (data.images || [])[0] };
-    case 'party': return { title: data.title || 'Party', meta: [data.theme, data.guests && (data.guests + ' guests')].filter(Boolean).join(' · ') };
+    case 'warranty': return { title: data.title || 'Item', meta: [data.shop, data.expiry && ('exp ' + fmtDate(data.expiry))].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
+    case 'party': return { title: data.title || 'Party', meta: [data.eventDate && fmtDate(data.eventDate), data.theme].filter(Boolean).join(' · ') };
     case 'trips': return { title: data.title || 'Trip', meta: (data.tripType || '') + ' · ' + (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' packed' };
     case 'shopping': return { title: data.title || 'Shopping list', meta: (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' picked' };
-    case 'quick': return { title: data.title || 'Note', meta: (data.body || '').slice(0, 60) };
+    case 'quick': return { title: data.title || 'Note', meta: ((data.bodyHtml || '').replace(/<[^>]+>/g, ' ').trim() || data.body || '').slice(0, 60) };
     case 'events': return { title: data.title || 'Event', meta: fmtDT(data.when) };
     default: return { title: data.title || 'Item', meta: '' };
   }
@@ -750,6 +803,39 @@ function fmtDT(s) {
   const d = new Date(s);
   if (isNaN(d)) return s;
   return d.toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+function fmtDate(s) {
+  if (!s) return '';
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  return d.toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+}
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+function warrantyStatus(expiry) {
+  if (!expiry) return null;
+  const e = new Date(expiry); e.setHours(0, 0, 0, 0);
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  const days = Math.round((e - now) / 86400000);
+  const txt = days < 0 ? 'Expired' : days === 0 ? 'Expires today' : days + ' days left';
+  const color = days < 0 ? 'var(--red)' : days <= 30 ? 'var(--amber)' : 'var(--green)';
+  return h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Status'), h('span', { class: 'v', style: { color } }, txt));
+}
+/* rich-text editor for Quick Notes (bold / italic / underline / bullets) */
+function richTextEditor(data, key, legacyPlain) {
+  if ((data[key] == null || data[key] === '') && legacyPlain) data[key] = escapeHtml(legacyPlain).replace(/\n/g, '<br>');
+  const ed = h('div', { class: 'rte', contenteditable: 'true' });
+  ed.innerHTML = data[key] || '';
+  ed.addEventListener('input', () => data[key] = ed.innerHTML);
+  const run = (c) => { document.execCommand(c, false, null); ed.focus(); data[key] = ed.innerHTML; };
+  const btn = (content, c) => h('button', { class: 'rte-btn', type: 'button', onmousedown: e => { e.preventDefault(); run(c); } }, content);
+  const toolbar = h('div', { class: 'rte-toolbar' },
+    btn(h('b', null, 'B'), 'bold'),
+    btn(h('i', null, 'I'), 'italic'),
+    btn(h('u', null, 'U'), 'underline'),
+    btn('• List', 'insertUnorderedList'));
+  return h('div', null, toolbar, ed);
 }
 function openLightbox(src) {
   const ov = h('div', { class: 'lightbox', onclick: () => ov.remove() },
@@ -874,24 +960,73 @@ async function listScreen(cat) {
 
   const items = await DB.listItems(cat);
   listEl.innerHTML = '';
+
+  if (cat === 'party') { renderPartyList(listEl, items); return; }
+
   if (!items.length) {
-    listEl.appendChild(h('div', { class: 'empty' },
-      h('div', { class: 'big' }, (CATS.find(c => c.key === cat) || {}).emoji),
-      h('div', null, 'No notes yet.'),
-      h('div', { style: { marginTop: '6px', fontSize: '13px' } }, 'Tap + to add your first one.')));
+    listEl.appendChild(emptyState(cat));
     return;
   }
-  for (const it of items) {
-    const s = summary(cat, it.data || {});
-    const row = h('div', { class: 'row', onclick: () => navigate('#/view/' + cat + '/' + it.id) },
-      s.thumb ? h('img', { class: 'thumb', src: '' }) : null,
-      h('div', { class: 'main' },
-        h('div', { class: 'title' }, s.fav ? h('span', { class: 'fav-star' }, '★ ') : null, s.title),
-        s.meta ? h('div', { class: 'meta' }, s.meta) : null),
-      h('div', { class: 'chev' }, '›'));
-    listEl.appendChild(row);
-    if (s.thumb) DB.getImage(s.thumb).then(src => { const img = row.querySelector('.thumb'); if (img && src) img.src = src; });
+  for (const it of items) listEl.appendChild(buildRow(cat, it));
+}
+
+function emptyState(cat, msg) {
+  return h('div', { class: 'empty' },
+    h('div', { class: 'big' }, (CATS.find(c => c.key === cat) || {}).emoji),
+    h('div', null, msg || 'No notes yet.'),
+    h('div', { style: { marginTop: '6px', fontSize: '13px' } }, 'Tap + to add your first one.'));
+}
+
+function buildRow(cat, it, opts = {}) {
+  const s = summary(cat, it.data || {});
+  const row = h('div', { class: 'row', onclick: () => navigate('#/view/' + cat + '/' + it.id) },
+    s.thumb ? h('img', { class: 'thumb', src: '' }) : null,
+    h('div', { class: 'main' },
+      h('div', { class: 'title' }, s.fav ? h('span', { class: 'fav-star' }, '★ ') : null, s.title),
+      s.meta ? h('div', { class: 'meta' }, s.meta) : null),
+    opts.action || h('div', { class: 'chev' }, '›'));
+  if (s.thumb) DB.getImage(s.thumb).then(src => { const img = row.querySelector('.thumb'); if (img && src) img.src = src; });
+  return row;
+}
+
+function partyIsArchived(it) {
+  const d = it.data || {};
+  if (d.archived) return true;
+  if (d.eventDate) { const e = new Date(d.eventDate); e.setHours(0, 0, 0, 0); const t = new Date(); t.setHours(0, 0, 0, 0); return e < t; }
+  return false;
+}
+
+async function duplicateParty(it) {
+  const data = JSON.parse(JSON.stringify(it.data || {}));
+  data.archived = false;
+  data.eventDate = '';
+  data.title = (data.title || 'Party') + ' (copy)';
+  await DB.saveItem({ cat: 'party', data });
+}
+
+function renderPartyList(listEl, items) {
+  const upcoming = items.filter(it => !partyIsArchived(it));
+  const archived = items.filter(partyIsArchived);
+  let tab = 'upcoming';
+  const tabsEl = h('div', { class: 'tabs' });
+  const body = h('div', { class: 'list' });
+  function render() {
+    tabsEl.innerHTML = '';
+    [['upcoming', 'Upcoming (' + upcoming.length + ')'], ['archive', 'Archive (' + archived.length + ')']].forEach(([k, label]) =>
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
+    body.innerHTML = '';
+    const list = tab === 'upcoming' ? upcoming : archived;
+    if (!list.length) { body.appendChild(emptyState('party', tab === 'upcoming' ? 'No upcoming parties.' : 'No past parties yet.')); return; }
+    for (const it of list) {
+      const dup = tab === 'archive'
+        ? h('button', { class: 'btn small secondary', onclick: async (e) => { e.stopPropagation(); await duplicateParty(it); toast('Duplicated to Upcoming'); navigate('#/cat/party'); } }, 'Duplicate')
+        : null;
+      body.appendChild(buildRow('party', it, { action: dup }));
+    }
   }
+  listEl.appendChild(tabsEl);
+  listEl.appendChild(body);
+  render();
 }
 
 /* ----- EDITOR ----- */
@@ -962,8 +1097,14 @@ export async function startApp() {
   await initStorage();
   Auth.onChange(() => routeChanged());
   window.addEventListener('hashchange', routeChanged);
-  // register service worker (PWA install)
+  // register service worker (PWA install) + auto-update to newest deploy
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('sw.js').catch(() => {});
+    let refreshing = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (refreshing) return;
+      refreshing = true;
+      location.reload();
+    });
+    navigator.serviceWorker.register('sw.js').then((reg) => reg.update()).catch(() => {});
   }
 }

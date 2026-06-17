@@ -126,6 +126,20 @@ body {
 
 .section-title { font-size: 13px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 22px 2px 10px; font-weight: 700; }
 
+.total-box { padding: 13px 14px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; font-weight: 600; }
+
+/* rich-text editor (Quick Note) */
+.rte-toolbar { display: flex; gap: 8px; margin-bottom: 8px; }
+.rte-btn { background: var(--card); border: 1px solid var(--line); color: var(--text); border-radius: 10px;
+  padding: 8px 0; min-width: 46px; font-size: 15px; cursor: pointer; }
+.rte-btn:active { transform: scale(.95); }
+.rte { background: var(--card); border: 1px solid var(--line); color: var(--text); border-radius: 12px;
+  padding: 13px 14px; min-height: 220px; font-size: 16px; line-height: 1.55; outline: none; }
+.rte:focus { border-color: var(--accent); }
+.rte:empty::before { content: 'Write anything…'; color: var(--muted); }
+.rte ul, .rte-view ul { padding-left: 20px; margin: 6px 0; }
+.rte-view { line-height: 1.55; }
+
 .sub-item {
   background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-bottom: 10px;
 }
