@@ -352,6 +352,8 @@ function buildEditor(cat, data) {
       a(h('div', { class: 'section-title' }, 'Links'));
       a(field('Video URL', data, 'videoUrl', { type: 'url', placeholder: 'https://youtube.com/…' }));
       a(field('Reference URL', data, 'refUrl', { type: 'url', placeholder: 'https://…' }));
+      a(h('div', { class: 'section-title' }, 'Notes'));
+      a(field('My notes', data, 'notes', { type: 'textarea', placeholder: 'Anything you want to remember…' }));
       break;
     }
     case 'records': {
@@ -570,6 +572,9 @@ async function renderDetail(cat, item) {
       }
       const links = h('div', { class: 'detail-card' }, linkKv('Video', data.videoUrl), linkKv('Reference', data.refUrl));
       if (links.children.length) a(links);
+      if (data.notes) a(h('div', { class: 'detail-card' },
+        h('div', { class: 'section-title' }, 'Notes'),
+        h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: '1.5' } }, data.notes)));
       break;
     }
     case 'records': {
@@ -705,7 +710,7 @@ function recordToText(d) {
     return [d.title, d.recipient, d.address, d.phone && ('Tel: ' + d.phone), d.notes].filter(Boolean).join('\n');
   }
   return [d.title, d.bank && ('Bank: ' + d.bank), d.accName && ('Name: ' + d.accName),
-    d.accNo && ('Acc No: ' + d.accNo), d.swift && ('SWIFT/Extra: ' + d.swift), d.notes].filter(Boolean).join('\n');
+    d.accNo && ('Acc No: ' + d.accNo), d.swift && ('SWIFT: ' + d.swift)].filter(Boolean).join('\n');
 }
 function fmtDT(s) {
   if (!s) return '';
