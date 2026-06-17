@@ -352,6 +352,8 @@ function buildEditor(cat, data) {
       a(h('div', { class: 'section-title' }, 'Links'));
       a(field('Video URL', data, 'videoUrl', { type: 'url', placeholder: 'https://youtube.com/…' }));
       a(field('Reference URL', data, 'refUrl', { type: 'url', placeholder: 'https://…' }));
+      a(h('div', { class: 'section-title' }, 'Where to buy'));
+      a(whereToBuyEditor(data));
       a(h('div', { class: 'section-title' }, 'Notes'));
       a(field('My notes', data, 'notes', { type: 'textarea', placeholder: 'Anything you want to remember…' }));
       break;
@@ -458,7 +460,7 @@ function stepsEditor(data) {
           h('span', { class: 'num' }, 'STEP ' + (i + 1)),
           h('span', { class: 'grow' }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { data.steps.splice(i, 1); draw(); } }, '✕')),
-        h('textarea', { placeholder: 'Describe this step…', oninput: e => st.text = e.target.value, style: { minHeight: '64px' } }, st.text || ''),
+        h('textarea', { placeholder: 'Describe this step…', oninput: e => st.text = e.target.value }, st.text || ''),
         h('div', { style: { marginTop: '10px' } }, imagePicker(st, 'imgs')));
       wrap.appendChild(block);
     });
@@ -479,9 +481,30 @@ function foodMenuEditor(data) {
         h('div', { class: 'sub-head' },
           h('input', { class: 'grow', placeholder: 'Dish name', value: f.name || '', oninput: e => f.name = e.target.value }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { data.food.splice(i, 1); draw(); } }, '✕')),
-        h('textarea', { placeholder: 'Cooking preparation / notes', oninput: e => f.prep = e.target.value, style: { minHeight: '56px' } }, f.prep || '')));
+        h('textarea', { placeholder: 'Cooking preparation / notes', oninput: e => f.prep = e.target.value }, f.prep || '')));
     });
     wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.food.push({ name: '', prep: '' }); draw(); } }, '+ Add dish'));
+  }
+  draw();
+  return wrap;
+}
+
+/* recipe "where to buy": item + shop + phone each */
+function whereToBuyEditor(data) {
+  if (!Array.isArray(data.buy)) data.buy = [];
+  const wrap = h('div');
+  function draw() {
+    wrap.innerHTML = '';
+    data.buy.forEach((b, i) => {
+      wrap.appendChild(h('div', { class: 'sub-item' },
+        h('div', { class: 'sub-head' },
+          h('input', { class: 'grow', placeholder: 'Item', value: b.item || '', oninput: e => b.item = e.target.value }),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { data.buy.splice(i, 1); draw(); } }, '✕')),
+        h('div', { class: 'row2', style: { marginTop: '8px' } },
+          h('input', { placeholder: 'Shop', value: b.shop || '', oninput: e => b.shop = e.target.value }),
+          h('input', { type: 'tel', inputmode: 'tel', placeholder: 'Phone', value: b.phone || '', oninput: e => b.phone = e.target.value }))));
+    });
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.buy.push({ item: '', shop: '', phone: '' }); draw(); } }, '+ Add place'));
   }
   draw();
   return wrap;
@@ -549,7 +572,7 @@ async function renderDetail(cat, item) {
   const linkKv = (k, v) => v ? h('div', { class: 'kv' }, h('span', { class: 'k' }, k), h('a', { class: 'v link-a', href: v, target: '_blank' }, 'Open ↗')) : null;
   async function imgs(ids) {
     const out = [];
-    for (const id of (ids || [])) { const s = await DB.getImage(id); if (s) out.push(h('img', { class: 'detail-img', src: s })); }
+    for (const id of (ids || [])) { const s = await DB.getImage(id); if (s) out.push(h('img', { class: 'detail-img', src: s, onclick: () => openLightbox(s) })); }
     return out;
   }
 
@@ -572,6 +595,16 @@ async function renderDetail(cat, item) {
       }
       const links = h('div', { class: 'detail-card' }, linkKv('Video', data.videoUrl), linkKv('Reference', data.refUrl));
       if (links.children.length) a(links);
+      const buys = (data.buy || []).filter(b => b.item || b.shop || b.phone);
+      if (buys.length) {
+        const c = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Where to buy'));
+        buys.forEach(b => c.appendChild(h('div', { class: 'kv' },
+          h('span', { class: 'k' }, b.item || ''),
+          h('span', { class: 'v' },
+            b.shop ? h('span', null, b.shop) : null,
+            b.phone ? h('a', { class: 'link-a', href: 'tel:' + b.phone.replace(/[^\d+]/g, ''), style: { marginLeft: b.shop ? '10px' : '0' } }, '📞 ' + b.phone) : null))));
+        a(c);
+      }
       if (data.notes) a(h('div', { class: 'detail-card' },
         h('div', { class: 'section-title' }, 'Notes'),
         h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: '1.5' } }, data.notes)));
@@ -717,6 +750,12 @@ function fmtDT(s) {
   const d = new Date(s);
   if (isNaN(d)) return s;
   return d.toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+function openLightbox(src) {
+  const ov = h('div', { class: 'lightbox', onclick: () => ov.remove() },
+    h('img', { src }),
+    h('div', { class: 'lightbox-close' }, '✕'));
+  document.body.appendChild(ov);
 }
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); toast('Copied'); }
