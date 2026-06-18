@@ -948,6 +948,20 @@ function mapCard(q) {
   return card;
 }
 
+/* pull lat,lng out of a coordinate string or a full Google Maps URL */
+function parseLatLng(q) {
+  q = (q || '').trim();
+  let m = q.match(/^(-?\d{1,3}\.\d+)\s*,\s*(-?\d{1,3}\.\d+)$/);          // "3.07,101.6"
+  if (m) return [parseFloat(m[1]), parseFloat(m[2])];
+  m = q.match(/@(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/);                      // .../@3.07,101.6,17z
+  if (m) return [parseFloat(m[1]), parseFloat(m[2])];
+  m = q.match(/!3d(-?\d{1,3}\.\d+)!4d(-?\d{1,3}\.\d+)/);                  // !3d..!4d..
+  if (m) return [parseFloat(m[1]), parseFloat(m[2])];
+  m = q.match(/[?&](?:q|query|destination)=(-?\d{1,3}\.\d+),(-?\d{1,3}\.\d+)/); // ?q=lat,lng
+  if (m) return [parseFloat(m[1]), parseFloat(m[2])];
+  return null;
+}
+
 /* distance + driving time from current location (no API key); auto-runs, retry on failure */
 async function computeDistance(q, info) {
   info.innerHTML = '';
@@ -955,9 +969,15 @@ async function computeDistance(q, info) {
   try {
     const pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { timeout: 10000, enableHighAccuracy: true }));
     const lat1 = pos.coords.latitude, lon1 = pos.coords.longitude;
-    const g = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q)).then(r => r.json());
-    if (!g.length) throw new Error('place-not-found');
-    const lat2 = parseFloat(g[0].lat), lon2 = parseFloat(g[0].lon);
+    let lat2, lon2;
+    const coords = parseLatLng(q);
+    if (coords) {
+      [lat2, lon2] = coords;
+    } else {
+      const g = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q)).then(r => r.json());
+      if (!g.length) throw new Error('place-not-found');
+      lat2 = parseFloat(g[0].lat); lon2 = parseFloat(g[0].lon);
+    }
     const r = await fetch('https://router.project-osrm.org/route/v1/driving/' + lon1 + ',' + lat1 + ';' + lon2 + ',' + lat2 + '?overview=false').then(r => r.json());
     const route = r.routes && r.routes[0];
     info.innerHTML = '';
@@ -971,7 +991,8 @@ async function computeDistance(q, info) {
     info.innerHTML = '';
     const retry = h('button', { class: 'btn small secondary', type: 'button', onclick: () => computeDistance(q, info) }, '📏 Show distance & time from me');
     info.appendChild(retry);
-    if (e && e.message === 'place-not-found') info.appendChild(h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Place not found — check the Google Maps address.'));
+    if (e && e.message === 'place-not-found') info.appendChild(h('div', { class: 'hint', style: { marginTop: '6px' } }, "Couldn't find this place. Try a plain address or town in the Google Maps field (e.g. “Sunway Pyramid, Selangor”), or use the Directions button below — it always works."));
+    else info.appendChild(h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Allow location access, then tap to retry.'));
   }
 }
 function warrantyStatus(expiry) {
