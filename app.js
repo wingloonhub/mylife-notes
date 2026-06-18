@@ -3,6 +3,12 @@
 // ============================================================
 import { FIREBASE } from './firebase-config.js';
 
+// Always open the app on the Hello (home) page, never the last-viewed screen.
+function resetToHome() {
+  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+}
+resetToHome();
+
 /* ---------------- tiny DOM helper ---------------- */
 function h(tag, props, ...kids) {
   const e = document.createElement(tag);
@@ -66,7 +72,10 @@ let CURRENT = null;       // {uid, email}
 const imgCache = new Map();
 
 async function initStorage() {
-  if (FIREBASE.ENABLED && FIREBASE.config && !String(FIREBASE.config.apiKey).startsWith('PASTE')) {
+  // On localhost we always use local mode (with auto-login) for easy testing —
+  // so firebase-config.js can stay ENABLED:true and the deployed site still syncs.
+  const isLocalhost = /^(localhost|127\.0\.0\.1)$/.test(location.hostname);
+  if (!isLocalhost && FIREBASE.ENABLED && FIREBASE.config && !String(FIREBASE.config.apiKey).startsWith('PASTE')) {
     try {
       const appMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js');
       const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
@@ -246,9 +255,12 @@ const CATS = [
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
   { key: 'warranty', name: 'Warranty Tracker', emoji: '🧾' },
+  { key: 'tax', name: 'Tax Receipts', emoji: '💵' },
   { key: 'party', name: 'Party Event', emoji: '🎉' },
   { key: 'trips', name: 'Trip Planner', emoji: '🧳' },
   { key: 'shopping', name: 'Shopping List', emoji: '🛒' },
+  { key: 'shopitem', name: 'Saved Item', emoji: '🏷️', hidden: true },
+  { key: 'todo', name: 'To-Do List', emoji: '✅' },
   { key: 'quick', name: 'Quick Note', emoji: '📝' },
   { key: 'events', name: 'Events', emoji: '📅' }
 ];
@@ -294,7 +306,7 @@ function stringList(obj, key, placeholder) {
       const row = h('div', { class: 'field', style: { marginBottom: '8px' } },
         h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
           inp,
-          h('button', { class: 'del-x', type: 'button', onclick: () => { obj[key].splice(i, 1); draw(); } }, '✕')));
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this item?')) return; obj[key].splice(i, 1); draw(); } }, '✕')));
       wrap.appendChild(row);
     });
     wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { obj[key].push(''); draw(); } }, '+ Add'));
@@ -311,26 +323,29 @@ function imagePicker(obj, key) {
 function imageMulti(obj, key, multiple = true) {
   if (!Array.isArray(obj[key])) obj[key] = [];
   const box = h('div', { class: 'imgbox' });
+  function uploadTile(icon, capture) {
+    const props = { type: 'file', accept: 'image/*',
+      onchange: async e => {
+        const f = e.target.files[0]; if (!f) return;
+        const lbl = e.target.closest('.upload'); if (lbl) lbl.textContent = '…';
+        const data = await compressImage(f);
+        const imgId = await DB.saveImage(data);
+        obj[key].push(imgId); draw();
+      } };
+    if (capture) props.capture = 'environment';
+    return h('label', { class: 'upload' }, icon, h('input', props));
+  }
   async function draw() {
     box.innerHTML = '';
     for (const id of obj[key]) {
       const src = await DB.getImage(id);
-      const wrap = h('div', { class: 'img-wrap' },
-        h('img', { src: src || '' }),
-        h('button', { class: 'rm', type: 'button', onclick: () => { obj[key] = obj[key].filter(x => x !== id); draw(); } }, '✕'));
-      box.appendChild(wrap);
+      box.appendChild(h('div', { class: 'img-wrap' },
+        h('img', { src: src || '', onclick: () => src && openLightbox(src) }),
+        h('button', { class: 'rm', type: 'button', onclick: () => { if (!confirmDel('Remove this photo?')) return; obj[key] = obj[key].filter(x => x !== id); draw(); } }, '✕')));
     }
     if (multiple || obj[key].length === 0) {
-      const up = h('label', { class: 'upload' }, '+',
-        h('input', { type: 'file', accept: 'image/*',
-          onchange: async e => {
-            const f = e.target.files[0]; if (!f) return;
-            up.textContent = '…';
-            const data = await compressImage(f);
-            const imgId = await DB.saveImage(data);
-            obj[key].push(imgId); draw();
-          } }));
-      box.appendChild(up);
+      box.appendChild(uploadTile('📷', true));  // take a photo (camera)
+      box.appendChild(uploadTile('+', false));   // choose existing
     }
   }
   draw();
@@ -345,9 +360,9 @@ function buildEditor(cat, data) {
   switch (cat) {
     case 'recipes': {
       a(field('Recipe title', data, 'title', { placeholder: 'e.g. Chicken Rice' }));
-      a(toggleField(null, data, 'fav'));
       a(h('div', { class: 'section-title' }, 'Ingredients'));
-      a(stringList(data, 'ingredients', 'e.g. 2 cups rice'));
+      a(h('div', { class: 'hint', style: { margin: '2px 2px 10px' } }, 'Add a photo to each ingredient if you like — or leave it empty.'));
+      a(ingredientsEditor(data));
       a(h('div', { class: 'section-title' }, 'Cooking steps'));
       a(stepsEditor(data));
       a(h('div', { class: 'section-title' }, 'Links'));
@@ -387,7 +402,7 @@ function buildEditor(cat, data) {
       break;
     }
     case 'party': {
-      a(field('Party event name', data, 'title', { placeholder: "e.g. Mia's 5th birthday" }));
+      a(field('Party event name', data, 'title', { placeholder: "e.g. Preston's birthday" }));
       a(field('Event date', data, 'eventDate', { type: 'date', hint: 'After this date it moves to the Archive tab.' }));
       a(selectField('Location', data, 'locType',
         [{ value: 'My house', label: 'My house' }, { value: 'Other', label: 'Other location' }],
@@ -430,6 +445,25 @@ function buildEditor(cat, data) {
       a(field('Notes', data, 'notes', { type: 'textarea' }));
       break;
     }
+    case 'tax': {
+      a(field('Title', data, 'title', { placeholder: 'e.g. Dental — scaling' }));
+      a(selectField('Category', data, 'taxCat',
+        [{ value: '', label: '— Select —' }, { value: 'Dental', label: 'Dental' }, { value: 'Lifestyle', label: 'Lifestyle' }, { value: 'Other', label: 'Other' }]));
+      a(field('Invoice date', data, 'invoiceDate', { type: 'date' }));
+      a(h('div', { class: 'row2' },
+        field('Year', data, 'year', { type: 'number', inputmode: 'numeric', placeholder: '2026' }),
+        field('Amount (RM)', data, 'amount', { type: 'number', inputmode: 'decimal', placeholder: '0.00' })));
+      a(h('div', { class: 'section-title' }, 'Receipt photo'));
+      a(imagePicker(data, 'images'));
+      a(field('Notes', data, 'notes', { type: 'textarea' }));
+      break;
+    }
+    case 'todo': {
+      a(field('List title', data, 'title', { placeholder: 'e.g. Today' }));
+      a(h('div', { class: 'section-title' }, 'To-do items (tick them off in the list view)'));
+      a(checklistEditor(data, 'items', 'To-do item'));
+      break;
+    }
     case 'trips': {
       a(field('Trip name', data, 'title', { placeholder: 'e.g. Langkawi June' }));
       a(selectField('Trip type', data, 'tripType',
@@ -445,6 +479,14 @@ function buildEditor(cat, data) {
       a(shoppingEditor(data));
       break;
     }
+    case 'shopitem': {
+      a(field('Item name', data, 'title', { placeholder: 'e.g. Olive oil' }));
+      a(field('Brand', data, 'brand', { placeholder: 'e.g. Bertolli' }));
+      a(h('div', { class: 'section-title' }, 'Picture of item'));
+      a(imagePicker(data, 'images'));
+      a(field('Commonly available at', data, 'shop', { placeholder: 'e.g. Jaya Grocer' }));
+      break;
+    }
     case 'quick': {
       a(field('Title', data, 'title', { placeholder: 'Title' }));
       a(h('div', { class: 'section-title' }, 'Note'));
@@ -453,8 +495,9 @@ function buildEditor(cat, data) {
     }
     case 'events': {
       a(field('Event title', data, 'title', { placeholder: 'e.g. Dentist appointment' }));
-      a(field('Date & time', data, 'when', { type: 'datetime-local' }));
-      a(field('Location', data, 'location', {}));
+      a(field('Date & time', data, 'when', { type: 'datetime-local', hint: 'Moves to the Archive tab the day after.' }));
+      a(field('Location name', data, 'location', { placeholder: 'e.g. Sunway Lagoon' }));
+      a(field('Google Maps (address, place, or link)', data, 'map', { placeholder: 'e.g. KLCC, Kuala Lumpur' }));
       a(field('Notes', data, 'notes', { type: 'textarea' }));
       a(h('div', { class: 'section-title' }, 'Reminder'));
       a(field('Remind me at', data, 'remindAt', { type: 'datetime-local' }));
@@ -472,6 +515,28 @@ function buildEditor(cat, data) {
   return F;
 }
 
+/* recipe ingredients: name + optional photo each */
+function ingredientsEditor(data) {
+  if (!Array.isArray(data.ingredients)) data.ingredients = [];
+  // migrate old string ingredients -> { name, imgs }
+  data.ingredients = data.ingredients.map(x => typeof x === 'string' ? { name: x, imgs: [] } : (x || { name: '', imgs: [] }));
+  const wrap = h('div');
+  function draw() {
+    wrap.innerHTML = '';
+    data.ingredients.forEach((ing, i) => {
+      if (!Array.isArray(ing.imgs)) ing.imgs = [];
+      wrap.appendChild(h('div', { class: 'sub-item' },
+        h('div', { class: 'sub-head' },
+          h('input', { class: 'grow', placeholder: 'e.g. 2 cups rice', value: ing.name || '', oninput: e => ing.name = e.target.value }),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this ingredient?')) return; data.ingredients.splice(i, 1); draw(); } }, '✕')),
+        imageMulti(ing, 'imgs', true)));
+    });
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.ingredients.push({ name: '', imgs: [] }); draw(); } }, '+ Add ingredient'));
+  }
+  draw();
+  return wrap;
+}
+
 /* recipe steps: text + optional photo each */
 function stepsEditor(data) {
   if (!Array.isArray(data.steps)) data.steps = [];
@@ -483,7 +548,7 @@ function stepsEditor(data) {
         h('div', { class: 'sub-head' },
           h('span', { class: 'num' }, 'STEP ' + (i + 1)),
           h('span', { class: 'grow' }),
-          h('button', { class: 'del-x', type: 'button', onclick: () => { data.steps.splice(i, 1); draw(); } }, '✕')),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this step?')) return; data.steps.splice(i, 1); draw(); } }, '✕')),
         h('textarea', { placeholder: 'Describe this step…', oninput: e => st.text = e.target.value }, st.text || ''),
         h('div', { style: { marginTop: '10px' } }, imagePicker(st, 'imgs')));
       wrap.appendChild(block);
@@ -509,7 +574,7 @@ function foodMenuEditor(data) {
       wrap.appendChild(h('div', { class: 'sub-item' },
         h('div', { class: 'sub-head' },
           h('input', { class: 'grow', placeholder: 'Dish name', value: f.name || '', oninput: e => f.name = e.target.value }),
-          h('button', { class: 'del-x', type: 'button', onclick: () => { data.food.splice(i, 1); draw(); } }, '✕')),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this dish?')) return; data.food.splice(i, 1); draw(); } }, '✕')),
         h('div', { style: { marginBottom: '8px' } }, modeBtn),
         h('textarea', { placeholder: 'Cooking prep / notes', oninput: e => f.prep = e.target.value }, f.prep || '')));
     });
@@ -529,7 +594,7 @@ function whereToBuyEditor(data) {
       wrap.appendChild(h('div', { class: 'sub-item' },
         h('div', { class: 'sub-head' },
           h('input', { class: 'grow', placeholder: 'Item', value: b.item || '', oninput: e => b.item = e.target.value }),
-          h('button', { class: 'del-x', type: 'button', onclick: () => { data.buy.splice(i, 1); draw(); } }, '✕')),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this place?')) return; data.buy.splice(i, 1); draw(); } }, '✕')),
         h('div', { class: 'row2', style: { marginTop: '8px' } },
           h('input', { placeholder: 'Shop', value: b.shop || '', oninput: e => b.shop = e.target.value }),
           h('input', { placeholder: 'Contact name', value: b.contact || '', oninput: e => b.contact = e.target.value })),
@@ -551,7 +616,7 @@ function checklistEditor(data, key, placeholder) {
       wrap.appendChild(h('div', { class: 'field', style: { marginBottom: '8px' } },
         h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
           h('input', { value: it.name || '', placeholder, oninput: e => it.name = e.target.value }),
-          h('button', { class: 'del-x', type: 'button', onclick: () => { data[key].splice(i, 1); draw(); } }, '✕'))));
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this item?')) return; data[key].splice(i, 1); draw(); } }, '✕'))));
     });
     wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data[key].push({ name: '', checked: false }); draw(); } }, '+ Add item'));
   }
@@ -564,10 +629,10 @@ function shoppingEditor(data) {
   if (!Array.isArray(data.items)) data.items = [];
   const wrap = h('div');
   const libRow = h('div', { class: 'tabs' });
-  DB.getLibrary().then(lib => {
-    if (!lib.length) { libRow.appendChild(h('span', { class: 'hint' }, 'Saved items will appear here for quick add.')); return; }
-    lib.forEach(name => libRow.appendChild(
-      h('button', { class: 'tab', type: 'button', onclick: () => { data.items.push({ name, qty: '', store: '', category: '', price: '', checked: false }); draw(); } }, '+ ' + name)));
+  DB.listItems('shopitem').then(saved => {
+    if (!saved.length) { libRow.appendChild(h('span', { class: 'hint' }, 'Add items in the “Saved items” tab to quick-add them here.')); return; }
+    saved.forEach(s => { const d = s.data || {}; libRow.appendChild(
+      h('button', { class: 'tab', type: 'button', onclick: () => { data.items.push({ name: d.title || '', qty: '', store: d.shop || '', category: '', price: '', checked: false }); draw(); } }, '+ ' + (d.title || 'Item'))); });
   });
   function draw() {
     wrap.innerHTML = '';
@@ -575,7 +640,7 @@ function shoppingEditor(data) {
       wrap.appendChild(h('div', { class: 'sub-item' },
         h('div', { class: 'sub-head' },
           h('input', { class: 'grow', placeholder: 'Item name', value: it.name || '', oninput: e => it.name = e.target.value }),
-          h('button', { class: 'del-x', type: 'button', onclick: () => { data.items.splice(i, 1); draw(); } }, '✕')),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this item?')) return; data.items.splice(i, 1); draw(); } }, '✕')),
         h('div', { class: 'row2' },
           h('input', { placeholder: 'Qty', value: it.qty || '', oninput: e => it.qty = e.target.value }),
           h('input', { placeholder: 'Price', inputmode: 'decimal', value: it.price || '', oninput: e => it.price = e.target.value })),
@@ -583,7 +648,7 @@ function shoppingEditor(data) {
           h('input', { placeholder: 'Store', value: it.store || '', oninput: e => it.store = e.target.value }),
           h('input', { placeholder: 'Category', value: it.category || '', oninput: e => it.category = e.target.value })),
         h('button', { class: 'btn small secondary', type: 'button', style: { marginTop: '10px' },
-          onclick: async () => { if (!it.name) return; const lib = await DB.getLibrary(); if (!lib.includes(it.name)) { lib.push(it.name); await DB.setLibrary(lib); toast('Saved to library'); } } }, '☆ Save item to library')));
+          onclick: async () => { if (!it.name) return; await DB.saveItem({ cat: 'shopitem', data: { title: it.name, shop: it.store || '' } }); toast('Saved to your items'); } }, '☆ Save to my items')));
     });
     wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.items.push({ name: '', qty: '', store: '', category: '', price: '', checked: false }); draw(); } }, '+ Add item'));
   }
@@ -609,11 +674,30 @@ async function renderDetail(cat, item) {
 
   switch (cat) {
     case 'recipes': {
-      a(h('div', { class: 'detail-card' },
-        h('h3', null, (data.fav ? '★ ' : '') + (data.title || 'Recipe')),
-        (data.ingredients || []).filter(Boolean).length ? h('div', null,
-          h('div', { class: 'section-title' }, 'Ingredients'),
-          h('ul', { class: 'bullets' }, (data.ingredients || []).filter(Boolean).map(x => h('li', null, x)))) : null));
+      const favBtn = h('button', { class: 'fav-toggle' + (data.fav ? ' on' : ''),
+        onclick: async () => { data.fav = !data.fav; await DB.saveItem(item); navigate('#/view/recipes/' + item.id); } }, data.fav ? '★' : '☆');
+      const rcard = h('div', { class: 'detail-card' },
+        h('div', { class: 'fav-head' }, favBtn, h('h3', { style: { margin: 0 } }, data.title || 'Recipe')));
+      const ingList = (data.ingredients || []).map(x => typeof x === 'string' ? { name: x, imgs: [] } : (x || {}))
+        .filter(x => (x.name && x.name.trim()) || (x.imgs && x.imgs.length));
+      if (ingList.length || (data.ingredientImgs || []).length) {
+        rcard.appendChild(h('div', { class: 'section-title' }, 'Ingredients'));
+        for (const ing of ingList) {
+          const row = h('div', { style: { marginBottom: '10px' } }, h('div', null, '• ' + (ing.name || '')));
+          if (ing.imgs && ing.imgs.length) {
+            const strip = h('div', { class: 'imgbox', style: { marginTop: '6px' } });
+            for (const id of ing.imgs) { const s = await DB.getImage(id); if (s) strip.appendChild(h('img', { src: s, onclick: () => openLightbox(s) })); }
+            row.appendChild(strip);
+          }
+          rcard.appendChild(row);
+        }
+        if ((data.ingredientImgs || []).length) {
+          const strip = h('div', { class: 'imgbox', style: { marginTop: '8px' } });
+          for (const id of data.ingredientImgs) { const s = await DB.getImage(id); if (s) strip.appendChild(h('img', { src: s, onclick: () => openLightbox(s) })); }
+          rcard.appendChild(strip);
+        }
+      }
+      a(rcard);
       if ((data.steps || []).length) {
         const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Steps'));
         const ol = h('ol', { class: 'steps' });
@@ -705,6 +789,22 @@ async function renderDetail(cat, item) {
       a(card);
       break;
     }
+    case 'tax': {
+      const card = h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Receipt'),
+        kv('Category', data.taxCat),
+        kv('Invoice date', data.invoiceDate ? fmtDate(data.invoiceDate) : null),
+        kv('Year', data.year),
+        (data.amount != null && data.amount !== '') ? kv('Amount', fmtMYR(data.amount)) : null,
+        kv('Notes', data.notes));
+      for (const im of await imgs(data.images)) card.appendChild(im);
+      a(card);
+      break;
+    }
+    case 'todo': {
+      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'To-Do')));
+      a(checklistView(item, 'items', cat, 'To-do'));
+      break;
+    }
     case 'trips': {
       a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Trip'),
         kv('Type', data.tripType), kv('Notes', data.notes)));
@@ -713,6 +813,14 @@ async function renderDetail(cat, item) {
     }
     case 'shopping': {
       a(shoppingView(item, cat));
+      break;
+    }
+    case 'shopitem': {
+      const card = h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Item'),
+        kv('Brand', data.brand),
+        kv('Usually at', data.shop));
+      for (const im of await imgs(data.images)) card.appendChild(im);
+      a(card);
       break;
     }
     case 'quick': {
@@ -726,6 +834,7 @@ async function renderDetail(cat, item) {
         kv('When', fmtDT(data.when)), kv('Location', data.location), kv('Notes', data.notes),
         kv('Reminder', data.remindAt ? fmtDT(data.remindAt) : null),
         data.telegram ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Telegram'), h('span', { class: 'v' }, h('span', { class: 'pill' }, 'reminder on'))) : null));
+      if (data.map) a(mapCard(data.map));
       break;
     }
   }
@@ -777,15 +886,23 @@ function shoppingView(item, cat) {
 /* ---------------- list-row summaries ---------------- */
 function summary(cat, data) {
   switch (cat) {
-    case 'recipes': return { title: data.title || 'Recipe', meta: (data.ingredients || []).filter(Boolean).length + ' ingredients · ' + (data.steps || []).length + ' steps', thumb: (data.steps || []).flatMap(s => s.imgs || [])[0], fav: data.fav };
+    case 'recipes': {
+      const ingArr = (data.ingredients || []).map(x => typeof x === 'string' ? { name: x } : (x || {}));
+      const ingCount = ingArr.filter(x => x.name && x.name.trim()).length;
+      const thumb = ingArr.flatMap(x => x.imgs || [])[0] || (data.steps || []).flatMap(s => s.imgs || [])[0] || (data.ingredientImgs || [])[0];
+      return { title: data.title || 'Recipe', meta: ingCount + ' ingredients · ' + (data.steps || []).length + ' steps', thumb, fav: data.fav };
+    }
     case 'records': return { title: data.title || 'Record', meta: data.recType === 'address' ? (data.recipient || 'Address') : (data.bank || 'Bank account') };
     case 'memberships': return { title: data.title || 'Membership', meta: data.member || data.number || '', thumb: (data.images || [])[0] };
     case 'warranty': return { title: data.title || 'Item', meta: [data.shop, data.expiry && ('exp ' + fmtDate(data.expiry))].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
+    case 'tax': return { title: data.title || 'Receipt', meta: [data.taxCat, data.year, (data.amount != null && data.amount !== '') && fmtMYR(data.amount)].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
+    case 'todo': return { title: data.title || 'To-Do', meta: (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' done' };
     case 'party': return { title: data.title || 'Party', meta: [data.eventDate && fmtDate(data.eventDate), data.theme].filter(Boolean).join(' · ') };
     case 'trips': return { title: data.title || 'Trip', meta: (data.tripType || '') + ' · ' + (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' packed' };
     case 'shopping': return { title: data.title || 'Shopping list', meta: (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' picked' };
+    case 'shopitem': return { title: data.title || 'Item', meta: [data.brand, data.shop].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
     case 'quick': return { title: data.title || 'Note', meta: ((data.bodyHtml || '').replace(/<[^>]+>/g, ' ').trim() || data.body || '').slice(0, 60) };
-    case 'events': return { title: data.title || 'Event', meta: fmtDT(data.when) };
+    case 'events': return { title: data.title || 'Event', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
     default: return { title: data.title || 'Item', meta: '' };
   }
 }
@@ -812,6 +929,50 @@ function fmtDate(s) {
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+function fmtMYR(n) {
+  return 'RM ' + (Number(n) || 0).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function mapCard(q) {
+  const enc = encodeURIComponent(q);
+  const isUrl = /^https?:\/\//i.test(q.trim());
+  const openHref = isUrl ? q.trim() : 'https://www.google.com/maps/search/?api=1&query=' + enc;
+  const dirHref = 'https://www.google.com/maps/dir/?api=1&destination=' + enc;
+  const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Getting there'));
+  const info = h('div');
+  card.appendChild(info);
+  card.appendChild(h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' } },
+    h('a', { class: 'btn small secondary', href: openHref, target: '_blank' }, '📍 Open in Google Maps'),
+    h('a', { class: 'btn small', href: dirHref, target: '_blank' }, '🧭 Directions')));
+  computeDistance(q, info);
+  return card;
+}
+
+/* distance + driving time from current location (no API key); auto-runs, retry on failure */
+async function computeDistance(q, info) {
+  info.innerHTML = '';
+  info.appendChild(h('div', { class: 'hint' }, 'Calculating distance from you…'));
+  try {
+    const pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { timeout: 10000, enableHighAccuracy: true }));
+    const lat1 = pos.coords.latitude, lon1 = pos.coords.longitude;
+    const g = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q)).then(r => r.json());
+    if (!g.length) throw new Error('place-not-found');
+    const lat2 = parseFloat(g[0].lat), lon2 = parseFloat(g[0].lon);
+    const r = await fetch('https://router.project-osrm.org/route/v1/driving/' + lon1 + ',' + lat1 + ';' + lon2 + ',' + lat2 + '?overview=false').then(r => r.json());
+    const route = r.routes && r.routes[0];
+    info.innerHTML = '';
+    if (route) {
+      info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Distance'), h('span', { class: 'v' }, (route.distance / 1000).toFixed(1) + ' km')));
+      info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Drive time'), h('span', { class: 'v' }, '~' + Math.round(route.duration / 60) + ' min')));
+    } else {
+      info.appendChild(h('div', { class: 'hint' }, 'Could not estimate the route.'));
+    }
+  } catch (e) {
+    info.innerHTML = '';
+    const retry = h('button', { class: 'btn small secondary', type: 'button', onclick: () => computeDistance(q, info) }, '📏 Show distance & time from me');
+    info.appendChild(retry);
+    if (e && e.message === 'place-not-found') info.appendChild(h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Place not found — check the Google Maps address.'));
+  }
 }
 function warrantyStatus(expiry) {
   if (!expiry) return null;
@@ -843,6 +1004,7 @@ function openLightbox(src) {
     h('div', { class: 'lightbox-close' }, '✕'));
   document.body.appendChild(ov);
 }
+function confirmDel(msg) { return window.confirm(msg || 'Delete this?'); }
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); toast('Copied'); }
   catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Copied'); }
@@ -941,7 +1103,7 @@ async function homeScreen() {
     grid);
   mount(screen(bar, body));
   // counts
-  for (const c of CATS) {
+  for (const c of CATS.filter(c => !c.hidden)) {
     const card = h('div', { class: 'cat-card', onclick: () => navigate('#/cat/' + c.key) },
       h('div', { class: 'emoji' }, c.emoji),
       h('div', null, h('div', { class: 'name' }, c.name), h('div', { class: 'count' }, '…')));
@@ -951,7 +1113,9 @@ async function homeScreen() {
 }
 
 /* ----- CATEGORY LIST ----- */
-async function listScreen(cat) {
+async function listScreen(cat, sub) {
+  // saved items live under the Shopping List screen, not their own
+  if (cat === 'shopitem') { navigate('#/cat/shopping/items'); return; }
   const bar = appbar(catName(cat), null, { back: () => navigate('#/') });
   const listEl = h('div', { class: 'list' }, h('div', { class: 'spinner' }));
   mount(screen(bar, listEl));
@@ -961,13 +1125,82 @@ async function listScreen(cat) {
   const items = await DB.listItems(cat);
   listEl.innerHTML = '';
 
-  if (cat === 'party') { renderPartyList(listEl, items); return; }
+  if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); return; }
+  if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, {}); return; }
+  if (cat === 'tax') { renderTaxList(listEl, items); return; }
+  if (cat === 'shopping') { renderShoppingScreen(listEl, items, fab, sub === 'items' ? 'items' : 'lists'); return; }
 
   if (!items.length) {
     listEl.appendChild(emptyState(cat));
     return;
   }
-  for (const it of items) listEl.appendChild(buildRow(cat, it));
+  for (const it of items) {
+    const del = cat === 'todo'
+      ? h('button', { class: 'row-del', type: 'button', title: 'Delete', onclick: async (e) => {
+          e.stopPropagation();
+          if (!confirmDel('Delete this to-do list?')) return;
+          await DB.deleteItem(cat, it.id); toast('Deleted'); navigate('#/cat/' + cat);
+        } }, '🗑')
+      : null;
+    listEl.appendChild(buildRow(cat, it, { action: del }));
+  }
+}
+
+async function renderShoppingScreen(listEl, lists, fab, initialTab) {
+  const items = await DB.listItems('shopitem');
+  let tab = initialTab || 'lists';
+  const tabsEl = h('div', { class: 'tabs' });
+  const body = h('div', { class: 'list' });
+  function render() {
+    tabsEl.innerHTML = '';
+    [['lists', 'Shopping lists (' + lists.length + ')'], ['items', 'Saved items (' + items.length + ')']].forEach(([k, label]) =>
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
+    body.innerHTML = '';
+    if (tab === 'lists') {
+      if (fab) fab.onclick = () => navigate('#/edit/shopping');
+      if (!lists.length) { body.appendChild(emptyState('shopping', 'No shopping lists yet. Tap + to create one.')); return; }
+      for (const it of lists) body.appendChild(buildRow('shopping', it));
+    } else {
+      if (fab) fab.onclick = () => navigate('#/edit/shopitem');
+      if (!items.length) { body.appendChild(emptyState('shopping', 'No saved items yet. Tap + to add one.')); return; }
+      for (const it of items) {
+        const del = h('button', { class: 'row-del', type: 'button', title: 'Delete', onclick: async (e) => {
+          e.stopPropagation(); if (!confirmDel('Delete this saved item?')) return;
+          await DB.deleteItem('shopitem', it.id); toast('Deleted'); navigate('#/cat/shopping/items');
+        } }, '🗑');
+        body.appendChild(buildRow('shopitem', it, { action: del }));
+      }
+    }
+  }
+  listEl.appendChild(tabsEl);
+  listEl.appendChild(body);
+  render();
+}
+
+function renderTaxList(listEl, items) {
+  if (!items.length) { listEl.appendChild(emptyState('tax')); return; }
+  const byYear = {};
+  items.forEach(it => {
+    const d = it.data || {};
+    const y = d.year || 'No year';
+    const c = d.taxCat || 'Uncategorised';
+    const amt = parseFloat(d.amount) || 0;
+    if (!byYear[y]) byYear[y] = { total: 0, cats: {} };
+    byYear[y].total += amt;
+    byYear[y].cats[c] = (byYear[y].cats[c] || 0) + amt;
+  });
+  const years = Object.keys(byYear).sort().reverse();
+  const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Yearly totals (MYR)'));
+  years.forEach(y => {
+    card.appendChild(h('div', { class: 'kv' },
+      h('span', { class: 'k', style: { fontWeight: '700', color: 'var(--text)' } }, y),
+      h('span', { class: 'v' }, fmtMYR(byYear[y].total))));
+    Object.keys(byYear[y].cats).sort().forEach(c => card.appendChild(h('div', { class: 'kv', style: { paddingLeft: '14px' } },
+      h('span', { class: 'k', style: { fontSize: '12.5px' } }, c),
+      h('span', { class: 'v', style: { fontWeight: '500' } }, fmtMYR(byYear[y].cats[c])))));
+  });
+  listEl.appendChild(card);
+  for (const it of items) listEl.appendChild(buildRow('tax', it));
 }
 
 function emptyState(cat, msg) {
@@ -989,24 +1222,33 @@ function buildRow(cat, it, opts = {}) {
   return row;
 }
 
+function dayPassed(dateStr) {
+  if (!dateStr) return false;
+  const e = new Date(dateStr); e.setHours(0, 0, 0, 0);
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  return e < t;
+}
 function partyIsArchived(it) {
   const d = it.data || {};
-  if (d.archived) return true;
-  if (d.eventDate) { const e = new Date(d.eventDate); e.setHours(0, 0, 0, 0); const t = new Date(); t.setHours(0, 0, 0, 0); return e < t; }
-  return false;
+  return d.archived || dayPassed(d.eventDate);
+}
+function eventIsArchived(it) {
+  const d = it.data || {};
+  return d.archived || dayPassed(d.when || d.eventDate);
 }
 
-async function duplicateParty(it) {
+async function duplicateItem(cat, it) {
   const data = JSON.parse(JSON.stringify(it.data || {}));
   data.archived = false;
   data.eventDate = '';
-  data.title = (data.title || 'Party') + ' (copy)';
-  await DB.saveItem({ cat: 'party', data });
+  data.when = '';
+  data.title = (data.title || 'Item') + ' (copy)';
+  await DB.saveItem({ cat, data });
 }
 
-function renderPartyList(listEl, items) {
-  const upcoming = items.filter(it => !partyIsArchived(it));
-  const archived = items.filter(partyIsArchived);
+function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
+  const upcoming = items.filter(it => !isArchivedFn(it));
+  const archived = items.filter(isArchivedFn);
   let tab = 'upcoming';
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
@@ -1016,12 +1258,12 @@ function renderPartyList(listEl, items) {
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
     body.innerHTML = '';
     const list = tab === 'upcoming' ? upcoming : archived;
-    if (!list.length) { body.appendChild(emptyState('party', tab === 'upcoming' ? 'No upcoming parties.' : 'No past parties yet.')); return; }
+    if (!list.length) { body.appendChild(emptyState(cat, tab === 'upcoming' ? 'Nothing upcoming.' : 'Nothing archived yet.')); return; }
     for (const it of list) {
-      const dup = tab === 'archive'
-        ? h('button', { class: 'btn small secondary', onclick: async (e) => { e.stopPropagation(); await duplicateParty(it); toast('Duplicated to Upcoming'); navigate('#/cat/party'); } }, 'Duplicate')
+      const dup = (tab === 'archive' && opts.duplicate)
+        ? h('button', { class: 'btn small secondary', onclick: async (e) => { e.stopPropagation(); await duplicateItem(cat, it); toast('Duplicated to Upcoming'); navigate('#/cat/' + cat); } }, 'Duplicate')
         : null;
-      body.appendChild(buildRow('party', it, { action: dup }));
+      body.appendChild(buildRow(cat, it, { action: dup }));
     }
   }
   listEl.appendChild(tabsEl);
@@ -1032,25 +1274,59 @@ function renderPartyList(listEl, items) {
 /* ----- EDITOR ----- */
 async function editScreen(cat, id) {
   let item = id ? await DB.getItem(cat, id) : null;
+  let currentId = id;
   const data = item ? JSON.parse(JSON.stringify(item.data || {})) : {};
   const formHost = h('div');
   function renderForm() { formHost.innerHTML = ''; formHost.appendChild(buildEditor(cat, data)); }
   _rerender = renderForm;
   renderForm();
 
-  const saveBtn = h('button', { class: 'btn', onclick: async () => {
-    if (!data.title && cat !== 'records') { toast('Add a title first'); return; }
-    const saved = await DB.saveItem({ id: id || undefined, cat, data });
-    toast('Saved');
-    navigate('#/view/' + cat + '/' + saved.id);
-  } }, id ? 'Save changes' : 'Save');
+  const isQuick = cat === 'quick';
+  const hasContent = () => {
+    if (cat === 'records') return true;
+    if (isQuick) return !!(data.title || (data.bodyHtml || '').replace(/<[^>]+>/g, '').trim());
+    return !!data.title;
+  };
+  async function saveNow() {
+    if (!hasContent()) return null;
+    const saved = await DB.saveItem({ id: currentId || undefined, cat, data });
+    currentId = saved.id;
+    return saved;
+  }
 
-  const delBtn = id ? h('button', { class: 'btn danger', style: { marginTop: '10px' }, onclick: async () => {
-    if (confirm('Delete this note?')) { await DB.deleteItem(cat, id); toast('Deleted'); navigate('#/cat/' + cat); }
-  } }, 'Delete') : null;
+  let controls;
+  if (isQuick) {
+    // auto-save: no Save button needed
+    const status = h('div', { class: 'autosave-status' }, 'Auto-saves as you type');
+    let timer = null;
+    formHost.addEventListener('input', () => {
+      status.textContent = 'Saving…';
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const saved = await saveNow();
+        status.textContent = saved ? 'Saved ✓' : 'Auto-saves as you type';
+        if (saved) history.replaceState(null, '', '#/edit/quick/' + currentId);
+      }, 600);
+    });
+    const delBtn = h('button', { class: 'btn danger', onclick: async () => {
+      if (confirm('Delete this note?')) { if (currentId) await DB.deleteItem(cat, currentId); toast('Deleted'); navigate('#/cat/' + cat); }
+    } }, 'Delete');
+    controls = h('div', { style: { marginTop: '18px' } }, status, delBtn);
+  } else {
+    const saveBtn = h('button', { class: 'btn', onclick: async () => {
+      if (!hasContent()) { toast('Add a title first'); return; }
+      await saveNow(); toast('Saved'); navigate('#/view/' + cat + '/' + currentId);
+    } }, id ? 'Save changes' : 'Save');
+    const delBtn = currentId ? h('button', { class: 'btn danger', style: { marginTop: '10px' }, onclick: async () => {
+      if (confirm('Delete this note?')) { await DB.deleteItem(cat, currentId); toast('Deleted'); navigate('#/cat/' + cat); }
+    } }, 'Delete') : null;
+    controls = h('div', { style: { marginTop: '18px' } }, saveBtn, delBtn);
+  }
 
-  const bar = appbar((id ? 'Edit ' : 'New ') + catName(cat).replace(/s$/, ''), null, { back: () => navigate(id ? '#/view/' + cat + '/' + id : '#/cat/' + cat) });
-  mount(screen(bar, h('div', null, formHost, h('div', { style: { marginTop: '18px' } }, saveBtn, delBtn))));
+  const bar = appbar((id ? 'Edit ' : 'New ') + catName(cat).replace(/s$/, ''), null, {
+    back: async () => { if (isQuick) await saveNow(); navigate(currentId ? '#/view/' + cat + '/' + currentId : '#/cat/' + cat); }
+  });
+  mount(screen(bar, h('div', null, formHost, controls)));
 }
 
 /* ----- DETAIL ----- */
@@ -1084,7 +1360,7 @@ function routeChanged() {
   const stale = $app().querySelector('.fab'); if (stale) stale.remove();
 
   if (parts.length === 0) return void homeScreen();
-  if (parts[0] === 'cat') return void listScreen(parts[1]);
+  if (parts[0] === 'cat') return void listScreen(parts[1], parts[2]);
   if (parts[0] === 'edit') return void editScreen(parts[1], parts[2]);
   if (parts[0] === 'view') return void viewScreen(parts[1], parts[2]);
   homeScreen();
@@ -1094,9 +1370,18 @@ function routeChanged() {
    BOOT
    ============================================================ */
 export async function startApp() {
+  resetToHome();
   await initStorage();
+  // Convenience: on localhost in local mode, auto-sign-in a test user so the
+  // developer/tester skips the login screen. Never triggers on the deployed site.
+  if (MODE === 'local' && /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && !LS.get('mln_session', null)) {
+    const email = 'test@local';
+    LS.set('mln_session', { uid: 'local_' + (await sha256(email)).slice(0, 16), email });
+  }
   Auth.onChange(() => routeChanged());
   window.addEventListener('hashchange', routeChanged);
+  // App restored from background (phone task switcher / bfcache) → back to Hello.
+  window.addEventListener('pageshow', (e) => { if (e.persisted) { resetToHome(); routeChanged(); } });
   // register service worker (PWA install) + auto-update to newest deploy
   if ('serviceWorker' in navigator) {
     let refreshing = false;

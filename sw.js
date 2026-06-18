@@ -1,5 +1,5 @@
 // MyLife Notes — service worker (offline shell)
-const CACHE = 'mylife-notes-v3';
+const CACHE = 'mylife-notes-v14';
 const ASSETS = [
   './',
   './index.html',
@@ -27,8 +27,9 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  // Never cache Firebase / Google API traffic.
-  if (url.hostname.includes('googleapis.com') || url.hostname.includes('firebase') || url.hostname.includes('gstatic.com')) {
+  // Never cache Firebase / Google / map-routing API traffic.
+  if (url.hostname.includes('googleapis.com') || url.hostname.includes('firebase') || url.hostname.includes('gstatic.com') ||
+      url.hostname.includes('openstreetmap.org') || url.hostname.includes('project-osrm.org') || url.hostname.includes('google.com')) {
     return;
   }
   if (e.request.method !== 'GET') return;

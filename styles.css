@@ -190,6 +190,13 @@ body {
 .kv .k { color: var(--muted); font-size: 13.5px; }
 .kv .v { font-weight: 600; text-align: right; word-break: break-word; }
 .detail-img { width: 100%; border-radius: 12px; margin: 6px 0; border: 1px solid var(--line); cursor: zoom-in; }
+.map-embed { width: 100%; height: 220px; border: 0; border-radius: 12px; }
+.autosave-status { text-align: center; color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+.fav-head { display: flex; align-items: center; gap: 10px; }
+.fav-toggle { background: none; border: none; font-size: 28px; line-height: 1; padding: 0; cursor: pointer; color: var(--muted); }
+.fav-toggle.on { color: var(--amber); }
+.row-del { background: none; border: none; font-size: 19px; padding: 6px 8px; cursor: pointer; border-radius: 10px; }
+.row-del:active { background: rgba(255,93,108,.18); }
 
 /* tap-to-enlarge overlay */
 .lightbox { position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,.93);
