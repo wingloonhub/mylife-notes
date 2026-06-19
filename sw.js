@@ -1,5 +1,5 @@
 // MyLife Hub — service worker (offline shell)
-const CACHE = 'mylife-notes-v28';
+const CACHE = 'mylife-notes-v32';
 const ASSETS = [
   './',
   './index.html',
@@ -29,7 +29,8 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   // Never cache Firebase / Google / map-routing API traffic.
   if (url.hostname.includes('googleapis.com') || url.hostname.includes('firebase') || url.hostname.includes('gstatic.com') ||
-      url.hostname.includes('openstreetmap.org') || url.hostname.includes('project-osrm.org') || url.hostname.includes('google.com')) {
+      url.hostname.includes('openstreetmap.org') || url.hostname.includes('project-osrm.org') || url.hostname.includes('google.com') ||
+      url.hostname.includes('telegram.org')) {
     return;
   }
   if (url.pathname.startsWith('/api')) return; // never cache serverless API calls

@@ -242,7 +242,7 @@ const DB = {
   /* app settings */
   async getSettings() {
     const it = await this.getItem('_settings', '_settings');
-    return Object.assign({ leadMinutes: 60, notify: false, telegramChatId: '', todoLeadDays: 0 }, it ? it.data : {});
+    return Object.assign({ leadMinutes: 60, notify: false, telegramChatId: '', telegramToken: '', todoLeadDays: 0 }, it ? it.data : {});
   },
   async saveSettings(data) {
     await this.saveItem({ id: '_settings', cat: '_settings', data });
@@ -472,9 +472,9 @@ function buildEditor(cat, data) {
     }
     case 'todo': {
       a(field('List title', data, 'title', { placeholder: 'e.g. Today' }));
-      a(field('Due date / ETA (optional)', data, 'eta', { type: 'date', hint: 'Set a reminder cadence in ⚙ Settings.' }));
-      a(h('div', { class: 'section-title' }, 'To-do items (tick them off in the list view)'));
-      a(checklistEditor(data, 'items', 'To-do item'));
+      a(h('div', { class: 'section-title' }, 'To-do items (each can have its own due date)'));
+      a(h('div', { class: 'hint', style: { margin: '2px 2px 10px' } }, 'Set a reminder cadence in ⚙ Settings.'));
+      a(todoItemsEditor(data));
       break;
     }
     case 'trips': {
@@ -636,6 +636,27 @@ function whereToBuyEditor(data) {
         h('input', { type: 'tel', inputmode: 'tel', placeholder: 'Phone', value: b.phone || '', oninput: e => b.phone = e.target.value, style: { marginTop: '8px' } })));
     });
     wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.buy.push({ item: '', shop: '', contact: '', phone: '' }); draw(); } }, '+ Add place'));
+  }
+  draw();
+  return wrap;
+}
+
+/* to-do items: name + optional due date each (checked toggled in detail view) */
+function todoItemsEditor(data) {
+  if (!Array.isArray(data.items)) data.items = [];
+  const wrap = h('div');
+  function draw() {
+    wrap.innerHTML = '';
+    data.items.forEach((it, i) => {
+      wrap.appendChild(h('div', { class: 'sub-item' },
+        h('div', { class: 'sub-head' },
+          h('input', { class: 'grow', placeholder: 'To-do item', value: it.name || '', oninput: e => it.name = e.target.value }),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this item?')) return; data.items.splice(i, 1); draw(); } }, '✕')),
+        h('div', { class: 'field', style: { margin: '8px 0 0' } },
+          h('label', { style: { fontSize: '12px' } }, 'Due date (optional)'),
+          h('input', { type: 'date', value: it.eta || '', oninput: e => it.eta = e.target.value }))));
+    });
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.items.push({ name: '', checked: false, eta: '' }); draw(); } }, '+ Add item'));
   }
   draw();
   return wrap;
@@ -814,7 +835,7 @@ async function renderDetail(cat, item) {
             h('span', { class: 'k' }, b.item || ''),
             h('span', { class: 'v' },
               info ? h('span', null, info) : null,
-              b.phone ? h('a', { class: 'link-a', href: 'tel:' + b.phone.replace(/[^\d+]/g, ''), style: { marginLeft: info ? '10px' : '0' } }, '📞 ' + b.phone) : null)));
+              b.phone ? h('a', { class: 'call-icon', href: 'tel:' + b.phone.replace(/[^\d+]/g, ''), title: 'Call ' + b.phone, style: { marginLeft: info ? '10px' : '0' } }, '📞') : null)));
         });
         a(c);
       }
@@ -896,8 +917,7 @@ async function renderDetail(cat, item) {
       break;
     }
     case 'todo': {
-      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'To-Do'),
-        data.eta ? kv('Due', fmtDate(data.eta)) : null));
+      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'To-Do')));
       a(checklistView(item, 'items', cat, 'To-do'));
       break;
     }
@@ -956,7 +976,7 @@ function checklistView(item, key, cat, title) {
   items.forEach(it => {
     const row = h('div', { class: 'check-row' + (it.checked ? ' done' : '') },
       h('div', { class: 'cb' + (it.checked ? ' on' : '') }),
-      h('span', { class: 'ttl' }, it.name || ''));
+      h('div', { class: 'ttl' }, it.name || '', it.eta ? h('div', { class: 'px' }, 'Due ' + fmtDate(it.eta)) : null));
     row.querySelector('.cb').onclick = async () => {
       it.checked = !it.checked;
       await DB.saveItem(item);
@@ -1003,7 +1023,11 @@ function summary(cat, data) {
     case 'memberships': return { title: data.title || 'Membership', meta: data.member || data.number || '', thumb: (data.images || [])[0] };
     case 'warranty': return { title: data.title || 'Item', meta: [data.shop, data.expiry && ('exp ' + fmtDate(data.expiry))].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
     case 'tax': return { title: data.title || 'Receipt', meta: [data.taxCat, data.year, (data.amount != null && data.amount !== '') && fmtMYR(data.amount)].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
-    case 'todo': return { title: data.title || 'To-Do', meta: [(data.eta && ('due ' + fmtDate(data.eta))), (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' done'].filter(Boolean).join(' · ') };
+    case 'todo': {
+      const its = data.items || [];
+      const next = its.filter(i => !i.checked && i.eta).map(i => i.eta).sort()[0];
+      return { title: data.title || 'To-Do', meta: [(next && ('next due ' + fmtDate(next))), its.filter(i => i.checked).length + '/' + its.length + ' done'].filter(Boolean).join(' · ') };
+    }
     case 'party': return { title: data.title || 'Party', meta: [data.eventDate && fmtDate(data.eventDate), data.theme].filter(Boolean).join(' · ') };
     case 'trips': return { title: data.title || 'Trip', meta: (data.tripType || '') + ' · ' + (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' packed' };
     case 'shopping': return { title: data.title || 'Shopping list', meta: (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' picked' };
@@ -1194,6 +1218,16 @@ function openLightbox(src) {
   document.body.appendChild(ov);
 }
 function confirmDel(msg) { return window.confirm(msg || 'Delete this?'); }
+/* send a message via the Telegram Bot API (works from the browser — Telegram allows CORS) */
+async function sendTelegram(token, chatId, text) {
+  const r = await fetch('https://api.telegram.org/bot' + token.trim() + '/sendMessage', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId.trim(), text })
+  });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.description || 'Telegram error');
+  return j;
+}
 async function copyText(text) {
   try { await navigator.clipboard.writeText(text); toast('Copied'); }
   catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); toast('Copied'); }
@@ -1565,7 +1599,10 @@ async function editScreen(cat, id) {
   }
 
   const bar = appbar((id ? 'Edit ' : 'New ') + catName(cat).replace(/s$/, ''), null, {
-    back: async () => { if (isQuick) await saveNow(); navigate(currentId ? '#/view/' + cat + '/' + currentId : '#/cat/' + cat); }
+    back: async () => {
+      if (isQuick) { await saveNow(); navigate('#/cat/' + cat); return; } // quick notes skip the view screen
+      navigate(currentId ? '#/view/' + cat + '/' + currentId : '#/cat/' + cat);
+    }
   });
   mount(screen(bar, h('div', null, formHost, controls)));
 }
@@ -1608,13 +1645,44 @@ function routeChanged() {
   homeScreen();
 }
 
+/* Telegram setup block for Settings: token, find-chat-id, test */
+function telegramSection(form) {
+  const chatInput = h('input', { value: form.telegramChatId, placeholder: 'e.g. 123456789', oninput: e => form.telegramChatId = e.target.value, autocapitalize: 'none' });
+  const findBtn = h('button', { class: 'btn small secondary', type: 'button', onclick: async () => {
+    if (!form.telegramToken.trim()) { toast('Enter the bot token first'); return; }
+    findBtn.textContent = 'Looking…';
+    try {
+      const r = await fetch('https://api.telegram.org/bot' + form.telegramToken.trim() + '/getUpdates').then(x => x.json());
+      const upd = (r.result || []).reverse().find(u => (u.message && u.message.chat) || (u.channel_post && u.channel_post.chat));
+      const chat = upd && ((upd.message && upd.message.chat) || (upd.channel_post && upd.channel_post.chat));
+      if (!chat) { toast('Send any message to your bot first, then tap again'); }
+      else { form.telegramChatId = String(chat.id); chatInput.value = form.telegramChatId; toast('Found chat ID: ' + form.telegramChatId); }
+    } catch (e) { toast('Failed: ' + e.message); }
+    findBtn.textContent = 'Find my chat ID';
+  } }, 'Find my chat ID');
+  const testBtn = h('button', { class: 'btn small', type: 'button', onclick: async () => {
+    if (!form.telegramToken.trim() || !form.telegramChatId.trim()) { toast('Enter token and chat ID'); return; }
+    try { await sendTelegram(form.telegramToken, form.telegramChatId, '✅ MyLife Hub — Telegram reminders are connected.'); toast('Sent! Check Telegram'); }
+    catch (e) { toast('Failed: ' + e.message); }
+  } }, 'Send test message');
+  return h('div', null,
+    h('div', { class: 'section-title' }, 'Telegram reminders'),
+    h('div', { class: 'field' }, h('label', null, 'Bot token'),
+      h('input', { value: form.telegramToken, placeholder: '123456:ABC-DEF…', oninput: e => form.telegramToken = e.target.value, autocapitalize: 'none' }),
+      h('div', { class: 'hint' }, 'Get it from @BotFather in Telegram. Saved in your account only.')),
+    h('div', { class: 'field' }, h('label', null, 'Chat ID'), chatInput,
+      h('div', { class: 'hint' }, 'Message your bot once, then tap “Find my chat ID”.')),
+    h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, findBtn, testBtn),
+    h('div', { class: 'hint', style: { marginTop: '8px' } }, 'When set, due reminders are sent to Telegram (delivered to your phone even after you close the app, as long as the app was open when the reminder came due).'));
+}
+
 /* ----- SETTINGS ----- */
 async function settingsScreen() {
   const s = await DB.getSettings();
   // present lead time as value + unit
   let unit = (s.leadMinutes % 60 === 0 && s.leadMinutes >= 60) ? 'hours' : 'minutes';
   let amount = unit === 'hours' ? s.leadMinutes / 60 : s.leadMinutes;
-  const form = { amount: String(amount), unit, notify: s.notify, telegramChatId: s.telegramChatId || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0) };
+  const form = { amount: String(amount), unit, notify: s.notify, telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0) };
 
   const status = h('div', { class: 'hint', style: { marginTop: '6px' } },
     ('Notification' in window) ? ('Browser notifications: ' + Notification.permission) : 'This browser has no notifications.');
@@ -1652,15 +1720,12 @@ async function settingsScreen() {
         h('input', { type: 'number', inputmode: 'numeric', min: '0', value: form.todoDays, oninput: e => form.todoDays = e.target.value }),
         h('div', { class: 'total-box' }, 'days before')),
       h('div', { class: 'hint' }, 'Set 0 to remind only on the due date. It nudges once a day until the list is done.')),
-    h('div', { class: 'section-title' }, 'Telegram (for reminders when the app is closed)'),
-    h('div', { class: 'field' }, h('label', null, 'Telegram chat ID'),
-      h('input', { value: form.telegramChatId, placeholder: 'e.g. 123456789', oninput: e => form.telegramChatId = e.target.value, autocapitalize: 'none' }),
-      h('div', { class: 'hint' }, 'Used by the scheduled reminder sender (see README). Optional.')),
+    telegramSection(form),
     h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
       const n = Math.max(1, parseInt(form.amount) || 1);
       const leadMinutes = form.unit === 'hours' ? n * 60 : n;
       const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
-      await DB.saveSettings({ leadMinutes, notify: form.notify, telegramChatId: form.telegramChatId.trim(), todoLeadDays });
+      await DB.saveSettings({ leadMinutes, notify: form.notify, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays });
       toast('Settings saved');
       startReminders();
       navigate('#/');
@@ -1679,9 +1744,15 @@ function startReminders() {
 }
 async function checkReminders() {
   try {
-    if (!CURRENT || !('Notification' in window) || Notification.permission !== 'granted') return;
+    if (!CURRENT) return;
     const s = await DB.getSettings();
-    if (!s.notify) return;
+    const canBrowser = ('Notification' in window) && Notification.permission === 'granted' && s.notify;
+    const canTg = !!(s.telegramToken && s.telegramChatId);
+    if (!canBrowser && !canTg) return;
+    const fire = (title, body, tag) => {
+      if (canBrowser) { try { new Notification(title, { body, icon: 'icons/icon-192.png', tag }); } catch (e) {} }
+      if (canTg) { sendTelegram(s.telegramToken, s.telegramChatId, title + (body ? '\n' + body : '')).catch(() => {}); }
+    };
     const lead = (s.leadMinutes || 60) * 60000;
     const now = Date.now();
     const events = await DB.listItems('events');
@@ -1692,10 +1763,7 @@ async function checkReminders() {
       if (isNaN(t)) continue;
       if (now >= t - lead && now < t && d._notifiedFor !== d.when) {
         const mins = Math.round((t - now) / 60000);
-        new Notification('⏰ ' + (d.title || 'Event'), {
-          body: (mins > 0 ? ('In about ' + mins + ' min' + (d.location ? ' · ' + d.location : '')) : 'Starting now') + ' · ' + fmtDT(d.when),
-          icon: 'icons/icon-192.png', tag: 'ev-' + ev.id
-        });
+        fire('⏰ ' + (d.title || 'Event'), (mins > 0 ? ('In about ' + mins + ' min' + (d.location ? ' · ' + d.location : '')) : 'Starting now') + ' · ' + fmtDT(d.when), 'ev-' + ev.id);
         d._notifiedFor = d.when;
         await DB.saveItem(ev);
       }
@@ -1703,23 +1771,23 @@ async function checkReminders() {
     // to-do due dates: nudge once a day from (eta - todoLeadDays) through the due date
     const todoLeadDays = Math.max(0, s.todoLeadDays || 0);
     const todayStr = localDateStr(new Date());
+    const todayMid = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
     const todos = await DB.listItems('todo');
     for (const td of todos) {
-      const d = td.data || {};
-      if (!d.eta) continue;
-      const items = d.items || [];
-      if (items.length && items.every(i => i.checked)) continue; // already done
-      const startStr = etaMinusDays(d.eta, todoLeadDays);
-      if (todayStr >= startStr && todayStr <= d.eta && d._todoNotified !== todayStr) {
-        const [y, m, dd] = d.eta.split('-').map(Number);
-        const daysLeft = Math.round((new Date(y, m - 1, dd) - new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())) / 86400000);
-        new Notification('✅ ' + (d.title || 'To-do') + ' — due ' + fmtDate(d.eta), {
-          body: daysLeft > 0 ? ('Due in ' + daysLeft + ' day' + (daysLeft > 1 ? 's' : '')) : 'Due today',
-          icon: 'icons/icon-192.png', tag: 'todo-' + td.id
-        });
-        d._todoNotified = todayStr;
-        await DB.saveItem(td);
-      }
+      const items = (td.data || {}).items || [];
+      let changed = false;
+      items.forEach((it, idx) => {
+        if (!it.eta || it.checked) return;
+        const startStr = etaMinusDays(it.eta, todoLeadDays);
+        if (todayStr >= startStr && todayStr <= it.eta && it._notified !== todayStr) {
+          const [y, m, dd] = it.eta.split('-').map(Number);
+          const daysLeft = Math.round((new Date(y, m - 1, dd) - todayMid) / 86400000);
+          fire('✅ ' + (it.name || 'To-do') + ' — due ' + fmtDate(it.eta), daysLeft > 0 ? ('Due in ' + daysLeft + ' day' + (daysLeft > 1 ? 's' : '')) : 'Due today', 'todo-' + td.id + '-' + idx);
+          it._notified = todayStr;
+          changed = true;
+        }
+      });
+      if (changed) await DB.saveItem(td);
     }
   } catch (e) { /* ignore */ }
 }
