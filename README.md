@@ -62,12 +62,24 @@ Password reset emails now work via Firebase.
 
 ---
 
-## Events → Telegram reminders (Phase 2)
+## Event reminders
 
-The Events notebook stores a reminder time and a "Send to Telegram" flag. A static site
-can't send a message at a scheduled time on its own — that needs a small scheduler
-(your existing Vercel + Telegram bot, or a Claude Code scheduled task) to read upcoming
-events from Firestore and push them. Wire that up when you want it live.
+Open **⚙ Settings** (top-right of the home screen) to choose how long before each event
+to be reminded (e.g. 1 hour — changeable any time) and to **turn on reminders**.
+
+- **While the app is open or backgrounded**, it fires a phone notification at your lead
+  time. Android Chrome works best; iPhone needs the app on the home screen (iOS 16.4+).
+- **When the app is fully closed**, a webpage can't wake itself — that needs an always-on
+  sender. The reliable route is **Telegram** below: a scheduled job reads upcoming events
+  and messages you at the lead time. Put your Telegram chat ID in Settings.
+
+## Events → Telegram reminders when the app is closed (Phase 2)
+
+A static site can't send a message on a timer by itself — a small scheduler reads upcoming
+events from Firestore and pushes them. Because the lead time is "1 hour before", the
+scheduler must run often (every ~15 min), so use a **Claude Code scheduled task** (like your
+news-digest checker) rather than Vercel's free daily cron. Ask Claude to set this up — it
+will read your events + the lead time/Telegram chat ID from Settings and send the reminder.
 
 ---
 

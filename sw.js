@@ -1,5 +1,5 @@
 // MyLife Notes — service worker (offline shell)
-const CACHE = 'mylife-notes-v15';
+const CACHE = 'mylife-notes-v21';
 const ASSETS = [
   './',
   './index.html',
@@ -32,6 +32,7 @@ self.addEventListener('fetch', (e) => {
       url.hostname.includes('openstreetmap.org') || url.hostname.includes('project-osrm.org') || url.hostname.includes('google.com')) {
     return;
   }
+  if (url.pathname.startsWith('/api')) return; // never cache serverless API calls
   if (e.request.method !== 'GET') return;
   // Network-first: always show the latest when online; fall back to cache offline.
   e.respondWith(

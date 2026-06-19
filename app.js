@@ -244,6 +244,22 @@ const DB = {
   },
   async setLibrary(items) {
     await this.saveItem({ id: '_shopping_lib', cat: '_library', data: { items } });
+  },
+  /* app settings */
+  async getSettings() {
+    const it = await this.getItem('_settings', '_settings');
+    return Object.assign({ leadMinutes: 60, notify: false, telegramChatId: '' }, it ? it.data : {});
+  },
+  async saveSettings(data) {
+    await this.saveItem({ id: '_settings', cat: '_settings', data });
+  },
+  /* shopping categories (e.g. hotpot, bbq) */
+  async getShopCats() {
+    const it = await this.getItem('_shopcats', '_shopcats');
+    return it ? (it.data.items || []) : [];
+  },
+  async setShopCats(items) {
+    await this.saveItem({ id: '_shopcats', cat: '_shopcats', data: { items } });
   }
 };
 
@@ -273,6 +289,7 @@ function field(label, obj, key, opts = {}) {
     : h('input', {
         type: opts.type || 'text', placeholder: opts.placeholder || '',
         inputmode: opts.inputmode, step: opts.step,
+        autocapitalize: /^(email|url|tel|password)$/.test(opts.type || '') ? 'none' : null,
         value: obj[key] != null ? obj[key] : '',
         oninput: e => obj[key] = opts.type === 'number' ? e.target.value : e.target.value
       });
@@ -482,9 +499,12 @@ function buildEditor(cat, data) {
     case 'shopitem': {
       a(field('Item name', data, 'title', { placeholder: 'e.g. Olive oil' }));
       a(field('Brand', data, 'brand', { placeholder: 'e.g. Bertolli' }));
+      a(shopCategoryField(data));
+      a(field('Notes', data, 'notes', { type: 'textarea', placeholder: 'Any notes…' }));
       a(h('div', { class: 'section-title' }, 'Picture of item'));
       a(imagePicker(data, 'images'));
-      a(field('Commonly available at', data, 'shop', { placeholder: 'e.g. Jaya Grocer' }));
+      a(h('div', { class: 'section-title' }, 'Price by shop (add as many as you like to compare)'));
+      a(pricesEditor(data));
       break;
     }
     case 'quick': {
@@ -497,7 +517,26 @@ function buildEditor(cat, data) {
       a(field('Event title', data, 'title', { placeholder: 'e.g. Dentist appointment' }));
       a(field('Date & time', data, 'when', { type: 'datetime-local', hint: 'Moves to the Archive tab the day after.' }));
       a(field('Location name', data, 'location', { placeholder: 'e.g. Sunway Lagoon' }));
-      a(field('Google Maps (address, place, or link)', data, 'map', { placeholder: 'e.g. KLCC, Kuala Lumpur' }));
+      {
+        const mapStatus = h('div', { class: 'hint', style: { margin: '4px 2px 12px' } },
+          (typeof data.lat === 'number') ? ('📍 Coordinates: ' + data.lat.toFixed(5) + ', ' + data.lng.toFixed(5)) : '');
+        const mapInput = h('input', { type: 'url', inputmode: 'url', autocapitalize: 'none',
+          placeholder: 'Paste Google Maps link / address / 3.05,101.69', value: data.map || '' });
+        let mapTimer = null;
+        const resolveMap = async () => {
+          const q = (mapInput.value || '').trim();
+          data.map = q;
+          if (!q) { mapStatus.textContent = ''; delete data.lat; delete data.lng; delete data._coordSrc; return; }
+          mapStatus.textContent = '📍 Looking up coordinates…';
+          const c = await resolveCoords(q);
+          if (c) { data.lat = c[0]; data.lng = c[1]; data._coordSrc = q; mapStatus.innerHTML = '📍 Coordinates: <b>' + c[0].toFixed(5) + ', ' + c[1].toFixed(5) + '</b>'; }
+          else { delete data.lat; delete data.lng; delete data._coordSrc; mapStatus.textContent = "Couldn't read this. Try the full Google Maps URL, an address, or coordinates."; }
+        };
+        mapInput.addEventListener('input', () => { data.map = mapInput.value; clearTimeout(mapTimer); mapTimer = setTimeout(resolveMap, 700); });
+        if (data.map && data.lat == null) setTimeout(resolveMap, 150);
+        a(h('div', { class: 'field' }, h('label', null, 'Google Maps (link, address, or coordinates)'), mapInput));
+        a(mapStatus);
+      }
       a(field('Notes', data, 'notes', { type: 'textarea' }));
       a(h('div', { class: 'section-title' }, 'Reminder'));
       a(field('Remind me at', data, 'remindAt', { type: 'datetime-local' }));
@@ -624,36 +663,93 @@ function checklistEditor(data, key, placeholder) {
   return wrap;
 }
 
-/* shopping editor: rich item rows + library quick-add */
-function shoppingEditor(data) {
-  if (!Array.isArray(data.items)) data.items = [];
-  const wrap = h('div');
-  const libRow = h('div', { class: 'tabs' });
-  DB.listItems('shopitem').then(saved => {
-    if (!saved.length) { libRow.appendChild(h('span', { class: 'hint' }, 'Add items in the “Saved items” tab to quick-add them here.')); return; }
-    saved.forEach(s => { const d = s.data || {}; libRow.appendChild(
-      h('button', { class: 'tab', type: 'button', onclick: () => { data.items.push({ name: d.title || '', qty: '', store: d.shop || '', category: '', price: '', checked: false }); draw(); } }, '+ ' + (d.title || 'Item'))); });
+/* saved-item: category tag select (populated from shopping categories) */
+function shopCategoryField(data) {
+  const sel = h('select', { onchange: e => data.category = e.target.value });
+  sel.appendChild(h('option', { value: '' }, '— No category —'));
+  DB.getShopCats().then(cats => {
+    cats.forEach(c => sel.appendChild(h('option', { value: c }, c)));
+    if (data.category && !cats.includes(data.category)) sel.appendChild(h('option', { value: data.category }, data.category));
+    sel.value = data.category || '';
   });
+  return h('div', { class: 'field' }, h('label', null, 'Category tag'), sel);
+}
+
+/* saved-item: repeatable price-by-shop rows */
+function pricesEditor(data) {
+  if (!Array.isArray(data.prices)) data.prices = [];
+  if (!data.prices.length && data.shop) data.prices.push({ shop: data.shop, price: '' }); // migrate old single shop
+  const wrap = h('div');
   function draw() {
     wrap.innerHTML = '';
-    data.items.forEach((it, i) => {
+    data.prices.forEach((p, i) => {
       wrap.appendChild(h('div', { class: 'sub-item' },
         h('div', { class: 'sub-head' },
+          h('input', { placeholder: 'RM', inputmode: 'decimal', value: p.price || '', oninput: e => p.price = e.target.value, style: { maxWidth: '110px' } }),
+          h('input', { class: 'grow', placeholder: 'Shop name', value: p.shop || '', oninput: e => p.shop = e.target.value }),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this shop price?')) return; data.prices.splice(i, 1); draw(); } }, '✕'))));
+    });
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.prices.push({ price: '', shop: '' }); draw(); } }, '+ Add shop'));
+  }
+  draw();
+  return wrap;
+}
+
+/* shopping cart editor: add new item / add saved / pick by category */
+function shoppingEditor(data) {
+  if (!Array.isArray(data.items)) data.items = [];
+  const cart = h('div');
+  const addPanel = h('div');
+
+  function drawCart() {
+    cart.innerHTML = '';
+    data.items.forEach((it, i) => {
+      cart.appendChild(h('div', { class: 'sub-item' },
+        h('div', { class: 'sub-head' },
           h('input', { class: 'grow', placeholder: 'Item name', value: it.name || '', oninput: e => it.name = e.target.value }),
-          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this item?')) return; data.items.splice(i, 1); draw(); } }, '✕')),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this item?')) return; data.items.splice(i, 1); drawCart(); } }, '✕')),
         h('div', { class: 'row2' },
           h('input', { placeholder: 'Qty', value: it.qty || '', oninput: e => it.qty = e.target.value }),
           h('input', { placeholder: 'Price', inputmode: 'decimal', value: it.price || '', oninput: e => it.price = e.target.value })),
         h('div', { class: 'row2', style: { marginTop: '8px' } },
           h('input', { placeholder: 'Store', value: it.store || '', oninput: e => it.store = e.target.value }),
-          h('input', { placeholder: 'Category', value: it.category || '', oninput: e => it.category = e.target.value })),
-        h('button', { class: 'btn small secondary', type: 'button', style: { marginTop: '10px' },
-          onclick: async () => { if (!it.name) return; await DB.saveItem({ cat: 'shopitem', data: { title: it.name, shop: it.store || '' } }); toast('Saved to your items'); } }, '☆ Save to my items')));
+          h('input', { placeholder: 'Category', value: it.category || '', oninput: e => it.category = e.target.value }))));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.items.push({ name: '', qty: '', store: '', category: '', price: '', checked: false }); draw(); } }, '+ Add item'));
+    cart.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.items.push({ name: '', qty: '', store: '', category: '', price: '', checked: false }); drawCart(); } }, '+ Key in a new item'));
   }
-  draw();
-  return h('div', null, h('div', { class: 'section-title', style: { marginTop: '4px' } }, 'Quick add from saved'), libRow, wrap);
+
+  async function drawAddPanel(selectedCat) {
+    addPanel.innerHTML = '';
+    addPanel.appendChild(h('div', { class: 'hint' }, 'Loading…'));
+    const [cats, saved] = await Promise.all([DB.getShopCats(), DB.listItems('shopitem')]);
+    addPanel.innerHTML = '';
+    const sel = h('select', { onchange: e => drawAddPanel(e.target.value) },
+      h('option', { value: '' }, 'All categories'),
+      ...cats.map(c => h('option', { value: c }, c)));
+    sel.value = selectedCat || '';
+    addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Add from your saved items'), sel));
+    const filtered = saved.filter(s => !selectedCat || (s.data || {}).category === selectedCat);
+    if (!filtered.length) { addPanel.appendChild(h('div', { class: 'hint' }, saved.length ? 'No saved items in this category.' : 'No saved items yet — add some in the Saved items tab.')); return; }
+    filtered.forEach(s => {
+      const d = s.data || {};
+      const cheap = cheapestPrice(d.prices);
+      const meta = cheap ? ('cheapest ' + fmtMYR(cheap.price) + ' @ ' + cheap.shop) : (d.brand || (d.category || ''));
+      addPanel.appendChild(h('div', { class: 'row' },
+        h('div', { class: 'main' }, h('div', { class: 'title' }, d.title || 'Item'), meta ? h('div', { class: 'meta' }, meta) : null),
+        h('button', { class: 'btn small', type: 'button', onclick: () => {
+          data.items.push({ name: d.title || '', qty: '', store: cheap ? cheap.shop : '', category: d.category || '', price: cheap ? cheap.price : '', checked: false });
+          drawCart(); toast('Added to cart');
+        } }, '+ Add')));
+    });
+  }
+
+  drawCart();
+  drawAddPanel('');
+  return h('div', null,
+    h('div', { class: 'section-title', style: { marginTop: '4px' } }, 'Add items'),
+    addPanel,
+    h('div', { class: 'section-title' }, 'Your cart'),
+    cart);
 }
 
 let _rerender = null;
@@ -816,11 +912,22 @@ async function renderDetail(cat, item) {
       break;
     }
     case 'shopitem': {
+      const cheap = cheapestPrice(data.prices);
       const card = h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Item'),
         kv('Brand', data.brand),
-        kv('Usually at', data.shop));
+        kv('Category', data.category),
+        cheap ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Cheapest'), h('span', { class: 'v', style: { color: 'var(--green)' } }, fmtMYR(cheap.price) + ' @ ' + cheap.shop)) : null,
+        kv('Notes', data.notes));
       for (const im of await imgs(data.images)) card.appendChild(im);
       a(card);
+      const priced = (data.prices || []).filter(p => p.shop || p.price);
+      if (priced.length) {
+        const pc = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Prices by shop'));
+        priced.forEach(p => pc.appendChild(h('div', { class: 'kv' },
+          h('span', { class: 'k' }, p.shop || '—'),
+          h('span', { class: 'v' }, (p.price !== '' && p.price != null) ? fmtMYR(p.price) : '—'))));
+        a(pc);
+      }
       break;
     }
     case 'quick': {
@@ -834,7 +941,7 @@ async function renderDetail(cat, item) {
         kv('When', fmtDT(data.when)), kv('Location', data.location), kv('Notes', data.notes),
         kv('Reminder', data.remindAt ? fmtDT(data.remindAt) : null),
         data.telegram ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Telegram'), h('span', { class: 'v' }, h('span', { class: 'pill' }, 'reminder on'))) : null));
-      if (data.map) a(mapCard(data.map));
+      if (data.map || data.location) a(mapCard(item));
       break;
     }
   }
@@ -900,7 +1007,10 @@ function summary(cat, data) {
     case 'party': return { title: data.title || 'Party', meta: [data.eventDate && fmtDate(data.eventDate), data.theme].filter(Boolean).join(' · ') };
     case 'trips': return { title: data.title || 'Trip', meta: (data.tripType || '') + ' · ' + (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' packed' };
     case 'shopping': return { title: data.title || 'Shopping list', meta: (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' picked' };
-    case 'shopitem': return { title: data.title || 'Item', meta: [data.brand, data.shop].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
+    case 'shopitem': {
+      const c = cheapestPrice(data.prices);
+      return { title: data.title || 'Item', meta: [data.category, data.brand, c && (fmtMYR(c.price) + ' @ ' + c.shop)].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
+    }
     case 'quick': return { title: data.title || 'Note', meta: ((data.bodyHtml || '').replace(/<[^>]+>/g, ' ').trim() || data.body || '').slice(0, 60) };
     case 'events': return { title: data.title || 'Event', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
     default: return { title: data.title || 'Item', meta: '' };
@@ -933,18 +1043,27 @@ function escapeHtml(s) {
 function fmtMYR(n) {
   return 'RM ' + (Number(n) || 0).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
-function mapCard(q) {
+/* cheapest {shop, price} from a prices array (migrates an old single `shop`) */
+function cheapestPrice(prices) {
+  const valid = (prices || []).filter(p => p && p.price !== '' && p.price != null && !isNaN(parseFloat(p.price)));
+  if (!valid.length) return null;
+  return valid.reduce((m, p) => parseFloat(p.price) < parseFloat(m.price) ? p : m);
+}
+function mapCard(item) {
+  const d = item.data || {};
+  const q = (d.map || d.location || '').trim();
   const enc = encodeURIComponent(q);
-  const isUrl = /^https?:\/\//i.test(q.trim());
-  const openHref = isUrl ? q.trim() : 'https://www.google.com/maps/search/?api=1&query=' + enc;
+  const isUrl = /^https?:\/\//i.test(q);
+  const openHref = isUrl ? q : 'https://www.google.com/maps/search/?api=1&query=' + enc;
   const dirHref = 'https://www.google.com/maps/dir/?api=1&destination=' + enc;
   const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Getting there'));
+  if (d.location) card.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Location'), h('span', { class: 'v' }, d.location)));
   const info = h('div');
   card.appendChild(info);
   card.appendChild(h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' } },
     h('a', { class: 'btn small secondary', href: openHref, target: '_blank' }, '📍 Open in Google Maps'),
     h('a', { class: 'btn small', href: dirHref, target: '_blank' }, '🧭 Directions')));
-  computeDistance(q, info);
+  computeDistance(item, info);
   return card;
 }
 
@@ -962,37 +1081,77 @@ function parseLatLng(q) {
   return null;
 }
 
-/* distance + driving time from current location (no API key); auto-runs, retry on failure */
-async function computeDistance(q, info) {
+/* resolve free text / coords / google link -> [lat,lng] (uses /api/resolve for share links) */
+async function resolveCoords(q) {
+  q = (q || '').trim();
+  if (!q) return null;
+  const direct = parseLatLng(q);
+  if (direct) return direct;
+  if (/^https?:\/\//i.test(q)) {
+    try {
+      const r = await fetch('/api/resolve?url=' + encodeURIComponent(q)).then(x => x.ok ? x.json() : null);
+      if (r && typeof r.lat === 'number') return [r.lat, r.lng];
+    } catch (e) { /* /api not available (e.g. localhost) — fall through */ }
+  }
+  try {
+    const g = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q)).then(x => x.json());
+    if (g && g.length) return [parseFloat(g[0].lat), parseFloat(g[0].lon)];
+  } catch (e) {}
+  return null;
+}
+
+/* resolve once and cache coords onto the event so the list can show distance fast */
+async function placeCoords(item) {
+  const d = item.data || {};
+  const src = (d.map || d.location || '').trim();
+  if (typeof d.lat === 'number' && typeof d.lng === 'number' && d._coordSrc === src) return [d.lat, d.lng];
+  const c = await resolveCoords(src);
+  if (c) { d.lat = c[0]; d.lng = c[1]; d._coordSrc = src; try { await DB.saveItem(item); } catch (e) {} }
+  return c;
+}
+
+function haversineKm(la1, lo1, la2, lo2) {
+  const R = 6371, toR = x => x * Math.PI / 180;
+  const dLa = toR(la2 - la1), dLo = toR(lo2 - lo1);
+  const a = Math.sin(dLa / 2) ** 2 + Math.cos(toR(la1)) * Math.cos(toR(la2)) * Math.sin(dLo / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function currentPosition() {
+  return new Promise(res => {
+    if (!navigator.geolocation) return res(null);
+    navigator.geolocation.getCurrentPosition(
+      p => res({ lat: p.coords.latitude, lon: p.coords.longitude }),
+      () => res(null), { timeout: 10000, enableHighAccuracy: true });
+  });
+}
+
+/* accurate driving distance/time for the event detail card */
+async function computeDistance(item, info) {
   info.innerHTML = '';
   info.appendChild(h('div', { class: 'hint' }, 'Calculating distance from you…'));
   try {
-    const pos = await new Promise((res, rej) => navigator.geolocation.getCurrentPosition(res, rej, { timeout: 10000, enableHighAccuracy: true }));
-    const lat1 = pos.coords.latitude, lon1 = pos.coords.longitude;
-    let lat2, lon2;
-    const coords = parseLatLng(q);
-    if (coords) {
-      [lat2, lon2] = coords;
-    } else {
-      const g = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q)).then(r => r.json());
-      if (!g.length) throw new Error('place-not-found');
-      lat2 = parseFloat(g[0].lat); lon2 = parseFloat(g[0].lon);
-    }
-    const r = await fetch('https://router.project-osrm.org/route/v1/driving/' + lon1 + ',' + lat1 + ';' + lon2 + ',' + lat2 + '?overview=false').then(r => r.json());
-    const route = r.routes && r.routes[0];
+    const pos = await currentPosition();
+    if (!pos) throw new Error('geo');
+    const dest = await placeCoords(item);
+    if (!dest) throw new Error('place-not-found');
+    let km, mins;
+    try {
+      const r = await fetch('https://router.project-osrm.org/route/v1/driving/' + pos.lon + ',' + pos.lat + ';' + dest[1] + ',' + dest[0] + '?overview=false').then(x => x.json());
+      const route = r.routes && r.routes[0];
+      if (route) { km = route.distance / 1000; mins = Math.round(route.duration / 60); }
+    } catch (e) {}
+    if (km == null) { km = haversineKm(pos.lat, pos.lon, dest[0], dest[1]); mins = Math.round(km / 40 * 60); }
     info.innerHTML = '';
-    if (route) {
-      info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Distance'), h('span', { class: 'v' }, (route.distance / 1000).toFixed(1) + ' km')));
-      info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Drive time'), h('span', { class: 'v' }, '~' + Math.round(route.duration / 60) + ' min')));
-    } else {
-      info.appendChild(h('div', { class: 'hint' }, 'Could not estimate the route.'));
-    }
+    info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Distance'), h('span', { class: 'v' }, km.toFixed(1) + ' km')));
+    info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Drive time'), h('span', { class: 'v' }, '~' + mins + ' min')));
   } catch (e) {
     info.innerHTML = '';
-    const retry = h('button', { class: 'btn small secondary', type: 'button', onclick: () => computeDistance(q, info) }, '📏 Show distance & time from me');
-    info.appendChild(retry);
-    if (e && e.message === 'place-not-found') info.appendChild(h('div', { class: 'hint', style: { marginTop: '6px' } }, "Couldn't find this place. Try a plain address or town in the Google Maps field (e.g. “Sunway Pyramid, Selangor”), or use the Directions button below — it always works."));
-    else info.appendChild(h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Allow location access, then tap to retry.'));
+    info.appendChild(h('button', { class: 'btn small secondary', type: 'button', onclick: () => computeDistance(item, info) }, '📏 Show distance & time from me'));
+    info.appendChild(h('div', { class: 'hint', style: { marginTop: '6px' } },
+      e.message === 'place-not-found'
+        ? "Couldn't read the location. Paste a Google Maps link, a plain address, or coordinates in the event."
+        : 'Allow location access, then tap to retry.'));
   }
 }
 function warrantyStatus(expiry) {
@@ -1007,7 +1166,7 @@ function warrantyStatus(expiry) {
 /* rich-text editor for Quick Notes (bold / italic / underline / bullets) */
 function richTextEditor(data, key, legacyPlain) {
   if ((data[key] == null || data[key] === '') && legacyPlain) data[key] = escapeHtml(legacyPlain).replace(/\n/g, '<br>');
-  const ed = h('div', { class: 'rte', contenteditable: 'true' });
+  const ed = h('div', { class: 'rte', contenteditable: 'true', autocapitalize: 'sentences' });
   ed.innerHTML = data[key] || '';
   ed.addEventListener('input', () => data[key] = ed.innerHTML);
   const run = (c) => { document.execCommand(c, false, null); ed.focus(); data[key] = ed.innerHTML; };
@@ -1117,7 +1276,9 @@ function friendlyErr(e) {
 async function homeScreen() {
   const grid = h('div', { class: 'grid' });
   const bar = appbar('MyLife Notes', CURRENT && CURRENT.email, {
-    action: h('button', { class: 'iconbtn', title: 'Log out', onclick: () => Auth.signOut() }, '⎋')
+    action: h('div', { style: { display: 'flex', gap: '8px' } },
+      h('button', { class: 'iconbtn', title: 'Settings', onclick: () => navigate('#/settings') }, '⚙'),
+      h('button', { class: 'iconbtn', title: 'Log out', onclick: () => Auth.signOut() }, '⎋'))
   });
   const body = h('div', null,
     h('div', { class: 'hello' }, h('h2', null, 'Hello 👋'), h('p', null, 'Pick a notebook to open.')),
@@ -1147,7 +1308,7 @@ async function listScreen(cat, sub) {
   listEl.innerHTML = '';
 
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); return; }
-  if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, {}); return; }
+  if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true }); return; }
   if (cat === 'tax') { renderTaxList(listEl, items); return; }
   if (cat === 'shopping') { renderShoppingScreen(listEl, items, fab, sub === 'items' ? 'items' : 'lists'); return; }
 
@@ -1174,9 +1335,15 @@ async function renderShoppingScreen(listEl, lists, fab, initialTab) {
   const body = h('div', { class: 'list' });
   function render() {
     tabsEl.innerHTML = '';
-    [['lists', 'Shopping lists (' + lists.length + ')'], ['items', 'Saved items (' + items.length + ')']].forEach(([k, label]) =>
+    [['lists', 'Shopping lists (' + lists.length + ')'], ['items', 'Saved items (' + items.length + ')'], ['cats', 'Categories']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
     body.innerHTML = '';
+    if (tab === 'cats') {
+      if (fab) fab.style.display = 'none';
+      renderCategoryManager(body);
+      return;
+    }
+    if (fab) fab.style.display = '';
     if (tab === 'lists') {
       if (fab) fab.onclick = () => navigate('#/edit/shopping');
       if (!lists.length) { body.appendChild(emptyState('shopping', 'No shopping lists yet. Tap + to create one.')); return; }
@@ -1196,6 +1363,28 @@ async function renderShoppingScreen(listEl, lists, fab, initialTab) {
   listEl.appendChild(tabsEl);
   listEl.appendChild(body);
   render();
+}
+
+function renderCategoryManager(container) {
+  DB.getShopCats().then(cats => {
+    container.innerHTML = '';
+    const input = h('input', { placeholder: 'New category (e.g. hotpot)' });
+    const add = async () => {
+      const v = (input.value || '').trim(); if (!v) return;
+      if (!cats.includes(v)) { cats.push(v); await DB.setShopCats(cats); }
+      renderCategoryManager(container);
+    };
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
+    container.appendChild(h('div', { class: 'field' }, h('label', null, 'Add a category'),
+      h('div', { class: 'sub-head' }, input, h('button', { class: 'btn small', type: 'button', onclick: add }, 'Add'))));
+    if (!cats.length) { container.appendChild(h('div', { class: 'hint' }, 'No categories yet. Add ones like hotpot, bbq…')); return; }
+    cats.forEach(c => container.appendChild(h('div', { class: 'check-row' },
+      h('span', { class: 'ttl' }, c),
+      h('button', { class: 'row-del', type: 'button', title: 'Delete', onclick: async () => {
+        if (!confirmDel('Delete category “' + c + '”?')) return;
+        await DB.setShopCats(cats.filter(x => x !== c)); renderCategoryManager(container);
+      } }, '🗑'))));
+  });
 }
 
 function renderTaxList(listEl, items) {
@@ -1273,6 +1462,7 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
   let tab = 'upcoming';
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
+  const posP = opts.distance ? currentPosition() : null;  // ask location once
   function render() {
     tabsEl.innerHTML = '';
     [['upcoming', 'Upcoming (' + upcoming.length + ')'], ['archive', 'Archive (' + archived.length + ')']].forEach(([k, label]) =>
@@ -1284,12 +1474,30 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
       const dup = (tab === 'archive' && opts.duplicate)
         ? h('button', { class: 'btn small secondary', onclick: async (e) => { e.stopPropagation(); await duplicateItem(cat, it); toast('Duplicated to Upcoming'); navigate('#/cat/' + cat); } }, 'Duplicate')
         : null;
-      body.appendChild(buildRow(cat, it, { action: dup }));
+      const row = buildRow(cat, it, { action: dup });
+      body.appendChild(row);
+      if (posP) enrichRowDistance(it, row, posP);
     }
   }
   listEl.appendChild(tabsEl);
   listEl.appendChild(body);
   render();
+}
+
+/* add "x km · ~y min" to an event row (rough straight-line estimate) */
+async function enrichRowDistance(it, row, posP) {
+  const d = it.data || {};
+  if (!d.map && !d.location) return;
+  const pos = await posP;
+  if (!pos) return;
+  const dest = await placeCoords(it);
+  if (!dest) return;
+  const km = haversineKm(pos.lat, pos.lon, dest[0], dest[1]);
+  const mins = Math.round(km / 40 * 60);
+  const txt = km.toFixed(1) + ' km · ~' + mins + ' min';
+  const meta = row.querySelector('.meta');
+  if (meta) meta.textContent = meta.textContent + ' · ' + txt;
+  else { const main = row.querySelector('.main'); if (main) main.appendChild(h('div', { class: 'meta' }, txt)); }
 }
 
 /* ----- EDITOR ----- */
@@ -1381,10 +1589,99 @@ function routeChanged() {
   const stale = $app().querySelector('.fab'); if (stale) stale.remove();
 
   if (parts.length === 0) return void homeScreen();
+  if (parts[0] === 'settings') return void settingsScreen();
   if (parts[0] === 'cat') return void listScreen(parts[1], parts[2]);
   if (parts[0] === 'edit') return void editScreen(parts[1], parts[2]);
   if (parts[0] === 'view') return void viewScreen(parts[1], parts[2]);
   homeScreen();
+}
+
+/* ----- SETTINGS ----- */
+async function settingsScreen() {
+  const s = await DB.getSettings();
+  // present lead time as value + unit
+  let unit = (s.leadMinutes % 60 === 0 && s.leadMinutes >= 60) ? 'hours' : 'minutes';
+  let amount = unit === 'hours' ? s.leadMinutes / 60 : s.leadMinutes;
+  const form = { amount: String(amount), unit, notify: s.notify, telegramChatId: s.telegramChatId || '' };
+
+  const status = h('div', { class: 'hint', style: { marginTop: '6px' } },
+    ('Notification' in window) ? ('Browser notifications: ' + Notification.permission) : 'This browser has no notifications.');
+
+  const notifyBtn = h('button', { class: 'btn small ' + (form.notify ? '' : 'secondary'), type: 'button' },
+    form.notify ? '✓ Reminders on' : 'Turn on reminders');
+  notifyBtn.onclick = async () => {
+    if (!form.notify) {
+      if (!('Notification' in window)) { toast('Notifications not supported here'); return; }
+      const perm = await Notification.requestPermission();
+      status.textContent = 'Browser notifications: ' + perm;
+      if (perm !== 'granted') { toast('Permission not granted'); return; }
+      form.notify = true;
+    } else { form.notify = false; }
+    notifyBtn.className = 'btn small ' + (form.notify ? '' : 'secondary');
+    notifyBtn.textContent = form.notify ? '✓ Reminders on' : 'Turn on reminders';
+  };
+
+  const body = h('div', null,
+    h('div', { class: 'section-title' }, 'Event reminders'),
+    h('div', { class: 'field' }, h('label', null, 'Remind me before each event'),
+      h('div', { class: 'row2' },
+        h('input', { type: 'number', inputmode: 'numeric', min: '1', value: form.amount, oninput: e => form.amount = e.target.value }),
+        h('select', { onchange: e => form.unit = e.target.value },
+          h('option', { value: 'minutes', selected: form.unit === 'minutes' ? 'selected' : null }, 'minutes before'),
+          h('option', { value: 'hours', selected: form.unit === 'hours' ? 'selected' : null }, 'hours before')))),
+    h('div', { class: 'field' }, notifyBtn, status),
+    h('button', { class: 'btn secondary', style: { marginTop: '4px' }, type: 'button', onclick: () => {
+      if (!('Notification' in window) || Notification.permission !== 'granted') { toast('Turn on reminders first'); return; }
+      new Notification('MyLife Notes', { body: 'Test reminder — notifications are working ✅', icon: 'icons/icon-192.png' });
+    } }, 'Send a test notification'),
+    h('div', { class: 'section-title' }, 'Telegram (for reminders when the app is closed)'),
+    h('div', { class: 'field' }, h('label', null, 'Telegram chat ID'),
+      h('input', { value: form.telegramChatId, placeholder: 'e.g. 123456789', oninput: e => form.telegramChatId = e.target.value, autocapitalize: 'none' }),
+      h('div', { class: 'hint' }, 'Used by the scheduled reminder sender (see README). Optional.')),
+    h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
+      const n = Math.max(1, parseInt(form.amount) || 1);
+      const leadMinutes = form.unit === 'hours' ? n * 60 : n;
+      await DB.saveSettings({ leadMinutes, notify: form.notify, telegramChatId: form.telegramChatId.trim() });
+      toast('Settings saved');
+      startReminders();
+      navigate('#/');
+    } }, 'Save settings'));
+
+  const bar = appbar('Settings', null, { back: () => navigate('#/') });
+  mount(screen(bar, body));
+}
+
+/* ---------- in-app reminder engine ---------- */
+let reminderTimer = null;
+function startReminders() {
+  if (reminderTimer) clearInterval(reminderTimer);
+  reminderTimer = setInterval(checkReminders, 60000);
+  checkReminders();
+}
+async function checkReminders() {
+  try {
+    if (!CURRENT || !('Notification' in window) || Notification.permission !== 'granted') return;
+    const s = await DB.getSettings();
+    if (!s.notify) return;
+    const lead = (s.leadMinutes || 60) * 60000;
+    const now = Date.now();
+    const events = await DB.listItems('events');
+    for (const ev of events) {
+      const d = ev.data || {};
+      if (!d.when) continue;
+      const t = new Date(d.when).getTime();
+      if (isNaN(t)) continue;
+      if (now >= t - lead && now < t && d._notifiedFor !== d.when) {
+        const mins = Math.round((t - now) / 60000);
+        new Notification('⏰ ' + (d.title || 'Event'), {
+          body: (mins > 0 ? ('In about ' + mins + ' min' + (d.location ? ' · ' + d.location : '')) : 'Starting now') + ' · ' + fmtDT(d.when),
+          icon: 'icons/icon-192.png', tag: 'ev-' + ev.id
+        });
+        d._notifiedFor = d.when;
+        await DB.saveItem(ev);
+      }
+    }
+  } catch (e) { /* ignore */ }
 }
 
 /* ============================================================
@@ -1399,7 +1696,7 @@ export async function startApp() {
     const email = 'test@local';
     LS.set('mln_session', { uid: 'local_' + (await sha256(email)).slice(0, 16), email });
   }
-  Auth.onChange(() => routeChanged());
+  Auth.onChange(() => { routeChanged(); if (CURRENT) startReminders(); });
   window.addEventListener('hashchange', routeChanged);
   // App restored from background (phone task switcher / bfcache) → back to Hello.
   window.addEventListener('pageshow', (e) => { if (e.persisted) { resetToHome(); routeChanged(); } });
