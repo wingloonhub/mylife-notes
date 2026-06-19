@@ -1951,7 +1951,7 @@ async function shareCard(cat, item) {
   let code;
   try { code = await DB.createShare({ cat, data, title: name, images }); }
   catch (e) { toast('Could not create the share link — the photos may be too large.'); return; }
-  const url = location.origin + location.pathname + '#/import/' + code;
+  const url = location.origin + location.pathname + '?s=' + code;
   const text = 'I shared "' + name + '" with you from MyLife Hub. Open this link in the app to add it to yours:';
   if (navigator.share) {
     try { await navigator.share({ title: name, text, url }); return; }
@@ -2002,12 +2002,64 @@ async function importScreen(code) {
   host.appendChild(card);
 }
 
+/* ---- prefer Chrome for shared links (WhatsApp's in-app browser handles login/PWA poorly) ---- */
+function isInAppBrowser() {
+  const ua = navigator.userAgent || '';
+  return /WhatsApp|FBAN|FBAV|FB_IAB|Instagram|Line\/|Twitter|MicroMessenger|; wv\)/i.test(ua);
+}
+function isChrome() {
+  const ua = navigator.userAgent || '';
+  if (isInAppBrowser()) return false; // in-app webviews embed "Chrome/…" but aren't real Chrome
+  if (/CriOS/i.test(ua)) return true; // Chrome on iOS
+  return /Chrome\//i.test(ua) && !/; wv\)|Edg|EdgA|OPR|SamsungBrowser/i.test(ua);
+}
+function openInChrome(code) {
+  const target = location.origin + location.pathname + '?s=' + code + '&here=1';
+  const ua = navigator.userAgent || '';
+  if (/Android/i.test(ua)) {
+    const u = new URL(target);
+    location.href = 'intent://' + u.host + u.pathname + u.search +
+      '#Intent;scheme=https;package=com.android.chrome;S.browser_fallback_url=' + encodeURIComponent(target) + ';end';
+  } else if (/iPhone|iPad|iPod/i.test(ua)) {
+    location.href = target.replace(/^https/, 'googlechromes');
+  } else {
+    location.href = target;
+  }
+}
+function showOpenInChrome(code) {
+  const cont = () => { location.href = location.origin + location.pathname + '?s=' + code + '&here=1'; };
+  mount(h('div', { class: 'auth-wrap' },
+    h('div', { class: 'brand' },
+      h('img', { src: 'icons/icon.svg' }),
+      h('h1', null, 'MyLife Hub'),
+      h('p', null, 'A card was shared with you.')),
+    h('div', { class: 'auth-card' },
+      h('h2', null, 'Open in Chrome'),
+      h('div', { class: 'hint', style: { margin: '6px 0 16px' } },
+        'For sign-in and adding the card to work, open this in Chrome rather than the in-app browser.'),
+      h('button', { class: 'btn', onclick: () => openInChrome(code) }, 'Open in Chrome'),
+      h('div', { class: 'auth-switch', style: { marginTop: '12px' } },
+        h('a', { onclick: cont }, 'Continue in this browser')))));
+  // Android intents carry a safe fallback URL, so auto-attempting won't strand the user
+  if (/Android/i.test(navigator.userAgent || '')) setTimeout(() => openInChrome(code), 500);
+}
+
 /* ============================================================
    ROUTER
    ============================================================ */
 function navigate(hash) { if (location.hash === hash) routeChanged(); else location.hash = hash; }
-/* true "go back": pop history (matches the phone's Back button) with a home fallback */
-function goBack() { if (window.history.length > 1) window.history.back(); else navigate('#/'); }
+/* deterministic "back": go to the logical parent screen — never leaves the app */
+function goBack() {
+  const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
+  const type = parts[0], cat = parts[1], id = parts[2];
+  if (type === 'view' && cat) return void navigate('#/cat/' + cat);
+  if (type === 'edit' && cat) {
+    // recipes/events/etc. were opened from their detail view; to-dos & notes open straight to edit
+    if (id && cat !== 'todo' && cat !== 'quick') return void navigate('#/view/' + cat + '/' + id);
+    return void navigate('#/cat/' + cat);
+  }
+  navigate('#/'); // cat list, settings, import, anything else -> home
+}
 
 function routeChanged() {
   if (!CURRENT) {
@@ -2246,6 +2298,14 @@ export async function startApp() {
   if (MODE === 'local' && /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && !LS.get('mln_session', null)) {
     const email = 'test@local';
     LS.set('mln_session', { uid: 'local_' + (await sha256(email)).slice(0, 16), email });
+  }
+  // Shared-card links arrive as ?s=<code>. Try to hand off to Chrome unless we're already
+  // in Chrome / a normal browser (?here=1 means the user chose to stay put).
+  const sp = new URLSearchParams(location.search);
+  const shareCode = sp.get('s');
+  if (shareCode) {
+    if (!sp.get('here') && isInAppBrowser() && !isChrome()) { showOpenInChrome(shareCode); return; }
+    history.replaceState(null, '', location.pathname + '#/import/' + shareCode);
   }
   Auth.onChange(() => { routeChanged(); if (CURRENT) startReminders(); });
   window.addEventListener('hashchange', routeChanged);
