@@ -1498,7 +1498,12 @@ function partyIsArchived(it) {
 }
 function eventIsArchived(it) {
   const d = it.data || {};
-  return d.archived || dayPassed(d.when || d.eventDate);
+  if (d.archived) return true;
+  const w = d.when || d.eventDate;
+  if (!w) return false;
+  const t = new Date(w).getTime();
+  if (isNaN(t)) return false;
+  return Date.now() > t + 3600000; // 1 hour after the event time
 }
 
 async function duplicateItem(cat, it) {
@@ -1699,26 +1704,10 @@ async function settingsScreen() {
   // present lead time as value + unit
   let unit = (s.leadMinutes % 60 === 0 && s.leadMinutes >= 60) ? 'hours' : 'minutes';
   let amount = unit === 'hours' ? s.leadMinutes / 60 : s.leadMinutes;
-  const form = { amount: String(amount), unit, notify: s.notify, telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0) };
-
-  const status = h('div', { class: 'hint', style: { marginTop: '6px' } },
-    ('Notification' in window) ? ('Browser notifications: ' + Notification.permission) : 'This browser has no notifications.');
-
-  const notifyBtn = h('button', { class: 'btn small ' + (form.notify ? '' : 'secondary'), type: 'button' },
-    form.notify ? '✓ Reminders on' : 'Turn on reminders');
-  notifyBtn.onclick = async () => {
-    if (!form.notify) {
-      if (!('Notification' in window)) { toast('Notifications not supported here'); return; }
-      const perm = await Notification.requestPermission();
-      status.textContent = 'Browser notifications: ' + perm;
-      if (perm !== 'granted') { toast('Permission not granted'); return; }
-      form.notify = true;
-    } else { form.notify = false; }
-    notifyBtn.className = 'btn small ' + (form.notify ? '' : 'secondary');
-    notifyBtn.textContent = form.notify ? '✓ Reminders on' : 'Turn on reminders';
-  };
+  const form = { amount: String(amount), unit, telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0) };
 
   const body = h('div', null,
+    h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Set it up below.'),
     h('div', { class: 'section-title' }, 'Event reminders'),
     h('div', { class: 'field' }, h('label', null, 'Remind me before each event'),
       h('div', { class: 'row2' },
@@ -1726,11 +1715,6 @@ async function settingsScreen() {
         h('select', { onchange: e => form.unit = e.target.value },
           h('option', { value: 'minutes', selected: form.unit === 'minutes' ? 'selected' : null }, 'minutes before'),
           h('option', { value: 'hours', selected: form.unit === 'hours' ? 'selected' : null }, 'hours before')))),
-    h('div', { class: 'field' }, notifyBtn, status),
-    h('button', { class: 'btn secondary', style: { marginTop: '4px' }, type: 'button', onclick: () => {
-      if (!('Notification' in window) || Notification.permission !== 'granted') { toast('Turn on reminders first'); return; }
-      new Notification('MyLife Hub', { body: 'Test reminder — notifications are working ✅', icon: 'icons/icon-192.png' });
-    } }, 'Send a test notification'),
     h('div', { class: 'section-title' }, 'To-do reminders'),
     h('div', { class: 'field' }, h('label', null, 'Start reminding me before the due date'),
       h('div', { class: 'row2' },
@@ -1742,7 +1726,7 @@ async function settingsScreen() {
       const n = Math.max(1, parseInt(form.amount) || 1);
       const leadMinutes = form.unit === 'hours' ? n * 60 : n;
       const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
-      await DB.saveSettings({ leadMinutes, notify: form.notify, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays });
+      await DB.saveSettings({ leadMinutes, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays });
       toast('Settings saved');
       startReminders();
       navigate('#/');
@@ -1763,12 +1747,9 @@ async function checkReminders() {
   try {
     if (!CURRENT) return;
     const s = await DB.getSettings();
-    const canBrowser = ('Notification' in window) && Notification.permission === 'granted' && s.notify;
-    const canTg = !!(s.telegramToken && s.telegramChatId);
-    if (!canBrowser && !canTg) return;
-    const fire = (title, body, tag) => {
-      if (canBrowser) { try { new Notification(title, { body, icon: 'icons/icon-192.png', tag }); } catch (e) {} }
-      if (canTg) { sendTelegram(s.telegramToken, s.telegramChatId, title + (body ? '\n' + body : '')).catch(() => {}); }
+    if (!s.telegramToken || !s.telegramChatId) return; // reminders go to Telegram only
+    const fire = (title, body) => {
+      sendTelegram(s.telegramToken, s.telegramChatId, title + (body ? '\n' + body : '')).catch(() => {});
     };
     const lead = (s.leadMinutes || 60) * 60000;
     const now = Date.now();
