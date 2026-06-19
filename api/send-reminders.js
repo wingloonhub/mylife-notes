@@ -110,6 +110,11 @@ function fmtDateOnly(dateStr) {
   const [Y, M, D] = dateStr.split('-').map(Number);
   return D + ' ' + MON[M - 1] + ' ' + Y;
 }
+function fmtTime(ms, offMin) {
+  const d = new Date(ms + offMin * 60000);
+  let h = d.getUTCHours(); const ap = h < 12 ? 'AM' : 'PM'; h = h % 12 || 12;
+  return h + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ' ' + ap;
+}
 
 async function processUser(u, apiKey, project, offMin, now) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
@@ -130,8 +135,12 @@ async function processUser(u, apiKey, project, offMin, now) {
     if (isNaN(t)) continue;
     if (now >= t - leadMs && now < t && d._notifiedFor !== d.when) {
       const mins = Math.round((t - now) / 60000);
-      const body = (mins > 0 ? ('In about ' + mins + ' min' + (d.location ? ' · ' + d.location : '')) : 'Starting now') + ' · ' + fmtDateTime(t, userOff);
-      await tg(token, chat, '⏰ ' + (d.title || 'Event') + '\n' + body);
+      const at = fmtTime(t, userOff);
+      const title = d.title || 'your event';
+      const msg = mins > 0
+        ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
+        : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
+      await tg(token, chat, msg);
       d._notifiedFor = d.when;
       await patchData(project, uid, idToken, it.id, d);
       sent++;
@@ -149,15 +158,42 @@ async function processUser(u, apiKey, project, offMin, now) {
       const startStr = dateMinusDays(task.eta, todoLeadDays);
       if (todayStr >= startStr && todayStr <= task.eta && task._notified !== todayStr) {
         const daysLeft = Math.round((Date.parse(task.eta + 'T00:00:00Z') - Date.parse(todayStr + 'T00:00:00Z')) / 86400000);
-        toSend.push({ task, body: daysLeft > 0 ? ('Due in ' + daysLeft + ' day' + (daysLeft > 1 ? 's' : '')) : 'Due today' });
+        toSend.push({ task, due: daysLeft > 0 ? ('due in ' + daysLeft + ' day' + (daysLeft > 1 ? 's' : '')) : 'due today' });
       }
     });
     for (const s of toSend) {
-      await tg(token, chat, '✅ ' + (s.task.name || 'To-do') + ' — due ' + fmtDateOnly(s.task.eta) + '\n' + s.body);
+      await tg(token, chat, `Hey, don't forget: ${s.task.name || 'your to-do'} is ${s.due} (${fmtDateOnly(s.task.eta)}).`);
       s.task._notified = todayStr;
       sent++;
     }
     if (toSend.length) await patchData(project, uid, idToken, it.id, d);
+  }
+
+  // weekly schedule sessions (each date+time, like events)
+  const schedLeadMs = (settings.scheduleLeadMinutes || 60) * 60000;
+  for (const it of items.filter(i => i.cat === 'schedule')) {
+    const d = it.data || {};
+    let changed = false;
+    const slots = d.slots || [];
+    for (const slot of slots) {
+      if (!slot.date || !slot.time) continue;
+      const whenStr = slot.date + 'T' + slot.time;
+      const t = naiveToUTC(whenStr, userOff);
+      if (isNaN(t)) continue;
+      if (now >= t - schedLeadMs && now < t && slot._notifiedFor !== whenStr) {
+        const mins = Math.round((t - now) / 60000);
+        const at = fmtTime(t, userOff);
+        const title = d.title || 'your schedule';
+        const msg = mins > 0
+          ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
+          : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
+        await tg(token, chat, msg);
+        slot._notifiedFor = whenStr;
+        changed = true;
+        sent++;
+      }
+    }
+    if (changed) await patchData(project, uid, idToken, it.id, d);
   }
 
   return { uid, sent };

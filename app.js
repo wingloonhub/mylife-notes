@@ -242,7 +242,7 @@ const DB = {
   /* app settings */
   async getSettings() {
     const it = await this.getItem('_settings', '_settings');
-    return Object.assign({ leadMinutes: 60, notify: false, telegramChatId: '', telegramToken: '', todoLeadDays: 0 }, it ? it.data : {});
+    return Object.assign({ leadMinutes: 60, notify: false, telegramChatId: '', telegramToken: '', todoLeadDays: 0, scheduleLeadMinutes: 60 }, it ? it.data : {});
   },
   async saveSettings(data) {
     await this.saveItem({ id: '_settings', cat: '_settings', data });
@@ -272,7 +272,8 @@ const CATS = [
   { key: 'shopitem', name: 'Saved Item', emoji: '🏷️', hidden: true },
   { key: 'todo', name: 'To-Do List', emoji: '✅' },
   { key: 'quick', name: 'Quick Note', emoji: '📝' },
-  { key: 'events', name: 'Events', emoji: '📅' }
+  { key: 'events', name: 'Events', emoji: '📅' },
+  { key: 'schedule', name: 'Weekly Schedule', emoji: '📆' }
 ];
 const catName = k => (CATS.find(c => c.key === k) || {}).name || k;
 
@@ -332,9 +333,9 @@ function imagePicker(obj, key) {
   if (!Array.isArray(obj[key])) obj[key] = obj[key] ? [obj[key]] : [];
   return imageMulti(obj, key, false);
 }
-function imageMulti(obj, key, multiple = true) {
+function imageMulti(obj, key, multiple = true, opts = {}) {
   if (!Array.isArray(obj[key])) obj[key] = [];
-  const box = h('div', { class: 'imgbox' });
+  const box = h('div', { class: 'imgbox' + (opts.compact ? ' compact' : '') });
   function uploadTile(icon, capture) {
     const props = { type: 'file', accept: 'image/*',
       onchange: async e => {
@@ -513,26 +514,7 @@ function buildEditor(cat, data) {
       a(field('Event title', data, 'title', { placeholder: 'e.g. Dentist appointment' }));
       a(field('Date & time', data, 'when', { type: 'datetime-local', hint: 'Moves to the Archive tab the day after.' }));
       a(field('Location name', data, 'location', { placeholder: 'e.g. Sunway Lagoon' }));
-      {
-        const mapStatus = h('div', { class: 'hint', style: { margin: '4px 2px 12px' } },
-          (typeof data.lat === 'number') ? ('📍 Coordinates: ' + data.lat.toFixed(5) + ', ' + data.lng.toFixed(5)) : '');
-        const mapInput = h('input', { type: 'url', inputmode: 'url', autocapitalize: 'none',
-          placeholder: 'Paste Google Maps link / address / 3.05,101.69', value: data.map || '' });
-        let mapTimer = null;
-        const resolveMap = async () => {
-          const q = (mapInput.value || '').trim();
-          data.map = q;
-          if (!q) { mapStatus.textContent = ''; delete data.lat; delete data.lng; delete data._coordSrc; return; }
-          mapStatus.textContent = '📍 Looking up coordinates…';
-          const c = await resolveCoords(q);
-          if (c) { data.lat = c[0]; data.lng = c[1]; data._coordSrc = q; mapStatus.innerHTML = '📍 Coordinates: <b>' + c[0].toFixed(5) + ', ' + c[1].toFixed(5) + '</b>'; }
-          else { delete data.lat; delete data.lng; delete data._coordSrc; mapStatus.textContent = "Couldn't read this. Try the full Google Maps URL, an address, or coordinates."; }
-        };
-        mapInput.addEventListener('input', () => { data.map = mapInput.value; clearTimeout(mapTimer); mapTimer = setTimeout(resolveMap, 700); });
-        if (data.map && data.lat == null) setTimeout(resolveMap, 150);
-        a(h('div', { class: 'field' }, h('label', null, 'Google Maps (link, address, or coordinates)'), mapInput));
-        a(mapStatus);
-      }
+      a(mapFieldBlock(data));
       a(field('Notes', data, 'notes', { type: 'textarea' }));
       a(h('div', { class: 'section-title' }, 'Reminder'));
       a(field('Remind me at', data, 'remindAt', { type: 'datetime-local' }));
@@ -546,8 +528,62 @@ function buildEditor(cat, data) {
         h('div', { class: 'hint' }, 'Telegram delivery is activated once the scheduler is connected (see README).')));
       break;
     }
+    case 'schedule': {
+      a(field('Title', data, 'title', { placeholder: 'e.g. Piano class' }));
+      a(field('Location name', data, 'location', { placeholder: 'e.g. Armanee Terrace' }));
+      a(mapFieldBlock(data));
+      a(h('div', { class: 'section-title' }, 'Dates & times'));
+      a(slotsEditor(data));
+      a(field('Notes', data, 'notes', { type: 'textarea' }));
+      break;
+    }
   }
   return F;
+}
+
+/* Google Maps field with live coordinate lookup (shared by Events + Weekly Schedule) */
+function mapFieldBlock(data) {
+  const frag = h('div');
+  const mapStatus = h('div', { class: 'hint', style: { margin: '4px 2px 12px' } },
+    (typeof data.lat === 'number') ? ('📍 Coordinates: ' + data.lat.toFixed(5) + ', ' + data.lng.toFixed(5)) : '');
+  const mapInput = h('input', { type: 'url', inputmode: 'url', autocapitalize: 'none',
+    placeholder: 'Paste Google Maps link / address / 3.05,101.69', value: data.map || '' });
+  let mapTimer = null;
+  const resolveMap = async () => {
+    const q = (mapInput.value || '').trim();
+    data.map = q;
+    if (!q) { mapStatus.textContent = ''; delete data.lat; delete data.lng; delete data._coordSrc; return; }
+    mapStatus.textContent = '📍 Looking up coordinates…';
+    const c = await resolveCoords(q);
+    if (c) { data.lat = c[0]; data.lng = c[1]; data._coordSrc = q; mapStatus.innerHTML = '📍 Coordinates: <b>' + c[0].toFixed(5) + ', ' + c[1].toFixed(5) + '</b>'; }
+    else { delete data.lat; delete data.lng; delete data._coordSrc; mapStatus.textContent = "Couldn't read this. Try the full Google Maps URL, an address, or coordinates."; }
+  };
+  mapInput.addEventListener('input', () => { data.map = mapInput.value; clearTimeout(mapTimer); mapTimer = setTimeout(resolveMap, 700); });
+  if (data.map && data.lat == null) setTimeout(resolveMap, 150);
+  add(frag, [h('div', { class: 'field' }, h('label', null, 'Google Maps (link, address, or coordinates)'), mapInput), mapStatus]);
+  return frag;
+}
+
+/* weekly schedule: list of date + time sessions */
+function slotsEditor(data) {
+  if (!Array.isArray(data.slots)) data.slots = [];
+  const wrap = h('div');
+  function draw() {
+    wrap.innerHTML = '';
+    data.slots.forEach((s, i) => {
+      wrap.appendChild(h('div', { class: 'sub-item' },
+        h('div', { class: 'sub-head' },
+          h('span', { class: 'num' }, 'SESSION ' + (i + 1)),
+          h('span', { class: 'grow' }),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this session?')) return; data.slots.splice(i, 1); draw(); } }, '✕')),
+        h('div', { class: 'row2' },
+          h('input', { type: 'date', value: s.date || '', oninput: e => s.date = e.target.value }),
+          h('input', { type: 'time', value: s.time || '', oninput: e => s.time = e.target.value }))));
+    });
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.slots.push({ date: '', time: '' }); draw(); } }, '+ Add date & time'));
+  }
+  draw();
+  return wrap;
 }
 
 /* recipe ingredients: name + optional photo each */
@@ -564,7 +600,7 @@ function ingredientsEditor(data) {
         h('div', { class: 'sub-head' },
           h('input', { class: 'grow', placeholder: 'e.g. 2 cups rice', value: ing.name || '', oninput: e => ing.name = e.target.value }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this ingredient?')) return; data.ingredients.splice(i, 1); draw(); } }, '✕')),
-        imageMulti(ing, 'imgs', true)));
+        imageMulti(ing, 'imgs', true, { compact: true })));
     });
     wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.ingredients.push({ name: '', imgs: [] }); draw(); } }, '+ Add ingredient'));
   }
@@ -575,20 +611,39 @@ function ingredientsEditor(data) {
 /* recipe steps: text + optional photo each */
 function stepsEditor(data) {
   if (!Array.isArray(data.steps)) data.steps = [];
+  // each step = { header, points:[string], imgs:[] }  (migrate old { text })
+  data.steps = data.steps.map(s => {
+    if (s && (s.header !== undefined || s.points !== undefined)) {
+      if (!Array.isArray(s.points)) s.points = []; if (!Array.isArray(s.imgs)) s.imgs = []; return s;
+    }
+    return { header: '', points: (s && s.text) ? [s.text] : [], imgs: Array.isArray(s && s.imgs) ? s.imgs : [] };
+  });
   const wrap = h('div');
   function draw() {
     wrap.innerHTML = '';
     data.steps.forEach((st, i) => {
-      const block = h('div', { class: 'sub-item' },
+      const ptWrap = h('div');
+      function drawPts() {
+        ptWrap.innerHTML = '';
+        st.points.forEach((p, j) => {
+          ptWrap.appendChild(h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '6px' } },
+            h('span', { style: { color: 'var(--muted)' } }, '•'),
+            h('input', { value: p, placeholder: 'Add a point', oninput: e => st.points[j] = e.target.value }),
+            h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this point?')) return; st.points.splice(j, 1); drawPts(); } }, '✕')));
+        });
+        ptWrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { st.points.push(''); drawPts(); } }, '+ Add point'));
+      }
+      drawPts();
+      wrap.appendChild(h('div', { class: 'sub-item' },
         h('div', { class: 'sub-head' },
           h('span', { class: 'num' }, 'STEP ' + (i + 1)),
           h('span', { class: 'grow' }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this step?')) return; data.steps.splice(i, 1); draw(); } }, '✕')),
-        h('textarea', { placeholder: 'Describe this step…', oninput: e => st.text = e.target.value }, st.text || ''),
-        h('div', { style: { marginTop: '10px' } }, imagePicker(st, 'imgs')));
-      wrap.appendChild(block);
+        h('input', { class: 'step-header', placeholder: 'Step title (e.g. Make the broth)', value: st.header || '', oninput: e => st.header = e.target.value }),
+        h('div', { style: { marginTop: '8px' } }, ptWrap),
+        h('div', { style: { marginTop: '4px' } }, imageMulti(st, 'imgs', true, { compact: true }))));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.steps.push({ text: '', imgs: [] }); draw(); } }, '+ Add step'));
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.steps.push({ header: '', points: [''], imgs: [] }); draw(); } }, '+ Add step'));
   }
   draw();
   return wrap;
@@ -818,7 +873,10 @@ async function renderDetail(cat, item) {
         const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Steps'));
         const ol = h('ol', { class: 'steps' });
         for (const st of data.steps) {
-          const li = h('li', null, st.text || '');
+          const pts = Array.isArray(st.points) ? st.points.filter(Boolean) : (st.text ? [st.text] : []);
+          const li = h('li', null);
+          if (st.header) li.appendChild(h('div', { class: 'step-h' }, st.header));
+          if (pts.length) li.appendChild(h('ul', { class: 'bullets' }, pts.map(p => h('li', null, p))));
           for (const im of await imgs(st.imgs)) li.appendChild(im);
           ol.appendChild(li);
         }
@@ -964,6 +1022,20 @@ async function renderDetail(cat, item) {
       if (data.map || data.location) a(mapCard(item));
       break;
     }
+    case 'schedule': {
+      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Schedule'),
+        kv('Location', data.location), kv('Notes', data.notes)));
+      const slots = (data.slots || []).filter(s => s.date).slice().sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
+      if (slots.length) {
+        const c = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Dates & times'));
+        slots.forEach(s => c.appendChild(h('div', { class: 'kv' },
+          h('span', { class: 'k' }, fmtDate(s.date)),
+          h('span', { class: 'v' }, s.time ? fmtHM(s.time) : ''))));
+        a(c);
+      }
+      if (data.map || data.location) a(mapCard(item));
+      break;
+    }
   }
   return F;
 }
@@ -1037,6 +1109,11 @@ function summary(cat, data) {
     }
     case 'quick': return { title: data.title || 'Note', meta: ((data.bodyHtml || '').replace(/<[^>]+>/g, ' ').trim() || data.body || '').slice(0, 60) };
     case 'events': return { title: data.title || 'Event', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
+    case 'schedule': {
+      const slots = (data.slots || []).filter(s => s.date);
+      const next = slots.map(s => s.date).sort()[0];
+      return { title: data.title || 'Schedule', meta: [data.location, slots.length && (slots.length + ' session' + (slots.length > 1 ? 's' : '')), next && ('next ' + fmtDate(next))].filter(Boolean).join(' · ') };
+    }
     default: return { title: data.title || 'Item', meta: '' };
   }
 }
@@ -1060,6 +1137,17 @@ function fmtDate(s) {
   const d = new Date(s);
   if (isNaN(d)) return s;
   return d.toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' });
+}
+function fmtTimeOnly(s) {
+  const d = new Date(s);
+  if (isNaN(d)) return s;
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+function fmtHM(t) {
+  if (!t) return '';
+  const [h, m] = t.split(':').map(Number);
+  const ap = h < 12 ? 'AM' : 'PM';
+  return (h % 12 || 12) + ':' + String(m).padStart(2, '0') + ' ' + ap;
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -1159,18 +1247,27 @@ function currentPosition() {
   });
 }
 
-/* driving distance/time via OSRM (road network), straight-line fallback.
-   OSRM gives an ideal no-traffic time that runs faster than Google's real-world
-   estimate, so apply a ~30% real-world buffer to land closer to Google. */
-const TRAFFIC_FACTOR = 1.3;
+/* Free, no-API rush-hour approximation. OSRM gives an ideal no-traffic time;
+   we scale it by time of day so it changes like real traffic (heavier at peak
+   hours). It's an estimate, not live data — the Directions button has the real one. */
+function trafficFactor() {
+  const d = new Date();
+  const weekday = d.getDay() >= 1 && d.getDay() <= 5;
+  const h = d.getHours() + d.getMinutes() / 60;
+  if (weekday && h >= 7 && h < 9.5) return 1.6;   // morning rush
+  if (weekday && h >= 17 && h < 20) return 1.7;   // evening rush
+  if (h >= 22 || h < 6) return 1.1;               // late night / early — light
+  return 1.3;                                     // normal daytime
+}
 async function drivingMetrics(pos, dest) {
+  const f = trafficFactor();
   try {
     const r = await fetch('https://router.project-osrm.org/route/v1/driving/' + pos.lon + ',' + pos.lat + ';' + dest[1] + ',' + dest[0] + '?overview=false').then(x => x.json());
     const route = r.routes && r.routes[0];
-    if (route) return { km: route.distance / 1000, mins: Math.max(1, Math.round(route.duration / 60 * TRAFFIC_FACTOR)) };
+    if (route) return { km: route.distance / 1000, mins: Math.max(1, Math.round(route.duration / 60 * f)) };
   } catch (e) {}
   const km = haversineKm(pos.lat, pos.lon, dest[0], dest[1]);
-  return { km, mins: Math.max(1, Math.round(km / 35 * 60)) };
+  return { km, mins: Math.max(1, Math.round(km / 35 * 60 * (f / 1.3))) };
 }
 
 /* accurate driving distance/time for the event detail card */
@@ -1704,7 +1801,10 @@ async function settingsScreen() {
   // present lead time as value + unit
   let unit = (s.leadMinutes % 60 === 0 && s.leadMinutes >= 60) ? 'hours' : 'minutes';
   let amount = unit === 'hours' ? s.leadMinutes / 60 : s.leadMinutes;
-  const form = { amount: String(amount), unit, telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0) };
+  const sLM = s.scheduleLeadMinutes != null ? s.scheduleLeadMinutes : 60;
+  let schedUnit = (sLM % 60 === 0 && sLM >= 60) ? 'hours' : 'minutes';
+  let schedAmount = schedUnit === 'hours' ? sLM / 60 : sLM;
+  const form = { amount: String(amount), unit, telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0), schedAmount: String(schedAmount), schedUnit };
 
   const body = h('div', null,
     h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Set it up below.'),
@@ -1721,12 +1821,21 @@ async function settingsScreen() {
         h('input', { type: 'number', inputmode: 'numeric', min: '0', value: form.todoDays, oninput: e => form.todoDays = e.target.value }),
         h('div', { class: 'total-box' }, 'days before')),
       h('div', { class: 'hint' }, 'Set 0 to remind only on the due date. It nudges once a day until the list is done.')),
+    h('div', { class: 'section-title' }, 'Weekly schedule reminders'),
+    h('div', { class: 'field' }, h('label', null, 'Remind me before each session'),
+      h('div', { class: 'row2' },
+        h('input', { type: 'number', inputmode: 'numeric', min: '1', value: form.schedAmount, oninput: e => form.schedAmount = e.target.value }),
+        h('select', { onchange: e => form.schedUnit = e.target.value },
+          h('option', { value: 'minutes', selected: form.schedUnit === 'minutes' ? 'selected' : null }, 'minutes before'),
+          h('option', { value: 'hours', selected: form.schedUnit === 'hours' ? 'selected' : null }, 'hours before')))),
     telegramSection(form),
     h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
       const n = Math.max(1, parseInt(form.amount) || 1);
       const leadMinutes = form.unit === 'hours' ? n * 60 : n;
       const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
-      await DB.saveSettings({ leadMinutes, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays });
+      const sn = Math.max(1, parseInt(form.schedAmount) || 1);
+      const scheduleLeadMinutes = form.schedUnit === 'hours' ? sn * 60 : sn;
+      await DB.saveSettings({ leadMinutes, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, scheduleLeadMinutes });
       toast('Settings saved');
       startReminders();
       navigate('#/');
@@ -1761,7 +1870,12 @@ async function checkReminders() {
       if (isNaN(t)) continue;
       if (now >= t - lead && now < t && d._notifiedFor !== d.when) {
         const mins = Math.round((t - now) / 60000);
-        fire('⏰ ' + (d.title || 'Event'), (mins > 0 ? ('In about ' + mins + ' min' + (d.location ? ' · ' + d.location : '')) : 'Starting now') + ' · ' + fmtDT(d.when), 'ev-' + ev.id);
+        const at = fmtTimeOnly(d.when);
+        const title = d.title || 'your event';
+        const msg = mins > 0
+          ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
+          : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
+        fire(msg, '', 'ev-' + ev.id);
         d._notifiedFor = d.when;
         await DB.saveItem(ev);
       }
@@ -1780,12 +1894,38 @@ async function checkReminders() {
         if (todayStr >= startStr && todayStr <= it.eta && it._notified !== todayStr) {
           const [y, m, dd] = it.eta.split('-').map(Number);
           const daysLeft = Math.round((new Date(y, m - 1, dd) - todayMid) / 86400000);
-          fire('✅ ' + (it.name || 'To-do') + ' — due ' + fmtDate(it.eta), daysLeft > 0 ? ('Due in ' + daysLeft + ' day' + (daysLeft > 1 ? 's' : '')) : 'Due today', 'todo-' + td.id + '-' + idx);
+          const due = daysLeft > 0 ? ('due in ' + daysLeft + ' day' + (daysLeft > 1 ? 's' : '')) : 'due today';
+        fire(`Hey, don't forget: ${it.name || 'your to-do'} is ${due} (${fmtDate(it.eta)}).`, '', 'todo-' + td.id + '-' + idx);
           it._notified = todayStr;
           changed = true;
         }
       });
       if (changed) await DB.saveItem(td);
+    }
+    // weekly schedule sessions (each date+time, like events)
+    const schedLead = (s.scheduleLeadMinutes || 60) * 60000;
+    const schedules = await DB.listItems('schedule');
+    for (const sc of schedules) {
+      const d = sc.data || {};
+      let changed = false;
+      (d.slots || []).forEach((slot, idx) => {
+        if (!slot.date || !slot.time) return;
+        const when = slot.date + 'T' + slot.time;
+        const t = new Date(when).getTime();
+        if (isNaN(t)) return;
+        if (now >= t - schedLead && now < t && slot._notifiedFor !== when) {
+          const mins = Math.round((t - now) / 60000);
+          const at = fmtTimeOnly(when);
+          const title = d.title || 'your schedule';
+          const msg = mins > 0
+            ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
+            : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
+          fire(msg, '', 'sched-' + sc.id + '-' + idx);
+          slot._notifiedFor = when;
+          changed = true;
+        }
+      });
+      if (changed) await DB.saveItem(sc);
     }
   } catch (e) { /* ignore */ }
 }

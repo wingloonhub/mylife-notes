@@ -160,6 +160,14 @@ body {
   display: grid; place-items: center; color: var(--muted); font-size: 24px; cursor: pointer; position: relative;
 }
 .imgbox .upload input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+/* compact image picker (recipe ingredients & steps) */
+.imgbox.compact { gap: 6px; }
+.imgbox.compact img { width: 46px; height: 46px; border-radius: 9px; }
+.imgbox.compact .upload { width: 38px; height: 38px; font-size: 15px; border-radius: 9px; }
+.imgbox.compact .img-wrap .rm { width: 18px; height: 18px; font-size: 11px; top: -5px; right: -5px; }
+.step-header { font-weight: 600; }
+.step-h { font-weight: 650; margin-bottom: 4px; }
+
 .img-wrap { position: relative; }
 .img-wrap .rm { position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; border-radius: 50%;
   background: var(--red); color: #fff; border: none; font-size: 13px; cursor: pointer; }
