@@ -273,7 +273,7 @@ const CATS = [
   { key: 'todo', name: 'To-Do List', emoji: '✅' },
   { key: 'quick', name: 'Quick Note', emoji: '📝' },
   { key: 'events', name: 'Events', emoji: '📅' },
-  { key: 'schedule', name: 'Weekly Schedule', emoji: '📆' }
+  { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒' }
 ];
 const catName = k => (CATS.find(c => c.key === k) || {}).name || k;
 
@@ -564,23 +564,32 @@ function mapFieldBlock(data) {
   return frag;
 }
 
-/* weekly schedule: list of date + time sessions */
+/* weekly schedule: list of day + start/end (24h) sessions */
 function slotsEditor(data) {
   if (!Array.isArray(data.slots)) data.slots = [];
+  // migrate old { date, time } -> { day, start, end }
+  data.slots = data.slots.map(s => {
+    if (s && s.day !== undefined) return s;
+    const day = (s && s.date) ? new Date(s.date).getDay() : 1;
+    return { day, start: (s && s.time) || '', end: '' };
+  });
   const wrap = h('div');
   function draw() {
     wrap.innerHTML = '';
     data.slots.forEach((s, i) => {
+      const daySel = h('select', { onchange: e => s.day = parseInt(e.target.value, 10) },
+        ...DOW_ORDER.map(idx => h('option', { value: idx, selected: Number(s.day) === idx ? 'selected' : null }, DOW[idx])));
       wrap.appendChild(h('div', { class: 'sub-item' },
         h('div', { class: 'sub-head' },
           h('span', { class: 'num' }, 'SESSION ' + (i + 1)),
           h('span', { class: 'grow' }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this session?')) return; data.slots.splice(i, 1); draw(); } }, '✕')),
+        h('div', { class: 'field', style: { margin: '0 0 8px' } }, h('label', { style: { fontSize: '12px' } }, 'Day'), daySel),
         h('div', { class: 'row2' },
-          h('input', { type: 'date', value: s.date || '', oninput: e => s.date = e.target.value }),
-          h('input', { type: 'time', value: s.time || '', oninput: e => s.time = e.target.value }))));
+          h('div', { class: 'field', style: { margin: 0 } }, h('label', { style: { fontSize: '12px' } }, 'Start (24h)'), h('input', { type: 'time', value: s.start || '', oninput: e => s.start = e.target.value })),
+          h('div', { class: 'field', style: { margin: 0 } }, h('label', { style: { fontSize: '12px' } }, 'End (24h)'), h('input', { type: 'time', value: s.end || '', oninput: e => s.end = e.target.value })))));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.slots.push({ date: '', time: '' }); draw(); } }, '+ Add date & time'));
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.slots.push({ day: 1, start: '', end: '' }); draw(); } }, '+ Add a day & time'));
   }
   draw();
   return wrap;
@@ -1025,12 +1034,13 @@ async function renderDetail(cat, item) {
     case 'schedule': {
       a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Schedule'),
         kv('Location', data.location), kv('Notes', data.notes)));
-      const slots = (data.slots || []).filter(s => s.date).slice().sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
+      const slots = (data.slots || []).filter(s => s.day !== undefined && s.start).slice()
+        .sort((a, b) => (DOW_ORDER.indexOf(Number(a.day)) - DOW_ORDER.indexOf(Number(b.day))) || (a.start || '').localeCompare(b.start || ''));
       if (slots.length) {
-        const c = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Dates & times'));
+        const c = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Weekly sessions'));
         slots.forEach(s => c.appendChild(h('div', { class: 'kv' },
-          h('span', { class: 'k' }, fmtDate(s.date)),
-          h('span', { class: 'v' }, s.time ? fmtHM(s.time) : ''))));
+          h('span', { class: 'k' }, DOW[Number(s.day)] || ''),
+          h('span', { class: 'v' }, s.start + (s.end ? ' – ' + s.end : '')))));
         a(c);
       }
       if (data.map || data.location) a(mapCard(item));
@@ -1110,9 +1120,9 @@ function summary(cat, data) {
     case 'quick': return { title: data.title || 'Note', meta: ((data.bodyHtml || '').replace(/<[^>]+>/g, ' ').trim() || data.body || '').slice(0, 60) };
     case 'events': return { title: data.title || 'Event', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
     case 'schedule': {
-      const slots = (data.slots || []).filter(s => s.date);
-      const next = slots.map(s => s.date).sort()[0];
-      return { title: data.title || 'Schedule', meta: [data.location, slots.length && (slots.length + ' session' + (slots.length > 1 ? 's' : '')), next && ('next ' + fmtDate(next))].filter(Boolean).join(' · ') };
+      const slots = (data.slots || []).filter(s => s.day !== undefined);
+      const days = [...new Set(slots.slice().sort((a, b) => DOW_ORDER.indexOf(Number(a.day)) - DOW_ORDER.indexOf(Number(b.day))).map(s => DOW_SHORT[Number(s.day)]))].join(', ');
+      return { title: data.title || 'Schedule', meta: [data.location, days].filter(Boolean).join(' · ') };
     }
     default: return { title: data.title || 'Item', meta: '' };
   }
@@ -1148,6 +1158,19 @@ function fmtHM(t) {
   const [h, m] = t.split(':').map(Number);
   const ap = h < 12 ? 'AM' : 'PM';
   return (h % 12 || 12) + ':' + String(m).padStart(2, '0') + ' ' + ap;
+}
+const DOW = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const DOW_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DOW_ORDER = [1, 2, 3, 4, 5, 6, 0]; // Mon … Sun for menus/sorting
+/* next future Date that falls on weekday dayIdx (0=Sun..6=Sat) at "HH:MM" local time */
+function nextWeekdayOccurrence(dayIdx, startHM) {
+  const now = new Date();
+  const [h, m] = startHM.split(':').map(Number);
+  const occ = new Date(now);
+  occ.setHours(h, m, 0, 0);
+  occ.setDate(occ.getDate() + ((dayIdx - now.getDay() + 7) % 7));
+  if (occ.getTime() <= now.getTime()) occ.setDate(occ.getDate() + 7);
+  return occ;
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -1446,7 +1469,7 @@ async function homeScreen() {
 async function listScreen(cat, sub) {
   // saved items live under the Shopping List screen, not their own
   if (cat === 'shopitem') { navigate('#/cat/shopping/items'); return; }
-  const bar = appbar(catName(cat), null, { back: () => navigate('#/') });
+  const bar = appbar(catName(cat), null, { back: () => goBack() });
   const listEl = h('div', { class: 'list' }, h('div', { class: 'spinner' }));
   mount(screen(bar, listEl));
   const fab = h('button', { class: 'fab', onclick: () => navigate('#/edit/' + cat) }, '+');
@@ -1708,10 +1731,7 @@ async function editScreen(cat, id) {
   }
 
   const bar = appbar((id ? 'Edit ' : 'New ') + catName(cat).replace(/s$/, ''), null, {
-    back: async () => {
-      if (isQuick) { await saveNow(); navigate('#/cat/' + cat); return; } // quick notes skip the view screen
-      navigate(currentId ? '#/view/' + cat + '/' + currentId : '#/cat/' + cat);
-    }
+    back: async () => { if (isQuick) await saveNow(); goBack(); }
   });
   mount(screen(bar, h('div', null, formHost, controls)));
 }
@@ -1721,7 +1741,7 @@ async function viewScreen(cat, id) {
   const item = await DB.getItem(cat, id);
   if (!item) { navigate('#/cat/' + cat); return; }
   const bar = appbar(catName(cat).replace(/s$/, ''), null, {
-    back: () => navigate('#/cat/' + cat),
+    back: () => goBack(),
     action: h('button', { class: 'iconbtn', title: 'Edit', onclick: () => navigate('#/edit/' + cat + '/' + id) }, '✎')
   });
   const host = h('div', null, h('div', { class: 'spinner' }));
@@ -1735,6 +1755,8 @@ async function viewScreen(cat, id) {
    ROUTER
    ============================================================ */
 function navigate(hash) { if (location.hash === hash) routeChanged(); else location.hash = hash; }
+/* true "go back": pop history (matches the phone's Back button) with a home fallback */
+function goBack() { if (window.history.length > 1) window.history.back(); else navigate('#/'); }
 
 function routeChanged() {
   if (!CURRENT) {
@@ -1841,7 +1863,7 @@ async function settingsScreen() {
       navigate('#/');
     } }, 'Save settings'));
 
-  const bar = appbar('Settings', null, { back: () => navigate('#/') });
+  const bar = appbar('Settings', null, { back: () => goBack() });
   mount(screen(bar, body));
 }
 
@@ -1909,19 +1931,19 @@ async function checkReminders() {
       const d = sc.data || {};
       let changed = false;
       (d.slots || []).forEach((slot, idx) => {
-        if (!slot.date || !slot.time) return;
-        const when = slot.date + 'T' + slot.time;
-        const t = new Date(when).getTime();
-        if (isNaN(t)) return;
-        if (now >= t - schedLead && now < t && slot._notifiedFor !== when) {
+        if (slot.day === undefined || !slot.start) return;
+        const occ = nextWeekdayOccurrence(Number(slot.day), slot.start);
+        const t = occ.getTime();
+        const occKey = localDateStr(occ);
+        if (now >= t - schedLead && now < t && slot._notifiedFor !== occKey) {
           const mins = Math.round((t - now) / 60000);
-          const at = fmtTimeOnly(when);
+          const at = slot.start; // 24h
           const title = d.title || 'your schedule';
           const msg = mins > 0
             ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
             : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
           fire(msg, '', 'sched-' + sc.id + '-' + idx);
-          slot._notifiedFor = when;
+          slot._notifiedFor = occKey;
           changed = true;
         }
       });

@@ -115,6 +115,15 @@ function fmtTime(ms, offMin) {
   let h = d.getUTCHours(); const ap = h < 12 ? 'AM' : 'PM'; h = h % 12 || 12;
   return h + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ' ' + ap;
 }
+// next future UTC ms for weekday dayIdx (0=Sun..6=Sat) at "HH:MM" in the user's local tz
+function nextWeekdayOccurrenceUTC(dayIdx, startHM, offMin, now) {
+  const [h, m] = startHM.split(':').map(Number);
+  const localNow = new Date(now + offMin * 60000);
+  const diff = (dayIdx - localNow.getUTCDay() + 7) % 7;
+  let occUTC = Date.UTC(localNow.getUTCFullYear(), localNow.getUTCMonth(), localNow.getUTCDate() + diff, h, m) - offMin * 60000;
+  if (occUTC <= now) occUTC += 7 * 86400000;
+  return occUTC;
+}
 
 async function processUser(u, apiKey, project, offMin, now) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
@@ -176,19 +185,18 @@ async function processUser(u, apiKey, project, offMin, now) {
     let changed = false;
     const slots = d.slots || [];
     for (const slot of slots) {
-      if (!slot.date || !slot.time) continue;
-      const whenStr = slot.date + 'T' + slot.time;
-      const t = naiveToUTC(whenStr, userOff);
-      if (isNaN(t)) continue;
-      if (now >= t - schedLeadMs && now < t && slot._notifiedFor !== whenStr) {
+      if (slot.day === undefined || !slot.start) continue;
+      const t = nextWeekdayOccurrenceUTC(Number(slot.day), slot.start, userOff, now);
+      const occKey = dateStrInTz(t, userOff);
+      if (now >= t - schedLeadMs && now < t && slot._notifiedFor !== occKey) {
         const mins = Math.round((t - now) / 60000);
-        const at = fmtTime(t, userOff);
+        const at = slot.start; // 24h
         const title = d.title || 'your schedule';
         const msg = mins > 0
           ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
           : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
         await tg(token, chat, msg);
-        slot._notifiedFor = whenStr;
+        slot._notifiedFor = occKey;
         changed = true;
         sent++;
       }
