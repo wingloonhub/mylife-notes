@@ -293,7 +293,7 @@ const CATS = [
   { key: 'trips', name: 'Trip Planner', emoji: '🧳' },
   { key: 'shopping', name: 'Shopping List', emoji: '🛒' },
   { key: 'shopitem', name: 'Saved Item', emoji: '🏷️', hidden: true },
-  { key: 'tripcat', name: 'Trip Category', emoji: '🏷️', hidden: true },
+  { key: 'tripcat', name: 'Trip Area', emoji: '🏷️', hidden: true },
   { key: 'recipes', name: 'Recipes', emoji: '🍳' },
   { key: 'warranty', name: 'Warranty Tracker', emoji: '🧾' }
 ];
@@ -438,7 +438,9 @@ function buildEditor(cat, data) {
     }
     case 'party': {
       a(field('Party event name', data, 'title', { placeholder: "e.g. Preston's birthday" }));
-      a(field('Event date', data, 'eventDate', { type: 'date', hint: 'After this date it moves to the Archive tab.' }));
+      a(h('div', { class: 'row2' },
+        h('div', { class: 'field' }, h('label', null, 'Event date'), h('input', { type: 'date', value: data.eventDate || '', oninput: e => data.eventDate = e.target.value })),
+        h('div', { class: 'field' }, h('label', null, 'Start time'), h('input', { type: 'time', value: data.startTime || '', oninput: e => data.startTime = e.target.value }))));
       a(selectField('Location', data, 'locType',
         [{ value: 'My house', label: 'My house' }, { value: 'Other', label: 'Other location' }],
         () => rerenderEditor(cat, data)));
@@ -467,6 +469,8 @@ function buildEditor(cat, data) {
       a(stringList(data, 'toPrepare', 'e.g. Balloons'));
       a(h('div', { class: 'section-title' }, 'Items to buy'));
       a(stringList(data, 'toBuy', 'e.g. Paper cups'));
+      a(h('div', { class: 'section-title' }, 'Games'));
+      a(stringList(data, 'games', 'e.g. Musical chairs'));
       break;
     }
     case 'warranty': {
@@ -501,17 +505,18 @@ function buildEditor(cat, data) {
       break;
     }
     case 'trips': {
-      a(field('Trip name', data, 'title', { placeholder: 'e.g. Langkawi June' }));
-      a(field('Dates / notes', data, 'notes', { placeholder: 'e.g. 12–15 June' }));
-      a(h('div', { class: 'section-title' }, 'Categories (ticking one auto-adds its items)'));
+      a(field('Trip name', data, 'title', { placeholder: 'e.g. Japan' }));
+      a(tripDates(data));
+      a(field('Notes', data, 'notes', { placeholder: 'e.g. flight & hotel details' }));
+      a(h('div', { class: 'section-title' }, 'Which areas? (beach, city, camping…)'));
       a(tripCategoryPicker(data));
       a(h('div', { class: 'section-title' }, 'Packing list (tick when packed in the trip view)'));
       a(checklistEditor(data, 'items', 'Item to bring'));
       break;
     }
     case 'tripcat': {
-      a(field('Category name', data, 'title', { placeholder: 'e.g. Beach trip' }));
-      a(h('div', { class: 'section-title' }, 'Items to bring for this category'));
+      a(field('Area / type', data, 'title', { placeholder: 'e.g. Beach' }));
+      a(h('div', { class: 'section-title' }, 'Items to bring for this area'));
       a(stringList(data, 'items', 'e.g. Sunscreen'));
       break;
     }
@@ -524,11 +529,12 @@ function buildEditor(cat, data) {
     case 'shopitem': {
       a(field('Item name', data, 'title', { placeholder: 'e.g. Olive oil' }));
       a(field('Brand', data, 'brand', { placeholder: 'e.g. Bertolli' }));
+      a(field('Sold per (unit)', data, 'unit', { placeholder: 'e.g. bottle, kg, 500g', hint: 'Prices below are compared per this unit.' }));
       a(shopCategoryField(data));
       a(field('Notes', data, 'notes', { type: 'textarea', placeholder: 'Any notes…' }));
       a(h('div', { class: 'section-title' }, 'Picture of item'));
       a(imagePicker(data, 'images'));
-      a(h('div', { class: 'section-title' }, 'Price by shop (add as many as you like to compare)'));
+      a(h('div', { class: 'section-title' }, 'Price per unit, by shop (add as many as you like to compare)'));
       a(pricesEditor(data));
       break;
     }
@@ -598,19 +604,39 @@ function mapFieldBlock(data) {
 }
 
 /* trip planner: pick categories (multi-select); ticking one auto-adds its items */
+/* trip date range with live "X days, Y nights" */
+function tripDates(data) {
+  const dur = h('div', { class: 'hint', style: { marginTop: '2px', marginBottom: '14px' } });
+  function calc() {
+    if (data.startDate && data.endDate) {
+      const nights = Math.round((new Date(data.endDate) - new Date(data.startDate)) / 86400000);
+      dur.textContent = nights < 0 ? '⚠ End date is before the start date'
+        : (nights === 0 ? 'Same-day trip' : ((nights + 1) + ' days, ' + nights + ' night' + (nights === 1 ? '' : 's')));
+    } else dur.textContent = '';
+  }
+  const start = h('input', { type: 'date', value: data.startDate || '', oninput: e => { data.startDate = e.target.value; calc(); } });
+  const end = h('input', { type: 'date', value: data.endDate || '', oninput: e => { data.endDate = e.target.value; calc(); } });
+  calc();
+  return h('div', null,
+    h('div', { class: 'row2' },
+      h('div', { class: 'field' }, h('label', null, 'From'), start),
+      h('div', { class: 'field' }, h('label', null, 'To'), end)),
+    dur);
+}
+
 function tripCategoryPicker(data) {
   if (!Array.isArray(data.categories)) data.categories = [];
   if (!Array.isArray(data.items)) data.items = [];
   const wrap = h('div');
   DB.listItems('tripcat').then(cats => {
     wrap.innerHTML = '';
-    if (!cats.length) { wrap.appendChild(h('div', { class: 'hint' }, 'No categories yet — create them in the Categories tab of Trip Planner.')); return; }
+    if (!cats.length) { wrap.appendChild(h('div', { class: 'hint' }, 'No areas yet — create them in the Areas tab of Trip Planner.')); return; }
     cats.forEach(c => {
       const cd = c.data || {};
       const on = data.categories.includes(c.id);
-      const row = h('div', { class: 'check-row' + (on ? ' done' : '') },
+      const row = h('div', { class: 'check-row' },
         h('div', { class: 'cb' + (on ? ' on' : '') }),
-        h('span', { class: 'ttl' }, cd.title || 'Category'));
+        h('span', { class: 'ttl' }, cd.title || 'Area'));
       row.querySelector('.cb').onclick = () => {
         const i = data.categories.indexOf(c.id);
         const names = (cd.items || []).filter(Boolean);
@@ -836,7 +862,7 @@ function pricesEditor(data) {
   return wrap;
 }
 
-/* shopping cart editor: add new item / add saved / pick by category */
+/* shopping cart editor: every add = pick a saved item OR create new, enter only quantity */
 function shoppingEditor(data) {
   if (!Array.isArray(data.items)) data.items = [];
   const cart = h('div');
@@ -844,18 +870,15 @@ function shoppingEditor(data) {
 
   function drawCart() {
     cart.innerHTML = '';
+    if (!data.items.length) { cart.appendChild(h('div', { class: 'hint' }, 'No items yet — add one above.')); return; }
     data.items.forEach((it, i) => {
       cart.appendChild(h('div', { class: 'sub-item' },
         h('div', { class: 'sub-head' },
-          h('input', { class: 'grow', placeholder: 'Item name', value: it.name || '', oninput: e => it.name = e.target.value }),
+          h('div', { class: 'grow', style: { fontWeight: '600' } }, it.name || 'Item'),
+          h('input', { placeholder: 'Qty', value: it.qty || '', style: { maxWidth: '92px' }, oninput: e => it.qty = e.target.value }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this item?')) return; data.items.splice(i, 1); drawCart(); } }, '✕')),
-        h('div', { class: 'row2' },
-          h('input', { placeholder: 'Qty', value: it.qty || '', oninput: e => it.qty = e.target.value }),
-          h('input', { placeholder: 'Category', value: it.category || '', oninput: e => it.category = e.target.value })),
-        h('div', { style: { marginTop: '8px' } },
-          h('input', { placeholder: 'Remarks (e.g. cheapest at…)', value: it.remarks || '', oninput: e => it.remarks = e.target.value }))));
+        it.remarks ? h('div', { class: 'hint', style: { marginTop: '4px' } }, '💡 ' + it.remarks) : null));
     });
-    cart.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.items.push({ name: '', qty: '', category: '', remarks: '', checked: false }); drawCart(); } }, '+ Key in a new item'));
   }
 
   async function drawAddPanel(selectedCat) {
@@ -863,36 +886,160 @@ function shoppingEditor(data) {
     addPanel.appendChild(h('div', { class: 'hint' }, 'Loading…'));
     const [cats, saved] = await Promise.all([DB.getShopCats(), DB.listItems('shopitem')]);
     addPanel.innerHTML = '';
-    const catSel = h('select', { onchange: e => drawAddPanel(e.target.value) },
-      h('option', { value: '' }, 'All categories'),
-      ...cats.map(c => h('option', { value: c }, c)));
-    catSel.value = selectedCat || '';
-    addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Category'), catSel));
+    // optional category filter to narrow the saved list
+    if (cats.length) {
+      const catSel = h('select', { onchange: e => drawAddPanel(e.target.value) },
+        h('option', { value: '' }, 'All categories'),
+        ...cats.map(c => h('option', { value: c }, c)));
+      catSel.value = selectedCat || '';
+      addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Category'), catSel));
+    }
     const filtered = saved.filter(s => !selectedCat || (s.data || {}).category === selectedCat);
-    if (!filtered.length) { addPanel.appendChild(h('div', { class: 'hint' }, saved.length ? 'No saved items in this category.' : 'No saved items yet — add some in the Saved items tab.')); return; }
     const itemSel = h('select', { class: 'grow', style: { minWidth: '0' } },
-      h('option', { value: '' }, '— Choose a saved item —'),
+      h('option', { value: '' }, '— Choose an item —'),
+      h('option', { value: '__new' }, '➕ Create new item'),
       ...filtered.map(s => { const d = s.data || {}; const c = cheapestPrice(d.prices); return h('option', { value: s.id }, (d.title || 'Item') + (c ? ('  —  ' + fmtMYR(c.price) + ' @ ' + c.shop) : '')); }));
+    const nameField = h('div', { class: 'field', style: { display: 'none' } },
+      h('input', { placeholder: 'New item name', autocapitalize: 'words' }));
+    const nameInput = nameField.querySelector('input');
+    const qtyInput = h('input', { placeholder: 'e.g. 2, 1kg, 500ml' });
     const info = h('div', { class: 'hint', style: { marginTop: '6px' } }, '');
-    itemSel.onchange = () => { const s = filtered.find(x => x.id === itemSel.value); const c = s ? cheapestPrice(s.data.prices) : null; info.textContent = c ? ('Cheapest: ' + fmtMYR(c.price) + ' @ ' + c.shop) : (s ? 'No price saved yet' : ''); };
+    itemSel.onchange = () => {
+      if (itemSel.value === '__new') { nameField.style.display = ''; info.textContent = ''; nameInput.focus(); return; }
+      nameField.style.display = 'none';
+      const s = filtered.find(x => x.id === itemSel.value); const c = s ? cheapestPrice(s.data.prices) : null;
+      info.textContent = c ? ('Cheapest: ' + fmtMYR(c.price) + ' @ ' + c.shop) : (s ? 'No saved price for this item yet' : '');
+    };
     const addBtn = h('button', { class: 'btn small', type: 'button', onclick: () => {
-      const s = filtered.find(x => x.id === itemSel.value);
-      if (!s) { toast('Pick an item first'); return; }
-      const d = s.data || {}; const c = cheapestPrice(d.prices);
-      data.items.push({ name: d.title || '', qty: '', category: d.category || '', remarks: c ? ('Cheapest at ' + c.shop + ' — ' + fmtMYR(c.price)) : '', checked: false });
-      drawCart(); toast('Added to cart'); itemSel.value = ''; info.textContent = '';
+      if (itemSel.value === '__new') {
+        const nm = (nameInput.value || '').trim();
+        if (!nm) { toast('Enter the item name'); return; }
+        data.items.push({ name: nm, qty: (qtyInput.value || '').trim(), category: selectedCat || '', remarks: '', checked: false });
+        toast('Added');
+      } else {
+        const s = filtered.find(x => x.id === itemSel.value);
+        if (!s) { toast('Choose an item or create a new one'); return; }
+        const d = s.data || {}; const c = cheapestPrice(d.prices);
+        const remark = c ? ('Cheapest at ' + c.shop + ' — ' + fmtMYR(c.price)) : '';
+        data.items.push({ name: d.title || '', qty: (qtyInput.value || '').trim(), category: d.category || '', remarks: remark, checked: false });
+        toast(c ? ('💡 Cheapest at ' + c.shop + ' — ' + fmtMYR(c.price)) : 'Added');
+      }
+      drawCart();
+      itemSel.value = ''; nameInput.value = ''; nameField.style.display = 'none'; qtyInput.value = ''; info.textContent = '';
     } }, '+ Add');
-    addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Add a saved item'),
-      h('div', { class: 'sub-head' }, itemSel, addBtn), info));
+    addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Item'), itemSel));
+    addPanel.appendChild(nameField);
+    addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Quantity'), qtyInput));
+    addPanel.appendChild(h('div', null, addBtn, info));
   }
 
   drawCart();
   drawAddPanel('');
   return h('div', null,
-    h('div', { class: 'section-title', style: { marginTop: '4px' } }, 'Add items'),
+    h('div', { class: 'section-title', style: { marginTop: '4px' } }, 'Add item'),
     addPanel,
-    h('div', { class: 'section-title' }, 'Your cart'),
+    h('div', { class: 'section-title' }, 'Your list'),
     cart);
+}
+
+/* shared "add item" panel: pick a saved item or create new, enter only quantity. onAdd(itemObj). */
+async function buildShoppingAddPanel(onAdd) {
+  const panel = h('div');
+  async function draw(selectedCat) {
+    panel.innerHTML = '';
+    panel.appendChild(h('div', { class: 'hint' }, 'Loading…'));
+    const [cats, saved] = await Promise.all([DB.getShopCats(), DB.listItems('shopitem')]);
+    panel.innerHTML = '';
+    if (cats.length) {
+      const catSel = h('select', { onchange: e => draw(e.target.value) },
+        h('option', { value: '' }, 'All categories'),
+        ...cats.map(c => h('option', { value: c }, c)));
+      catSel.value = selectedCat || '';
+      panel.appendChild(h('div', { class: 'field' }, h('label', null, 'Category'), catSel));
+    }
+    const filtered = saved.filter(s => !selectedCat || (s.data || {}).category === selectedCat);
+    const itemSel = h('select', { class: 'grow', style: { minWidth: '0' } },
+      h('option', { value: '' }, '— Choose an item —'),
+      h('option', { value: '__new' }, '➕ Create new item'),
+      ...filtered.map(s => { const d = s.data || {}; const c = cheapestPrice(d.prices); return h('option', { value: s.id }, (d.title || 'Item') + (c ? ('  —  ' + fmtMYR(c.price) + ' / ' + unitOf(d) + ' @ ' + c.shop) : '')); }));
+    const nameField = h('div', { class: 'field', style: { display: 'none' } }, h('input', { placeholder: 'New item name', autocapitalize: 'words' }));
+    const nameInput = nameField.querySelector('input');
+    const qtyInput = h('input', { placeholder: 'e.g. 2, 1kg, 500ml' });
+    const info = h('div', { class: 'hint', style: { marginTop: '6px' } }, '');
+    itemSel.onchange = () => {
+      if (itemSel.value === '__new') { nameField.style.display = ''; info.textContent = ''; nameInput.focus(); return; }
+      nameField.style.display = 'none';
+      const s = filtered.find(x => x.id === itemSel.value); const c = s ? cheapestPrice(s.data.prices) : null;
+      info.textContent = c ? ('Cheapest: ' + fmtMYR(c.price) + ' / ' + unitOf(s.data) + ' @ ' + c.shop) : (s ? 'No saved price for this item yet' : '');
+    };
+    const addBtn = h('button', { class: 'btn small', type: 'button', onclick: async () => {
+      let obj;
+      if (itemSel.value === '__new') {
+        const nm = (nameInput.value || '').trim();
+        if (!nm) { toast('Enter the item name'); return; }
+        obj = { name: nm, qty: (qtyInput.value || '').trim(), category: selectedCat || '', remarks: '', checked: false };
+        toast('Added');
+      } else {
+        const s = filtered.find(x => x.id === itemSel.value);
+        if (!s) { toast('Choose an item or create a new one'); return; }
+        const d = s.data || {}; const c = cheapestPrice(d.prices);
+        const cheapTxt = c ? ('Cheapest at ' + c.shop + ' — ' + fmtMYR(c.price) + ' / ' + unitOf(d)) : '';
+        obj = { name: d.title || '', qty: (qtyInput.value || '').trim(), category: d.category || '', remarks: cheapTxt, savedId: s.id, savedImg: (d.images || [])[0] || '', checked: false };
+        toast(c ? ('💡 ' + cheapTxt) : 'Added');
+      }
+      await onAdd(obj);
+      itemSel.value = ''; nameInput.value = ''; nameField.style.display = 'none'; qtyInput.value = ''; info.textContent = '';
+    } }, '+ Add');
+    panel.appendChild(h('div', { class: 'field' }, h('label', null, 'Item'), itemSel));
+    panel.appendChild(nameField);
+    panel.appendChild(h('div', { class: 'field' }, h('label', null, 'Quantity'), qtyInput));
+    panel.appendChild(h('div', null, addBtn, info));
+  }
+  await draw('');
+  return panel;
+}
+
+/* the single, flat shopping list: add straight in, tick off as you buy */
+async function renderShoppingItems(body) {
+  let doc = await DB.getItem('shopping', '_shoplist');
+  if (!doc) {
+    doc = { id: '_shoplist', cat: 'shopping', data: { title: 'Shopping list', items: [] } };
+    // one-time: fold any previously-created named lists into the single list
+    const old = (await DB.listItems('shopping')).filter(x => x.id !== '_shoplist');
+    for (const o of old) for (const t of ((o.data && o.data.items) || [])) doc.data.items.push(t);
+    if (doc.data.items.length) await DB.saveItem(doc);
+  }
+  if (!Array.isArray(doc.data.items)) doc.data.items = [];
+  const save = () => DB.saveItem(doc);
+  const listWrap = h('div', { class: 'detail-card' });
+  function drawList() {
+    listWrap.innerHTML = '';
+    const its = doc.data.items;
+    listWrap.appendChild(h('div', { class: 'hint', style: { marginBottom: '8px' } }, its.filter(i => i.checked).length + '/' + its.length + ' bought'));
+    if (!its.length) { listWrap.appendChild(h('div', { class: 'hint' }, 'No items yet — add one above.')); return; }
+    its.forEach((t, i) => {
+      const ttl = h('div', { class: 'ttl' },
+        (t.name || '') + (t.qty ? ('  × ' + t.qty) : ''),
+        t.savedImg ? h('span', { class: 'pic-tap', title: 'View photo' }, ' 📷') : null,
+        t.remarks ? h('div', { class: 'px' }, '💡 ' + t.remarks) : null);
+      if (t.savedImg) {
+        ttl.style.cursor = 'pointer';
+        ttl.onclick = async () => { const src = await DB.getImage(t.savedImg); if (src) openLightbox(src); else toast('No photo saved for this item'); };
+      }
+      const row = h('div', { class: 'check-row' + (t.checked ? ' done' : '') },
+        h('div', { class: 'cb' + (t.checked ? ' on' : '') }),
+        ttl,
+        h('button', { class: 'row-del', type: 'button', title: 'Remove', onclick: async (e) => { e.stopPropagation(); doc.data.items.splice(i, 1); await save(); drawList(); } }, '🗑'));
+      row.querySelector('.cb').onclick = async () => { t.checked = !t.checked; await save(); drawList(); };
+      listWrap.appendChild(row);
+    });
+  }
+  const addPanel = await buildShoppingAddPanel(async (obj) => { doc.data.items.push(obj); await save(); drawList(); });
+  body.appendChild(h('div', { class: 'section-title', style: { marginTop: '4px' } }, 'Add item'));
+  body.appendChild(addPanel);
+  body.appendChild(h('div', { class: 'section-title' }, 'Your list'));
+  body.appendChild(listWrap);
+  drawList();
 }
 
 let _rerender = null;
@@ -1008,6 +1155,7 @@ async function renderDetail(cat, item) {
       const totalStr = (ad + kd) + ' (' + ad + ' adults; ' + kd + ' kids)';
       a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Party'),
         kv('Event date', data.eventDate ? fmtDate(data.eventDate) : null),
+        kv('Start time', data.startTime ? fmtHM(data.startTime) : null),
         kv('Location', loc), kv('Theme', data.theme), kv('Budget', data.budget ? fmtMoneyMaybe(data.budget) : null),
         kv('Total guests', totalStr)));
       const sec = (title, arr) => (arr || []).filter(Boolean).length ? h('div', { class: 'detail-card' },
@@ -1023,6 +1171,7 @@ async function renderDetail(cat, item) {
       a(sec('Drinks', data.drinks));
       a(sec('To prepare', data.toPrepare));
       a(sec('To buy', data.toBuy));
+      a(sec('Games', data.games));
       break;
     }
     case 'warranty': {
@@ -1053,13 +1202,19 @@ async function renderDetail(cat, item) {
       break;
     }
     case 'trips': {
-      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Trip'), kv('Notes', data.notes)));
+      let dates = '';
+      if (data.startDate && data.endDate) {
+        const nights = Math.round((new Date(data.endDate) - new Date(data.startDate)) / 86400000);
+        dates = fmtDate(data.startDate) + ' → ' + fmtDate(data.endDate) + (nights >= 0 ? ('  (' + (nights + 1) + ' days, ' + nights + ' night' + (nights === 1 ? '' : 's') + ')') : '');
+      }
+      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Trip'),
+        dates ? kv('Dates', dates) : null, kv('Notes', data.notes)));
       a(checklistView(item, 'items', cat, 'Packing list'));
       break;
     }
     case 'tripcat': {
       const its = (data.items || []).filter(Boolean);
-      const card = h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Category'));
+      const card = h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Area'));
       if (its.length) card.appendChild(h('ul', { class: 'bullets' }, its.map(x => h('li', null, x))));
       a(card);
       break;
@@ -1073,16 +1228,17 @@ async function renderDetail(cat, item) {
       const card = h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Item'),
         kv('Brand', data.brand),
         kv('Category', data.category),
-        cheap ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Cheapest'), h('span', { class: 'v', style: { color: 'var(--green)' } }, fmtMYR(cheap.price) + ' @ ' + cheap.shop)) : null,
+        kv('Sold per', data.unit),
+        cheap ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Cheapest'), h('span', { class: 'v', style: { color: 'var(--green)' } }, fmtMYR(cheap.price) + ' / ' + unitOf(data) + ' @ ' + cheap.shop)) : null,
         kv('Notes', data.notes));
       for (const im of await imgs(data.images)) card.appendChild(im);
       a(card);
       const priced = (data.prices || []).filter(p => p.shop || p.price);
       if (priced.length) {
-        const pc = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Prices by shop'));
+        const pc = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Price per ' + unitOf(data) + ', by shop'));
         priced.forEach(p => pc.appendChild(h('div', { class: 'kv' },
           h('span', { class: 'k' }, p.shop || '—'),
-          h('span', { class: 'v' }, (p.price !== '' && p.price != null) ? fmtMYR(p.price) : '—'))));
+          h('span', { class: 'v' }, (p.price !== '' && p.price != null) ? (fmtMYR(p.price) + ' / ' + unitOf(data)) : '—'))));
         a(pc);
       }
       break;
@@ -1181,12 +1337,20 @@ function summary(cat, data) {
       return { title: data.title || 'To-Do', meta: [(next && ('next due ' + fmtDate(next))), its.filter(i => i.checked).length + '/' + its.length + ' done'].filter(Boolean).join(' · ') };
     }
     case 'party': return { title: data.title || 'Party', meta: [data.eventDate && fmtDate(data.eventDate), data.theme].filter(Boolean).join(' · ') };
-    case 'trips': return { title: data.title || 'Trip', meta: (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' packed' };
-    case 'tripcat': return { title: data.title || 'Category', meta: (data.items || []).filter(Boolean).length + ' items' };
+    case 'trips': {
+      const its = data.items || [];
+      let range = '';
+      if (data.startDate && data.endDate) {
+        const nights = Math.round((new Date(data.endDate) - new Date(data.startDate)) / 86400000);
+        range = fmtDate(data.startDate) + ' → ' + fmtDate(data.endDate) + (nights >= 0 ? (' · ' + (nights + 1) + 'D' + nights + 'N') : '');
+      }
+      return { title: data.title || 'Trip', meta: [range, its.filter(i => i.checked).length + '/' + its.length + ' packed'].filter(Boolean).join(' · ') };
+    }
+    case 'tripcat': return { title: data.title || 'Area', meta: (data.items || []).filter(Boolean).length + ' items' };
     case 'shopping': return { title: data.title || 'Shopping list', meta: (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' picked' };
     case 'shopitem': {
       const c = cheapestPrice(data.prices);
-      return { title: data.title || 'Item', meta: [data.category, data.brand, c && (fmtMYR(c.price) + ' @ ' + c.shop)].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
+      return { title: data.title || 'Item', meta: [data.category, data.brand, c && (fmtMYR(c.price) + ' / ' + unitOf(data) + ' @ ' + c.shop)].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
     }
     case 'quick': return { title: data.title || 'Note', meta: ((data.bodyHtml || '').replace(/<[^>]+>/g, ' ').trim() || data.body || '').slice(0, 60) };
     case 'events': return { title: data.title || 'Event', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
@@ -1258,6 +1422,8 @@ function fmtMoneyMaybe(v) {
   const cleaned = String(v).replace(/[,\s]/g, '').replace(/^RM/i, '');
   return /^\d*\.?\d+$/.test(cleaned) ? fmtMYR(cleaned) : String(v);
 }
+/* the unit a saved item is priced per (e.g. bottle, kg); defaults to "unit" */
+function unitOf(d) { return (d && d.unit && String(d.unit).trim()) || 'unit'; }
 /* cheapest {shop, price} from a prices array (migrates an old single `shop`) */
 function cheapestPrice(prices) {
   const valid = (prices || []).filter(p => p && p.price !== '' && p.price != null && !isNaN(parseFloat(p.price)));
@@ -1571,6 +1737,7 @@ async function listScreen(cat, sub) {
   }
   const posP = cat === 'schedule' ? currentPosition() : null; // ask location once for distance
   for (const it of items) {
+    if (cat === 'todo') { listEl.appendChild(buildTodoRow(it)); continue; }
     const canDelete = cat === 'todo' || cat === 'quick';
     const del = canDelete
       ? h('button', { class: 'row-del', type: 'button', title: 'Delete', onclick: async (e) => {
@@ -1593,7 +1760,7 @@ async function renderTripScreen(listEl, trips, fab, initialTab) {
   const body = h('div', { class: 'list' });
   function render() {
     tabsEl.innerHTML = '';
-    [['trips', 'Trips (' + trips.length + ')'], ['cats', 'Categories (' + cats.length + ')']].forEach(([k, label]) =>
+    [['trips', 'Trips (' + trips.length + ')'], ['cats', 'Areas (' + cats.length + ')']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
     body.innerHTML = '';
     if (tab === 'trips') {
@@ -1624,7 +1791,7 @@ async function renderShoppingScreen(listEl, lists, fab, initialTab) {
   const body = h('div', { class: 'list' });
   function render() {
     tabsEl.innerHTML = '';
-    [['lists', 'Shopping lists (' + lists.length + ')'], ['items', 'Saved items (' + items.length + ')'], ['cats', 'Categories']].forEach(([k, label]) =>
+    [['lists', 'Shopping list'], ['items', 'Saved items (' + items.length + ')'], ['cats', 'Categories']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
     body.innerHTML = '';
     if (tab === 'cats') {
@@ -1632,12 +1799,13 @@ async function renderShoppingScreen(listEl, lists, fab, initialTab) {
       renderCategoryManager(body);
       return;
     }
-    if (fab) fab.style.display = '';
     if (tab === 'lists') {
-      if (fab) fab.onclick = () => navigate('#/edit/shopping');
-      if (!lists.length) { body.appendChild(emptyState('shopping', 'No shopping lists yet. Tap + to create one.')); return; }
-      for (const it of lists) body.appendChild(buildRow('shopping', it));
-    } else {
+      if (fab) fab.style.display = 'none'; // adding happens inline, no separate list cards
+      renderShoppingItems(body);
+      return;
+    }
+    if (fab) fab.style.display = '';
+    {
       if (fab) fab.onclick = () => navigate('#/edit/shopitem');
       if (!items.length) { body.appendChild(emptyState('shopping', 'No saved items yet. Tap + to add one.')); return; }
       for (const it of items) {
@@ -1733,6 +1901,43 @@ function buildRow(cat, it, opts = {}) {
     opts.action || h('div', { class: 'chev' }, '›'));
   if (s.thumb) DB.getImage(s.thumb).then(src => { const img = row.querySelector('.thumb'); if (img && src) img.src = src; });
   return row;
+}
+
+/* to-do card: tap an item to strike it out; pencil opens the editor to add/remove */
+function buildTodoRow(item) {
+  const d = item.data || {};
+  const its = d.items || [];
+  const meta = h('div', { class: 'meta' });
+  function setMeta() {
+    const done = its.filter(i => i.checked).length;
+    const next = its.filter(i => !i.checked && i.eta).map(i => i.eta).sort()[0];
+    meta.textContent = [(next && ('next due ' + fmtDate(next))), done + '/' + its.length + ' done'].filter(Boolean).join(' · ');
+  }
+  const editBtn = h('button', { class: 'iconbtn small', title: 'Edit', onclick: (e) => { e.stopPropagation(); navigate('#/edit/todo/' + item.id); } }, '✎');
+  const delBtn = h('button', { class: 'iconbtn small', title: 'Delete', onclick: async (e) => {
+    e.stopPropagation();
+    if (!confirmDel('Delete this to-do list?')) return;
+    await DB.deleteItem('todo', item.id); toast('Deleted'); navigate('#/cat/todo');
+  } }, '🗑');
+  const head = h('div', { class: 'todo-head' },
+    h('div', { class: 'title' }, d.title || 'To-Do'),
+    h('div', { class: 'todo-actions' }, editBtn, delBtn));
+  const ul = h('ul', { class: 'row-items tappable' });
+  its.forEach((t) => {
+    const li = h('li', { class: t.checked ? 'done' : '' },
+      t.name || '', t.eta ? h('span', { class: 'eta' }, ' · ' + fmtDate(t.eta)) : null);
+    li.onclick = async () => {
+      t.checked = !t.checked;
+      li.classList.toggle('done', t.checked);
+      setMeta();
+      try { await DB.saveItem(item); } catch (e) {}
+    };
+    ul.appendChild(li);
+  });
+  setMeta();
+  return h('div', { class: 'row todo-row' },
+    h('div', { class: 'main' }, head, meta,
+      its.length ? ul : h('div', { class: 'hint', style: { marginTop: '6px' } }, 'No items yet — tap ✎ to add.')));
 }
 
 function dayPassed(dateStr) {

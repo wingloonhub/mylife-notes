@@ -30,6 +30,8 @@ body {
 
 /* Title Case the first letter of every word — TITLES ONLY, not other text. */
 .row .title, .detail-card h3, #app input.title-input { text-transform: capitalize; }
+#app input::placeholder, #app textarea::placeholder { text-transform: none; }
+.pic-tap { color: var(--accent); }
 
 /* ---------- App bar ---------- */
 .appbar {
@@ -235,6 +237,13 @@ body {
 .row-items li::before { content: '○'; position: absolute; left: 0; color: var(--muted); font-size: 11px; }
 .row-items li.done { color: var(--muted); text-decoration: line-through; }
 .row-items li.done::before { content: '✓'; color: var(--accent); text-decoration: none; }
+.todo-row { cursor: default; align-items: stretch; }
+.todo-head { display: flex; align-items: center; gap: 8px; }
+.todo-head .title { flex: 1; }
+.todo-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+.iconbtn.small { width: 34px; height: 34px; border-radius: 10px; font-size: 15px; }
+.row-items.tappable li { cursor: pointer; padding-top: 5px; padding-bottom: 5px; white-space: normal; }
+.row-items.tappable li:active { opacity: .6; }
 .row-items li .eta { color: var(--accent); font-size: 12px; }
 .row-items li.done .eta { color: var(--muted); }
 .row-items li.more { padding-left: 16px; color: var(--muted); font-style: italic; }
