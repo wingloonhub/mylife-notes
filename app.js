@@ -1159,6 +1159,17 @@ function currentPosition() {
   });
 }
 
+/* driving distance/time via OSRM (road network), straight-line fallback */
+async function drivingMetrics(pos, dest) {
+  try {
+    const r = await fetch('https://router.project-osrm.org/route/v1/driving/' + pos.lon + ',' + pos.lat + ';' + dest[1] + ',' + dest[0] + '?overview=false').then(x => x.json());
+    const route = r.routes && r.routes[0];
+    if (route) return { km: route.distance / 1000, mins: Math.round(route.duration / 60) };
+  } catch (e) {}
+  const km = haversineKm(pos.lat, pos.lon, dest[0], dest[1]);
+  return { km, mins: Math.round(km / 40 * 60) };
+}
+
 /* accurate driving distance/time for the event detail card */
 async function computeDistance(item, info) {
   info.innerHTML = '';
@@ -1168,13 +1179,7 @@ async function computeDistance(item, info) {
     if (!pos) throw new Error('geo');
     const dest = await placeCoords(item);
     if (!dest) throw new Error('place-not-found');
-    let km, mins;
-    try {
-      const r = await fetch('https://router.project-osrm.org/route/v1/driving/' + pos.lon + ',' + pos.lat + ';' + dest[1] + ',' + dest[0] + '?overview=false').then(x => x.json());
-      const route = r.routes && r.routes[0];
-      if (route) { km = route.distance / 1000; mins = Math.round(route.duration / 60); }
-    } catch (e) {}
-    if (km == null) { km = haversineKm(pos.lat, pos.lon, dest[0], dest[1]); mins = Math.round(km / 40 * 60); }
+    const { km, mins } = await drivingMetrics(pos, dest);
     info.innerHTML = '';
     info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Distance'), h('span', { class: 'v' }, km.toFixed(1) + ' KM')));
     info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Drive time'), h('span', { class: 'v' }, '~' + mins + ' min')));
@@ -1538,8 +1543,7 @@ async function enrichRowDistance(it, row, posP) {
   if (!pos) return;
   const dest = await placeCoords(it);
   if (!dest) return;
-  const km = haversineKm(pos.lat, pos.lon, dest[0], dest[1]);
-  const mins = Math.round(km / 40 * 60);
+  const { km, mins } = await drivingMetrics(pos, dest);
   const txt = km.toFixed(1) + ' KM · ~' + mins + ' min';
   const meta = row.querySelector('.meta');
   if (meta) meta.textContent = meta.textContent + ' · ' + txt;
