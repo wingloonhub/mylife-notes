@@ -254,6 +254,27 @@ const DB = {
   },
   async setShopCats(items) {
     await this.saveItem({ id: '_shopcats', cat: '_shopcats', data: { items } });
+  },
+  /* shared cards: a public top-level "shares" collection anyone with the code can read */
+  async createShare(payload) {
+    const code = uid() + uid();
+    if (MODE === 'firebase') {
+      const { doc, setDoc } = fb.f;
+      await setDoc(doc(fb.db, 'shares', code), Object.assign({ at: Date.now() }, payload));
+    } else {
+      const all = LS.get('mln_shares', {});
+      all[code] = Object.assign({ at: Date.now() }, payload);
+      LS.set('mln_shares', all);
+    }
+    return code;
+  },
+  async getShare(code) {
+    if (MODE === 'firebase') {
+      const { doc, getDoc } = fb.f;
+      const s = await getDoc(doc(fb.db, 'shares', code));
+      return s.exists() ? s.data() : null;
+    }
+    return LS.get('mln_shares', {})[code] || null;
   }
 };
 
@@ -684,6 +705,7 @@ function stepsEditor(data) {
       drawPts();
       wrap.appendChild(h('div', { class: 'sub-item' },
         h('div', { class: 'sub-head' },
+          h('span', { class: 'num' }, 'Step ' + (i + 1)),
           h('span', { class: 'grow' }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this step?')) return; data.steps.splice(i, 1); draw(); } }, '✕')),
         h('input', { class: 'step-header', placeholder: 'Step title (e.g. Make the broth)', value: st.header || '', oninput: e => st.header = e.target.value }),
@@ -829,12 +851,11 @@ function shoppingEditor(data) {
           h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this item?')) return; data.items.splice(i, 1); drawCart(); } }, '✕')),
         h('div', { class: 'row2' },
           h('input', { placeholder: 'Qty', value: it.qty || '', oninput: e => it.qty = e.target.value }),
-          h('input', { placeholder: 'Price', inputmode: 'decimal', value: it.price || '', oninput: e => it.price = e.target.value })),
-        h('div', { class: 'row2', style: { marginTop: '8px' } },
-          h('input', { placeholder: 'Store', value: it.store || '', oninput: e => it.store = e.target.value }),
-          h('input', { placeholder: 'Category', value: it.category || '', oninput: e => it.category = e.target.value }))));
+          h('input', { placeholder: 'Category', value: it.category || '', oninput: e => it.category = e.target.value })),
+        h('div', { style: { marginTop: '8px' } },
+          h('input', { placeholder: 'Remarks (e.g. cheapest at…)', value: it.remarks || '', oninput: e => it.remarks = e.target.value }))));
     });
-    cart.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.items.push({ name: '', qty: '', store: '', category: '', price: '', checked: false }); drawCart(); } }, '+ Key in a new item'));
+    cart.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.items.push({ name: '', qty: '', category: '', remarks: '', checked: false }); drawCart(); } }, '+ Key in a new item'));
   }
 
   async function drawAddPanel(selectedCat) {
@@ -858,7 +879,7 @@ function shoppingEditor(data) {
       const s = filtered.find(x => x.id === itemSel.value);
       if (!s) { toast('Pick an item first'); return; }
       const d = s.data || {}; const c = cheapestPrice(d.prices);
-      data.items.push({ name: d.title || '', qty: '', store: c ? c.shop : '', category: d.category || '', price: c ? c.price : '', checked: false });
+      data.items.push({ name: d.title || '', qty: '', category: d.category || '', remarks: c ? ('Cheapest at ' + c.shop + ' — ' + fmtMYR(c.price)) : '', checked: false });
       drawCart(); toast('Added to cart'); itemSel.value = ''; info.textContent = '';
     } }, '+ Add');
     addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Add a saved item'),
@@ -918,10 +939,13 @@ async function renderDetail(cat, item) {
       a(rcard);
       if ((data.steps || []).length) {
         const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Steps'));
-        for (const st of data.steps) {
+        for (let si = 0; si < data.steps.length; si++) {
+          const st = data.steps[si];
           const pts = Array.isArray(st.points) ? st.points.filter(Boolean) : (st.text ? [st.text] : []);
           const block = h('div', { style: { marginBottom: '12px' } });
-          if (st.header) block.appendChild(h('div', { class: 'step-h' }, st.header));
+          block.appendChild(h('div', { class: 'step-h' },
+            h('span', { class: 'step-num' }, String(si + 1)),
+            h('span', { class: 'step-t' }, st.header || ('Step ' + (si + 1)))));
           if (pts.length) block.appendChild(h('ul', { class: 'bullets' }, pts.map(p => h('li', null, p))));
           for (const im of await imgs(st.imgs)) block.appendChild(im);
           card.appendChild(block);
@@ -1120,16 +1144,14 @@ function checklistView(item, key, cat, title) {
 function shoppingView(item, cat) {
   const data = item.data || {};
   const items = data.items || [];
-  const total = items.reduce((s, i) => s + (parseFloat(i.price) || 0), 0);
   const card = h('div', { class: 'detail-card' },
     h('h3', null, data.title || 'Shopping list'),
-    h('div', { class: 'hint', style: { marginBottom: '10px' } }, items.filter(i => i.checked).length + '/' + items.length + ' picked · est. ' + (total ? fmtMYR(total) : '—')));
+    h('div', { class: 'hint', style: { marginBottom: '10px' } }, items.filter(i => i.checked).length + '/' + items.length + ' picked'));
   items.forEach(it => {
-    const meta = [it.qty && ('×' + it.qty), it.store, it.category].filter(Boolean).join(' · ');
+    const meta = [it.qty && ('×' + it.qty), it.category, it.remarks].filter(Boolean).join(' · ');
     const row = h('div', { class: 'check-row' + (it.checked ? ' done' : '') },
       h('div', { class: 'cb' + (it.checked ? ' on' : '') }),
-      h('div', { class: 'ttl' }, it.name || '', meta ? h('div', { class: 'px' }, meta) : null),
-      (it.price !== '' && it.price != null) ? h('span', { class: 'px' }, fmtMYR(it.price)) : null);
+      h('div', { class: 'ttl' }, it.name || '', meta ? h('div', { class: 'px' }, meta) : null));
     row.querySelector('.cb').onclick = async () => {
       it.checked = !it.checked;
       await DB.saveItem(item);
@@ -1361,7 +1383,7 @@ async function computeDistance(item, info) {
     if (!dest) throw new Error('place-not-found');
     const { km, mins } = await drivingMetrics(pos, dest);
     info.innerHTML = '';
-    info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Distance'), h('span', { class: 'v' }, km.toFixed(1) + ' KM')));
+    info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Distance'), h('span', { class: 'v' }, km.toFixed(1) + ' km')));
     info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Drive time'), h('span', { class: 'v' }, '~' + mins + ' min')));
   } catch (e) {
     info.innerHTML = '';
@@ -1776,7 +1798,7 @@ async function enrichRowDistance(it, row, posP) {
   const dest = await placeCoords(it);
   if (!dest) return;
   const { km, mins } = await drivingMetrics(pos, dest);
-  const txt = km.toFixed(1) + ' KM · ~' + mins + ' min';
+  const txt = km.toFixed(1) + ' km · ~' + mins + ' min';
   const meta = row.querySelector('.meta');
   if (meta) meta.textContent = meta.textContent + ' · ' + txt;
   else { const main = row.querySelector('.main'); if (main) main.appendChild(h('div', { class: 'meta' }, txt)); }
@@ -1846,13 +1868,125 @@ async function viewScreen(cat, id) {
   if (!item) { navigate('#/cat/' + cat); return; }
   const bar = appbar(catName(cat).replace(/s$/, ''), null, {
     back: () => goBack(),
-    action: h('button', { class: 'iconbtn', title: 'Edit', onclick: () => navigate('#/edit/' + cat + '/' + id) }, '✎')
+    action: h('div', { style: { display: 'flex', gap: '6px' } },
+      h('button', { class: 'iconbtn', title: 'Share', onclick: () => shareCard(cat, item) }, '⤴'),
+      h('button', { class: 'iconbtn', title: 'Edit', onclick: () => navigate('#/edit/' + cat + '/' + id) }, '✎'))
   });
   const host = h('div', null, h('div', { class: 'spinner' }));
   mount(screen(bar, host));
   const detail = await renderDetail(cat, item);
   host.innerHTML = '';
   host.appendChild(detail);
+}
+
+/* keys that hold arrays of image ids anywhere in a card's data */
+const IMG_KEYS = ['imgs', 'images', 'ingredientImgs'];
+
+/* deep-clone a card's data and strip private flags (image references are kept so photos can travel) */
+function sanitizeForShare(obj) {
+  const clone = JSON.parse(JSON.stringify(obj || {}));
+  (function walk(o) {
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    if (o && typeof o === 'object') {
+      for (const k of Object.keys(o)) {
+        if (k.startsWith('_') || k === 'fav' || k === 'archived' || k === 'checked') { delete o[k]; continue; }
+        walk(o[k]);
+      }
+    }
+  })(clone);
+  return clone;
+}
+
+/* gather every image id referenced inside a data tree */
+function collectImageIds(data) {
+  const ids = [];
+  (function walk(o) {
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    if (o && typeof o === 'object') {
+      for (const k of Object.keys(o)) {
+        if (IMG_KEYS.includes(k) && Array.isArray(o[k])) { for (const v of o[k]) if (typeof v === 'string') ids.push(v); }
+        else walk(o[k]);
+      }
+    }
+  })(data);
+  return ids;
+}
+
+/* swap old image ids for new ones (recipient re-saves the photos under their own account) */
+function remapImageIds(data, map) {
+  (function walk(o) {
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    if (o && typeof o === 'object') {
+      for (const k of Object.keys(o)) {
+        if (IMG_KEYS.includes(k) && Array.isArray(o[k])) o[k] = o[k].map(v => map[v] || v).filter(Boolean);
+        else walk(o[k]);
+      }
+    }
+  })(data);
+}
+
+/* tap Share on a card -> create a link the recipient opens in the app to add it */
+async function shareCard(cat, item) {
+  const data = sanitizeForShare(item.data || {});
+  const name = summary(cat, data).title || 'a card';
+  // bundle the actual photo data so it travels with the card
+  const images = {};
+  for (const id of collectImageIds(data)) {
+    if (images[id]) continue;
+    try { const d = await DB.getImage(id); if (d) images[id] = d; } catch (e) {}
+  }
+  let code;
+  try { code = await DB.createShare({ cat, data, title: name, images }); }
+  catch (e) { toast('Could not create the share link — the photos may be too large.'); return; }
+  const url = location.origin + location.pathname + '#/import/' + code;
+  const text = 'I shared "' + name + '" with you from MyLife Hub. Open this link in the app to add it to yours:';
+  if (navigator.share) {
+    try { await navigator.share({ title: name, text, url }); return; }
+    catch (e) { if (e && e.name === 'AbortError') return; }
+  }
+  try { await navigator.clipboard.writeText(url); toast('Share link copied — paste it on WhatsApp'); }
+  catch (e) { toast(url); }
+}
+
+/* opening a #/import/<code> link: confirm, then add the shared card to the signed-in user's app */
+async function importScreen(code) {
+  const bar = appbar('Shared card', null, { back: () => navigate('#/') });
+  const host = h('div', null, h('div', { class: 'spinner' }));
+  mount(screen(bar, host));
+  let share = null;
+  try { share = await DB.getShare(code); } catch (e) { share = null; }
+  host.innerHTML = '';
+  if (!share || !share.cat) {
+    host.appendChild(h('div', { class: 'detail-card' },
+      h('h3', null, 'Card not found'),
+      h('div', { class: 'hint' }, 'This shared link is invalid or has been removed.')));
+    return;
+  }
+  const where = catName(share.cat);
+  const card = h('div', { class: 'detail-card' },
+    h('h3', null, 'Add to your app?'),
+    h('div', { class: 'hint', style: { margin: '6px 0 14px' } },
+      '"' + (share.title || 'A card') + '" was shared with you. Add it to your ' + where + '?'),
+    h('button', { class: 'btn', onclick: async () => {
+      const btn = card.querySelector('.btn');
+      btn.disabled = true; btn.textContent = 'Adding…';
+      try {
+        const data = sanitizeForShare(share.data || {});
+        // re-save each bundled photo under MY account, then point the card at the new ids
+        const incoming = share.images || {};
+        const map = {};
+        for (const oldId of collectImageIds(data)) {
+          if (map[oldId] || !incoming[oldId]) continue;
+          try { map[oldId] = await DB.saveImage(incoming[oldId]); } catch (e) {}
+        }
+        remapImageIds(data, map);
+        await DB.saveItem({ cat: share.cat, data });
+        toast('Added to your ' + where);
+        navigate('#/cat/' + share.cat);
+      } catch (e) { btn.disabled = false; btn.textContent = '✓ Add to my app'; toast('Could not add it. Try again.'); }
+    } }, '✓ Add to my app'),
+    h('button', { class: 'btn secondary', style: { marginTop: '8px' }, onclick: () => navigate('#/') }, 'No thanks'));
+  host.appendChild(card);
 }
 
 /* ============================================================
@@ -1873,6 +2007,7 @@ function routeChanged() {
   const stale = $app().querySelector('.fab'); if (stale) stale.remove();
 
   if (parts.length === 0) return void homeScreen();
+  if (parts[0] === 'import') return void importScreen(parts[1]);
   if (parts[0] === 'settings') return void settingsScreen();
   if (parts[0] === 'cat') return void listScreen(parts[1], parts[2]);
   if (parts[0] === 'edit') return void editScreen(parts[1], parts[2]);
@@ -1995,7 +2130,7 @@ async function checkReminders() {
       if (!pos) return '';
       saveLastLocation(pos);
       const m = await drivingMetrics(pos, [d.lat, d.lng]);
-      return ` You're about ${m.km.toFixed(1)} KM away — roughly ${m.mins} min to get there.`;
+      return ` You're about ${m.km.toFixed(1)} km away — roughly ${m.mins} min to get there.`;
     };
     const lead = (s.leadMinutes || 60) * 60000;
     const now = Date.now();

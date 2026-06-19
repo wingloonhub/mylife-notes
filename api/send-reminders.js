@@ -147,7 +147,7 @@ async function travelLine(loc, destLat, destLng, now, offMin) {
     if (route) {
       const km = (route.distance / 1000).toFixed(1);
       const mins = Math.max(1, Math.round(route.duration / 60 * trafficFactor(now, offMin)));
-      return ` You're about ${km} KM away — roughly ${mins} min to get there.`;
+      return ` You're about ${km} km away — roughly ${mins} min to get there.`;
     }
   } catch (e) {}
   return '';
