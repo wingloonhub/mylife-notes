@@ -1,5 +1,5 @@
 // ============================================================
-//  MyLife Notes — Firebase configuration
+//  MyLife Hub — Firebase configuration
 // ============================================================
 //  LEAVE THIS AS-IS to run in LOCAL MODE (data saved only on
 //  this device's browser — great for trying the app out).

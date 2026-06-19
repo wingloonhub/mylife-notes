@@ -1,4 +1,4 @@
-# MyLife Notes
+# MyLife Hub
 
 A personal, mobile-friendly notes app with 8 notebooks: Recipes, Personal Records,
 Memberships, Party Planner, Trip Planner, Shopping List, Quick Note, Events.

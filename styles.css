@@ -28,13 +28,8 @@ body {
 }
 #app { max-width: 640px; margin: 0 auto; min-height: 100vh; }
 
-/* Capitalise the first letter of every word across the whole app (text-transform
-   inherits, so one rule covers everything) — except places where it would be wrong. */
-#app { text-transform: capitalize; }
-#app input, #app textarea, #app select { text-transform: capitalize; }
-#app input[type="email"], #app input[type="url"], #app input[type="password"] { text-transform: none; }
-.appbar .sub, .rte, .rte-view, .link-a, .copy-block, .mode-badge,
-a[href^="http"], a[href^="mailto"], a[href^="tel"] { text-transform: none; }
+/* Title Case the first letter of every word — TITLES ONLY, not other text. */
+.row .title, .detail-card h3, #app input.title-input { text-transform: capitalize; }
 
 /* ---------- App bar ---------- */
 .appbar {

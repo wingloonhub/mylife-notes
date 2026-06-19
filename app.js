@@ -1,13 +1,7 @@
 // ============================================================
-//  MyLife Notes — app.js  (vanilla JS, no build step)
+//  MyLife Hub — app.js  (vanilla JS, no build step)
 // ============================================================
 import { FIREBASE } from './firebase-config.js';
-
-// Always open the app on the Hello (home) page, never the last-viewed screen.
-function resetToHome() {
-  if (location.hash) history.replaceState(null, '', location.pathname + location.search);
-}
-resetToHome();
 
 /* ---------------- tiny DOM helper ---------------- */
 function h(tag, props, ...kids) {
@@ -248,7 +242,7 @@ const DB = {
   /* app settings */
   async getSettings() {
     const it = await this.getItem('_settings', '_settings');
-    return Object.assign({ leadMinutes: 60, notify: false, telegramChatId: '' }, it ? it.data : {});
+    return Object.assign({ leadMinutes: 60, notify: false, telegramChatId: '', todoLeadDays: 0 }, it ? it.data : {});
   },
   async saveSettings(data) {
     await this.saveItem({ id: '_settings', cat: '_settings', data });
@@ -272,7 +266,7 @@ const CATS = [
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
   { key: 'warranty', name: 'Warranty Tracker', emoji: '🧾' },
   { key: 'tax', name: 'Tax Receipts', emoji: '💵' },
-  { key: 'party', name: 'Party Event', emoji: '🎉' },
+  { key: 'party', name: 'Party Planner', emoji: '🎉' },
   { key: 'trips', name: 'Trip Planner', emoji: '🧳' },
   { key: 'shopping', name: 'Shopping List', emoji: '🛒' },
   { key: 'shopitem', name: 'Saved Item', emoji: '🏷️', hidden: true },
@@ -289,7 +283,8 @@ function field(label, obj, key, opts = {}) {
     : h('input', {
         type: opts.type || 'text', placeholder: opts.placeholder || '',
         inputmode: opts.inputmode, step: opts.step,
-        autocapitalize: /^(email|url|tel|password)$/.test(opts.type || '') ? 'none' : null,
+        class: key === 'title' ? 'title-input' : null,
+        autocapitalize: /^(email|url|tel|password)$/.test(opts.type || '') ? 'none' : (key === 'title' ? 'words' : null),
         value: obj[key] != null ? obj[key] : '',
         oninput: e => obj[key] = opts.type === 'number' ? e.target.value : e.target.value
       });
@@ -477,6 +472,7 @@ function buildEditor(cat, data) {
     }
     case 'todo': {
       a(field('List title', data, 'title', { placeholder: 'e.g. Today' }));
+      a(field('Due date / ETA (optional)', data, 'eta', { type: 'date', hint: 'Set a reminder cadence in ⚙ Settings.' }));
       a(h('div', { class: 'section-title' }, 'To-do items (tick them off in the list view)'));
       a(checklistEditor(data, 'items', 'To-do item'));
       break;
@@ -723,24 +719,27 @@ function shoppingEditor(data) {
     addPanel.appendChild(h('div', { class: 'hint' }, 'Loading…'));
     const [cats, saved] = await Promise.all([DB.getShopCats(), DB.listItems('shopitem')]);
     addPanel.innerHTML = '';
-    const sel = h('select', { onchange: e => drawAddPanel(e.target.value) },
+    const catSel = h('select', { onchange: e => drawAddPanel(e.target.value) },
       h('option', { value: '' }, 'All categories'),
       ...cats.map(c => h('option', { value: c }, c)));
-    sel.value = selectedCat || '';
-    addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Add from your saved items'), sel));
+    catSel.value = selectedCat || '';
+    addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Category'), catSel));
     const filtered = saved.filter(s => !selectedCat || (s.data || {}).category === selectedCat);
     if (!filtered.length) { addPanel.appendChild(h('div', { class: 'hint' }, saved.length ? 'No saved items in this category.' : 'No saved items yet — add some in the Saved items tab.')); return; }
-    filtered.forEach(s => {
-      const d = s.data || {};
-      const cheap = cheapestPrice(d.prices);
-      const meta = cheap ? ('cheapest ' + fmtMYR(cheap.price) + ' @ ' + cheap.shop) : (d.brand || (d.category || ''));
-      addPanel.appendChild(h('div', { class: 'row' },
-        h('div', { class: 'main' }, h('div', { class: 'title' }, d.title || 'Item'), meta ? h('div', { class: 'meta' }, meta) : null),
-        h('button', { class: 'btn small', type: 'button', onclick: () => {
-          data.items.push({ name: d.title || '', qty: '', store: cheap ? cheap.shop : '', category: d.category || '', price: cheap ? cheap.price : '', checked: false });
-          drawCart(); toast('Added to cart');
-        } }, '+ Add')));
-    });
+    const itemSel = h('select', { class: 'grow', style: { minWidth: '0' } },
+      h('option', { value: '' }, '— Choose a saved item —'),
+      ...filtered.map(s => { const d = s.data || {}; const c = cheapestPrice(d.prices); return h('option', { value: s.id }, (d.title || 'Item') + (c ? ('  —  ' + fmtMYR(c.price) + ' @ ' + c.shop) : '')); }));
+    const info = h('div', { class: 'hint', style: { marginTop: '6px' } }, '');
+    itemSel.onchange = () => { const s = filtered.find(x => x.id === itemSel.value); const c = s ? cheapestPrice(s.data.prices) : null; info.textContent = c ? ('Cheapest: ' + fmtMYR(c.price) + ' @ ' + c.shop) : (s ? 'No price saved yet' : ''); };
+    const addBtn = h('button', { class: 'btn small', type: 'button', onclick: () => {
+      const s = filtered.find(x => x.id === itemSel.value);
+      if (!s) { toast('Pick an item first'); return; }
+      const d = s.data || {}; const c = cheapestPrice(d.prices);
+      data.items.push({ name: d.title || '', qty: '', store: c ? c.shop : '', category: d.category || '', price: c ? c.price : '', checked: false });
+      drawCart(); toast('Added to cart'); itemSel.value = ''; info.textContent = '';
+    } }, '+ Add');
+    addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Add a saved item'),
+      h('div', { class: 'sub-head' }, itemSel, addBtn), info));
   }
 
   drawCart();
@@ -857,7 +856,7 @@ async function renderDetail(cat, item) {
       const totalStr = (ad + kd) + ' (' + ad + ' adults; ' + kd + ' kids)';
       a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Party'),
         kv('Event date', data.eventDate ? fmtDate(data.eventDate) : null),
-        kv('Location', loc), kv('Theme', data.theme), kv('Budget', data.budget),
+        kv('Location', loc), kv('Theme', data.theme), kv('Budget', data.budget ? fmtMoneyMaybe(data.budget) : null),
         kv('Total guests', totalStr)));
       const sec = (title, arr) => (arr || []).filter(Boolean).length ? h('div', { class: 'detail-card' },
         h('div', { class: 'section-title' }, title), h('ul', { class: 'bullets' }, arr.filter(Boolean).map(x => h('li', null, x)))) : null;
@@ -897,7 +896,8 @@ async function renderDetail(cat, item) {
       break;
     }
     case 'todo': {
-      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'To-Do')));
+      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'To-Do'),
+        data.eta ? kv('Due', fmtDate(data.eta)) : null));
       a(checklistView(item, 'items', cat, 'To-do'));
       break;
     }
@@ -973,13 +973,13 @@ function shoppingView(item, cat) {
   const total = items.reduce((s, i) => s + (parseFloat(i.price) || 0), 0);
   const card = h('div', { class: 'detail-card' },
     h('h3', null, data.title || 'Shopping list'),
-    h('div', { class: 'hint', style: { marginBottom: '10px' } }, items.filter(i => i.checked).length + '/' + items.length + ' picked · est. ' + (total ? total.toFixed(2) : '—')));
+    h('div', { class: 'hint', style: { marginBottom: '10px' } }, items.filter(i => i.checked).length + '/' + items.length + ' picked · est. ' + (total ? fmtMYR(total) : '—')));
   items.forEach(it => {
     const meta = [it.qty && ('×' + it.qty), it.store, it.category].filter(Boolean).join(' · ');
     const row = h('div', { class: 'check-row' + (it.checked ? ' done' : '') },
       h('div', { class: 'cb' + (it.checked ? ' on' : '') }),
       h('div', { class: 'ttl' }, it.name || '', meta ? h('div', { class: 'px' }, meta) : null),
-      it.price ? h('span', { class: 'px' }, it.price) : null);
+      (it.price !== '' && it.price != null) ? h('span', { class: 'px' }, fmtMYR(it.price)) : null);
     row.querySelector('.cb').onclick = async () => {
       it.checked = !it.checked;
       await DB.saveItem(item);
@@ -1003,7 +1003,7 @@ function summary(cat, data) {
     case 'memberships': return { title: data.title || 'Membership', meta: data.member || data.number || '', thumb: (data.images || [])[0] };
     case 'warranty': return { title: data.title || 'Item', meta: [data.shop, data.expiry && ('exp ' + fmtDate(data.expiry))].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
     case 'tax': return { title: data.title || 'Receipt', meta: [data.taxCat, data.year, (data.amount != null && data.amount !== '') && fmtMYR(data.amount)].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
-    case 'todo': return { title: data.title || 'To-Do', meta: (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' done' };
+    case 'todo': return { title: data.title || 'To-Do', meta: [(data.eta && ('due ' + fmtDate(data.eta))), (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' done'].filter(Boolean).join(' · ') };
     case 'party': return { title: data.title || 'Party', meta: [data.eventDate && fmtDate(data.eventDate), data.theme].filter(Boolean).join(' · ') };
     case 'trips': return { title: data.title || 'Trip', meta: (data.tripType || '') + ' · ' + (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' packed' };
     case 'shopping': return { title: data.title || 'Shopping list', meta: (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' picked' };
@@ -1041,7 +1041,16 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 function fmtMYR(n) {
-  return 'RM ' + (Number(n) || 0).toLocaleString('en-MY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const num = Number(n) || 0;
+  const parts = Math.abs(num).toFixed(2).split('.');
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ','); // thousands separators
+  return (num < 0 ? '-RM ' : 'RM ') + parts[0] + '.' + parts[1];
+}
+/* format as MYR only if the value is purely numeric, else leave the text as-is */
+function fmtMoneyMaybe(v) {
+  if (v == null || v === '') return '';
+  const cleaned = String(v).replace(/[,\s]/g, '').replace(/^RM/i, '');
+  return /^\d*\.?\d+$/.test(cleaned) ? fmtMYR(cleaned) : String(v);
 }
 /* cheapest {shop, price} from a prices array (migrates an old single `shop`) */
 function cheapestPrice(prices) {
@@ -1143,7 +1152,7 @@ async function computeDistance(item, info) {
     } catch (e) {}
     if (km == null) { km = haversineKm(pos.lat, pos.lon, dest[0], dest[1]); mins = Math.round(km / 40 * 60); }
     info.innerHTML = '';
-    info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Distance'), h('span', { class: 'v' }, km.toFixed(1) + ' km')));
+    info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Distance'), h('span', { class: 'v' }, km.toFixed(1) + ' KM')));
     info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Drive time'), h('span', { class: 'v' }, '~' + mins + ' min')));
   } catch (e) {
     info.innerHTML = '';
@@ -1257,7 +1266,7 @@ function authScreen(view = 'login') {
   return h('div', { class: 'auth-wrap' },
     h('div', { class: 'brand' },
       h('img', { src: 'icons/icon.svg' }),
-      h('h1', null, 'MyLife Notes'),
+      h('h1', null, 'MyLife Hub'),
       h('p', null, 'Everything that matters, in one place.')),
     card,
     h('div', { class: 'mode-badge' }, MODE === 'firebase' ? '☁︎ Synced account' : '⛁ Local mode — data stays on this device'));
@@ -1275,7 +1284,7 @@ function friendlyErr(e) {
 /* ----- HOME ----- */
 async function homeScreen() {
   const grid = h('div', { class: 'grid' });
-  const bar = appbar('MyLife Notes', CURRENT && CURRENT.email, {
+  const bar = appbar('MyLife Hub', CURRENT && CURRENT.email, {
     action: h('div', { style: { display: 'flex', gap: '8px' } },
       h('button', { class: 'iconbtn', title: 'Settings', onclick: () => navigate('#/settings') }, '⚙'),
       h('button', { class: 'iconbtn', title: 'Log out', onclick: () => Auth.signOut() }, '⎋'))
@@ -1317,14 +1326,16 @@ async function listScreen(cat, sub) {
     return;
   }
   for (const it of items) {
-    const del = cat === 'todo'
+    const canDelete = cat === 'todo' || cat === 'quick';
+    const del = canDelete
       ? h('button', { class: 'row-del', type: 'button', title: 'Delete', onclick: async (e) => {
           e.stopPropagation();
-          if (!confirmDel('Delete this to-do list?')) return;
+          if (!confirmDel('Delete this ' + (cat === 'quick' ? 'note' : 'to-do list') + '?')) return;
           await DB.deleteItem(cat, it.id); toast('Deleted'); navigate('#/cat/' + cat);
         } }, '🗑')
       : null;
-    listEl.appendChild(buildRow(cat, it, { action: del }));
+    const target = cat === 'quick' ? ('#/edit/quick/' + it.id) : undefined;
+    listEl.appendChild(buildRow(cat, it, { action: del, target }));
   }
 }
 
@@ -1422,7 +1433,8 @@ function emptyState(cat, msg) {
 
 function buildRow(cat, it, opts = {}) {
   const s = summary(cat, it.data || {});
-  const row = h('div', { class: 'row', onclick: () => navigate('#/view/' + cat + '/' + it.id) },
+  const target = opts.target || ('#/view/' + cat + '/' + it.id);
+  const row = h('div', { class: 'row', onclick: () => navigate(target) },
     s.thumb ? h('img', { class: 'thumb', src: '' }) : null,
     h('div', { class: 'main' },
       h('div', { class: 'title' }, s.fav ? h('span', { class: 'fav-star' }, '★ ') : null, s.title),
@@ -1494,7 +1506,7 @@ async function enrichRowDistance(it, row, posP) {
   if (!dest) return;
   const km = haversineKm(pos.lat, pos.lon, dest[0], dest[1]);
   const mins = Math.round(km / 40 * 60);
-  const txt = km.toFixed(1) + ' km · ~' + mins + ' min';
+  const txt = km.toFixed(1) + ' KM · ~' + mins + ' min';
   const meta = row.querySelector('.meta');
   if (meta) meta.textContent = meta.textContent + ' · ' + txt;
   else { const main = row.querySelector('.main'); if (main) main.appendChild(h('div', { class: 'meta' }, txt)); }
@@ -1602,7 +1614,7 @@ async function settingsScreen() {
   // present lead time as value + unit
   let unit = (s.leadMinutes % 60 === 0 && s.leadMinutes >= 60) ? 'hours' : 'minutes';
   let amount = unit === 'hours' ? s.leadMinutes / 60 : s.leadMinutes;
-  const form = { amount: String(amount), unit, notify: s.notify, telegramChatId: s.telegramChatId || '' };
+  const form = { amount: String(amount), unit, notify: s.notify, telegramChatId: s.telegramChatId || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0) };
 
   const status = h('div', { class: 'hint', style: { marginTop: '6px' } },
     ('Notification' in window) ? ('Browser notifications: ' + Notification.permission) : 'This browser has no notifications.');
@@ -1632,8 +1644,14 @@ async function settingsScreen() {
     h('div', { class: 'field' }, notifyBtn, status),
     h('button', { class: 'btn secondary', style: { marginTop: '4px' }, type: 'button', onclick: () => {
       if (!('Notification' in window) || Notification.permission !== 'granted') { toast('Turn on reminders first'); return; }
-      new Notification('MyLife Notes', { body: 'Test reminder — notifications are working ✅', icon: 'icons/icon-192.png' });
+      new Notification('MyLife Hub', { body: 'Test reminder — notifications are working ✅', icon: 'icons/icon-192.png' });
     } }, 'Send a test notification'),
+    h('div', { class: 'section-title' }, 'To-do reminders'),
+    h('div', { class: 'field' }, h('label', null, 'Start reminding me before the due date'),
+      h('div', { class: 'row2' },
+        h('input', { type: 'number', inputmode: 'numeric', min: '0', value: form.todoDays, oninput: e => form.todoDays = e.target.value }),
+        h('div', { class: 'total-box' }, 'days before')),
+      h('div', { class: 'hint' }, 'Set 0 to remind only on the due date. It nudges once a day until the list is done.')),
     h('div', { class: 'section-title' }, 'Telegram (for reminders when the app is closed)'),
     h('div', { class: 'field' }, h('label', null, 'Telegram chat ID'),
       h('input', { value: form.telegramChatId, placeholder: 'e.g. 123456789', oninput: e => form.telegramChatId = e.target.value, autocapitalize: 'none' }),
@@ -1641,7 +1659,8 @@ async function settingsScreen() {
     h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
       const n = Math.max(1, parseInt(form.amount) || 1);
       const leadMinutes = form.unit === 'hours' ? n * 60 : n;
-      await DB.saveSettings({ leadMinutes, notify: form.notify, telegramChatId: form.telegramChatId.trim() });
+      const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
+      await DB.saveSettings({ leadMinutes, notify: form.notify, telegramChatId: form.telegramChatId.trim(), todoLeadDays });
       toast('Settings saved');
       startReminders();
       navigate('#/');
@@ -1681,14 +1700,43 @@ async function checkReminders() {
         await DB.saveItem(ev);
       }
     }
+    // to-do due dates: nudge once a day from (eta - todoLeadDays) through the due date
+    const todoLeadDays = Math.max(0, s.todoLeadDays || 0);
+    const todayStr = localDateStr(new Date());
+    const todos = await DB.listItems('todo');
+    for (const td of todos) {
+      const d = td.data || {};
+      if (!d.eta) continue;
+      const items = d.items || [];
+      if (items.length && items.every(i => i.checked)) continue; // already done
+      const startStr = etaMinusDays(d.eta, todoLeadDays);
+      if (todayStr >= startStr && todayStr <= d.eta && d._todoNotified !== todayStr) {
+        const [y, m, dd] = d.eta.split('-').map(Number);
+        const daysLeft = Math.round((new Date(y, m - 1, dd) - new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate())) / 86400000);
+        new Notification('✅ ' + (d.title || 'To-do') + ' — due ' + fmtDate(d.eta), {
+          body: daysLeft > 0 ? ('Due in ' + daysLeft + ' day' + (daysLeft > 1 ? 's' : '')) : 'Due today',
+          icon: 'icons/icon-192.png', tag: 'todo-' + td.id
+        });
+        d._todoNotified = todayStr;
+        await DB.saveItem(td);
+      }
+    }
   } catch (e) { /* ignore */ }
+}
+function localDateStr(d) {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+function etaMinusDays(etaStr, days) {
+  const [y, m, dd] = etaStr.split('-').map(Number);
+  const d = new Date(y, m - 1, dd); d.setDate(d.getDate() - days);
+  return localDateStr(d);
 }
 
 /* ============================================================
    BOOT
    ============================================================ */
 export async function startApp() {
-  resetToHome();
   await initStorage();
   // Convenience: on localhost in local mode, auto-sign-in a test user so the
   // developer/tester skips the login screen. Never triggers on the deployed site.
@@ -1698,8 +1746,6 @@ export async function startApp() {
   }
   Auth.onChange(() => { routeChanged(); if (CURRENT) startReminders(); });
   window.addEventListener('hashchange', routeChanged);
-  // App restored from background (phone task switcher / bfcache) → back to Hello.
-  window.addEventListener('pageshow', (e) => { if (e.persisted) { resetToHome(); routeChanged(); } });
   // register service worker (PWA install) + auto-update to newest deploy
   if ('serviceWorker' in navigator) {
     let refreshing = false;

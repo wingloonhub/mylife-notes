@@ -1,5 +1,5 @@
-// MyLife Notes — service worker (offline shell)
-const CACHE = 'mylife-notes-v21';
+// MyLife Hub — service worker (offline shell)
+const CACHE = 'mylife-notes-v28';
 const ASSETS = [
   './',
   './index.html',

@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "MyLife Notes",
-  "short_name": "MyLife",
+  "name": "MyLife Hub",
+  "short_name": "MyLife Hub",
   "description": "Personal notes: recipes, records, memberships, parties, trips, shopping, events.",
   "lang": "en",
   "dir": "ltr",
