@@ -1159,15 +1159,18 @@ function currentPosition() {
   });
 }
 
-/* driving distance/time via OSRM (road network), straight-line fallback */
+/* driving distance/time via OSRM (road network), straight-line fallback.
+   OSRM gives an ideal no-traffic time that runs faster than Google's real-world
+   estimate, so apply a ~30% real-world buffer to land closer to Google. */
+const TRAFFIC_FACTOR = 1.3;
 async function drivingMetrics(pos, dest) {
   try {
     const r = await fetch('https://router.project-osrm.org/route/v1/driving/' + pos.lon + ',' + pos.lat + ';' + dest[1] + ',' + dest[0] + '?overview=false').then(x => x.json());
     const route = r.routes && r.routes[0];
-    if (route) return { km: route.distance / 1000, mins: Math.round(route.duration / 60) };
+    if (route) return { km: route.distance / 1000, mins: Math.max(1, Math.round(route.duration / 60 * TRAFFIC_FACTOR)) };
   } catch (e) {}
   const km = haversineKm(pos.lat, pos.lon, dest[0], dest[1]);
-  return { km, mins: Math.round(km / 40 * 60) };
+  return { km, mins: Math.max(1, Math.round(km / 35 * 60)) };
 }
 
 /* accurate driving distance/time for the event detail card */
@@ -1669,11 +1672,21 @@ function telegramSection(form) {
     try { await sendTelegram(form.telegramToken, form.telegramChatId, '✅ MyLife Hub — Telegram reminders are connected.'); toast('Sent! Check Telegram'); }
     catch (e) { toast('Failed: ' + e.message); }
   } }, 'Send test message');
+  const help = h('details', { class: 'tg-help' },
+    h('summary', null, 'How do I get a bot token & chat ID?'),
+    h('ol', { class: 'help-list' },
+      h('li', null, 'In Telegram, search for the user @BotFather (blue tick) and open the chat.'),
+      h('li', null, 'Send the message /newbot, then follow its prompts: type a name, then a username that ends in “bot” (e.g. wing_reminders_bot).'),
+      h('li', null, 'BotFather replies with a token that looks like 123456789:ABCdefGhIJ… — copy it and paste it in “Bot token” above.'),
+      h('li', null, 'Already have a bot? Send /mybots to BotFather → pick your bot → API Token.'),
+      h('li', null, 'Now open YOUR new bot and send it any message (e.g. “hi”) — this is needed before the next step.'),
+      h('li', null, 'Come back here and tap “Find my chat ID”, then “Send test message” to confirm.')));
   return h('div', null,
     h('div', { class: 'section-title' }, 'Telegram reminders'),
+    help,
     h('div', { class: 'field' }, h('label', null, 'Bot token'),
       h('input', { value: form.telegramToken, placeholder: '123456:ABC-DEF…', oninput: e => form.telegramToken = e.target.value, autocapitalize: 'none' }),
-      h('div', { class: 'hint' }, 'Get it from @BotFather in Telegram. Saved in your account only.')),
+      h('div', { class: 'hint' }, 'From @BotFather (see guide above). Saved in your account only.')),
     h('div', { class: 'field' }, h('label', null, 'Chat ID'), chatInput,
       h('div', { class: 'hint' }, 'Message your bot once, then tap “Find my chat ID”.')),
     h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, findBtn, testBtn),

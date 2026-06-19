@@ -199,6 +199,10 @@ body {
 .fav-toggle { background: none; border: none; font-size: 28px; line-height: 1; padding: 0; cursor: pointer; color: var(--muted); }
 .fav-toggle.on { color: var(--amber); }
 .call-icon { text-decoration: none; font-size: 20px; padding: 2px 4px; }
+.tg-help { margin-bottom: 14px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 11px 13px; }
+.tg-help summary { cursor: pointer; font-weight: 600; font-size: 14px; color: #b9b4ff; }
+.tg-help .help-list { margin: 10px 0 2px; padding-left: 20px; line-height: 1.65; font-size: 13.5px; color: var(--muted); }
+.tg-help .help-list li { margin-bottom: 6px; }
 .row-del { background: none; border: none; font-size: 19px; padding: 6px 8px; cursor: pointer; border-radius: 10px; }
 .row-del:active { background: rgba(255,93,108,.18); }
 
