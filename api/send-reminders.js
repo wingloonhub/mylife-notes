@@ -115,6 +115,12 @@ function fmtTime(ms, offMin) {
   let h = d.getUTCHours(); const ap = h < 12 ? 'AM' : 'PM'; h = h % 12 || 12;
   return h + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ' ' + ap;
 }
+function fmtHM12(hm) {
+  if (!hm) return '';
+  const [h, m] = hm.split(':').map(Number);
+  const ap = h < 12 ? 'AM' : 'PM';
+  return (h % 12 || 12) + ':' + String(m).padStart(2, '0') + ' ' + ap;
+}
 // next future UTC ms for weekday dayIdx (0=Sun..6=Sat) at "HH:MM" in the user's local tz
 function nextWeekdayOccurrenceUTC(dayIdx, startHM, offMin, now) {
   const [h, m] = startHM.split(':').map(Number);
@@ -124,16 +130,48 @@ function nextWeekdayOccurrenceUTC(dayIdx, startHM, offMin, now) {
   if (occUTC <= now) occUTC += 7 * 86400000;
   return occUTC;
 }
+function trafficFactor(now, offMin) {
+  const d = new Date(now + offMin * 60000);
+  const wd = d.getUTCDay() >= 1 && d.getUTCDay() <= 5;
+  const h = d.getUTCHours() + d.getUTCMinutes() / 60;
+  if (wd && h >= 7 && h < 9.5) return 1.6;
+  if (wd && h >= 17 && h < 20) return 1.7;
+  if (h >= 22 || h < 6) return 1.1;
+  return 1.3;
+}
+async function travelLine(loc, destLat, destLng, now, offMin) {
+  if (!loc || typeof loc.lat !== 'number' || typeof destLat !== 'number') return '';
+  try {
+    const r = await fetch('https://router.project-osrm.org/route/v1/driving/' + loc.lon + ',' + loc.lat + ';' + destLng + ',' + destLat + '?overview=false').then(x => x.json());
+    const route = r.routes && r.routes[0];
+    if (route) {
+      const km = (route.distance / 1000).toFixed(1);
+      const mins = Math.max(1, Math.round(route.duration / 60 * trafficFactor(now, offMin)));
+      return ` You're about ${km} KM away — roughly ${mins} min to get there.`;
+    }
+  } catch (e) {}
+  return '';
+}
 
-async function processUser(u, apiKey, project, offMin, now) {
+async function processUser(u, apiKey, project, offMin, now, debug) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
   const items = await listItems(project, uid, idToken);
   const settings = (items.find(i => i.cat === '_settings') || {}).data || {};
   const token = settings.telegramToken, chat = settings.telegramChatId;
-  if (!token || !chat) return { skipped: 'no Telegram configured in Settings' };
   const userOff = (typeof settings.tzOffset === 'number') ? settings.tzOffset : offMin;
   const leadMs = (settings.leadMinutes || 60) * 60000;
+  const schedLeadMsDbg = (settings.scheduleLeadMinutes || 60) * 60000;
   const todoLeadDays = Math.max(0, settings.todoLeadDays || 0);
+  if (debug) {
+    return {
+      uid, nowLocal: new Date(now + userOff * 60000).toISOString().slice(0, 16).replace('T', ' '),
+      tzOffset: userOff, telegramSet: !!(token && chat), eventLeadMin: settings.leadMinutes || 60, scheduleLeadMin: settings.scheduleLeadMinutes || 60,
+      events: items.filter(i => i.cat === 'events').map(it => { const d = it.data || {}; const t = naiveToUTC(d.when, userOff); return { title: d.title, when: d.when, dueNow: !isNaN(t) && now >= t - leadMs && now < t, alreadyNotified: d._notifiedFor || null }; }),
+      schedules: items.filter(i => i.cat === 'schedule').map(it => { const d = it.data || {}; return { title: d.title, slots: (d.slots || []).map(s => { const t = nextWeekdayOccurrenceUTC(Number(s.day), s.start, userOff, now); return { day: s.day, start: s.start, nextLocal: new Date(t + userOff * 60000).toISOString().slice(0, 16).replace('T', ' '), dueNow: now >= t - schedLeadMsDbg && now < t }; }) }; })
+    };
+  }
+  if (!token || !chat) return { skipped: 'no Telegram configured in Settings' };
+  const loc = (items.find(i => i.cat === '_lastloc') || {}).data; // last-known location from the app
   let sent = 0;
 
   // events
@@ -141,19 +179,26 @@ async function processUser(u, apiKey, project, offMin, now) {
     const d = it.data || {};
     if (!d.when) continue;
     const t = naiveToUTC(d.when, userOff);
-    if (isNaN(t)) continue;
-    if (now >= t - leadMs && now < t && d._notifiedFor !== d.when) {
-      const mins = Math.round((t - now) / 60000);
-      const at = fmtTime(t, userOff);
-      const title = d.title || 'your event';
+    if (isNaN(t) || now >= t) continue;
+    const mainDue = now >= t - leadMs && d._notifiedFor !== d.when;
+    const halfDue = !mainDue && now >= t - leadMs / 2 && d._notifiedHalf !== d.when;
+    if (!mainDue && !halfDue) continue;
+    const mins = Math.round((t - now) / 60000);
+    const at = fmtTime(t, userOff);
+    const title = d.title || 'your event';
+    const travel = (typeof d.lat === 'number') ? await travelLine(loc, d.lat, d.lng, now, userOff) : '';
+    if (mainDue) {
       const msg = mins > 0
         ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
         : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
-      await tg(token, chat, msg);
+      await tg(token, chat, msg + travel);
       d._notifiedFor = d.when;
-      await patchData(project, uid, idToken, it.id, d);
-      sent++;
+    } else {
+      await tg(token, chat, `Hey, are you on your way to ${title}? It's at ${at}.` + travel);
+      d._notifiedHalf = d.when;
     }
+    await patchData(project, uid, idToken, it.id, d);
+    sent++;
   }
 
   // to-dos (per-item due dates)
@@ -188,18 +233,27 @@ async function processUser(u, apiKey, project, offMin, now) {
       if (slot.day === undefined || !slot.start) continue;
       const t = nextWeekdayOccurrenceUTC(Number(slot.day), slot.start, userOff, now);
       const occKey = dateStrInTz(t, userOff);
-      if (now >= t - schedLeadMs && now < t && slot._notifiedFor !== occKey) {
-        const mins = Math.round((t - now) / 60000);
-        const at = slot.start; // 24h
-        const title = d.title || 'your schedule';
+      if (d.repeatMode === 'until' && d.until && occKey > d.until) continue; // schedule has ended
+      if (now >= t) continue;
+      const mainDue = now >= t - schedLeadMs && slot._notifiedFor !== occKey;
+      const halfDue = !mainDue && now >= t - schedLeadMs / 2 && slot._notifiedHalf !== occKey;
+      if (!mainDue && !halfDue) continue;
+      const mins = Math.round((t - now) / 60000);
+      const at = fmtHM12(slot.start);
+      const title = d.title || 'your schedule';
+      const travel = (typeof d.lat === 'number') ? await travelLine(loc, d.lat, d.lng, now, userOff) : '';
+      if (mainDue) {
         const msg = mins > 0
           ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
           : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
-        await tg(token, chat, msg);
+        await tg(token, chat, msg + travel);
         slot._notifiedFor = occKey;
-        changed = true;
-        sent++;
+      } else {
+        await tg(token, chat, `Hey, are you on your way to ${title}? It's at ${at}.` + travel);
+        slot._notifiedHalf = occKey;
       }
+      changed = true;
+      sent++;
     }
     if (changed) await patchData(project, uid, idToken, it.id, d);
   }
@@ -219,9 +273,10 @@ module.exports = async (req, res) => {
   try { users = JSON.parse(process.env.MLN_USERS || '[]'); }
   catch (e) { res.status(500).json({ error: 'MLN_USERS is not valid JSON' }); return; }
   const now = Date.now();
+  const debug = (req.query && req.query.debug) === '1';
   const results = [];
   for (const u of users) {
-    try { results.push({ email: u.email, ...(await processUser(u, apiKey, project, offMin, now)) }); }
+    try { results.push({ email: u.email, ...(await processUser(u, apiKey, project, offMin, now, debug)) }); }
     catch (e) { results.push({ email: u.email, error: String((e && e.message) || e) }); }
   }
   res.status(200).json({ ok: true, ranAt: new Date(now).toISOString(), results });

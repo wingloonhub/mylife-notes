@@ -261,19 +261,20 @@ const DB = {
    CATEGORIES
    ============================================================ */
 const CATS = [
-  { key: 'recipes', name: 'Recipes', emoji: '🍳' },
+  { key: 'quick', name: 'Quick Note', emoji: '📝' },
+  { key: 'todo', name: 'To-Do List', emoji: '✅' },
+  { key: 'events', name: 'Events', emoji: '📅' },
+  { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
-  { key: 'warranty', name: 'Warranty Tracker', emoji: '🧾' },
   { key: 'tax', name: 'Tax Receipts', emoji: '💵' },
   { key: 'party', name: 'Party Planner', emoji: '🎉' },
   { key: 'trips', name: 'Trip Planner', emoji: '🧳' },
   { key: 'shopping', name: 'Shopping List', emoji: '🛒' },
   { key: 'shopitem', name: 'Saved Item', emoji: '🏷️', hidden: true },
-  { key: 'todo', name: 'To-Do List', emoji: '✅' },
-  { key: 'quick', name: 'Quick Note', emoji: '📝' },
-  { key: 'events', name: 'Events', emoji: '📅' },
-  { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒' }
+  { key: 'tripcat', name: 'Trip Category', emoji: '🏷️', hidden: true },
+  { key: 'recipes', name: 'Recipes', emoji: '🍳' },
+  { key: 'warranty', name: 'Warranty Tracker', emoji: '🧾' }
 ];
 const catName = k => (CATS.find(c => c.key === k) || {}).name || k;
 
@@ -480,11 +481,17 @@ function buildEditor(cat, data) {
     }
     case 'trips': {
       a(field('Trip name', data, 'title', { placeholder: 'e.g. Langkawi June' }));
-      a(selectField('Trip type', data, 'tripType',
-        [{ value: 'City trip', label: 'City trip' }, { value: 'Beach trip', label: 'Beach trip' }, { value: 'Other', label: 'Other' }]));
       a(field('Dates / notes', data, 'notes', { placeholder: 'e.g. 12–15 June' }));
+      a(h('div', { class: 'section-title' }, 'Categories (ticking one auto-adds its items)'));
+      a(tripCategoryPicker(data));
       a(h('div', { class: 'section-title' }, 'Packing list (tick when packed in the trip view)'));
       a(checklistEditor(data, 'items', 'Item to bring'));
+      break;
+    }
+    case 'tripcat': {
+      a(field('Category name', data, 'title', { placeholder: 'e.g. Beach trip' }));
+      a(h('div', { class: 'section-title' }, 'Items to bring for this category'));
+      a(stringList(data, 'items', 'e.g. Sunscreen'));
       break;
     }
     case 'shopping': {
@@ -532,8 +539,13 @@ function buildEditor(cat, data) {
       a(field('Title', data, 'title', { placeholder: 'e.g. Piano class' }));
       a(field('Location name', data, 'location', { placeholder: 'e.g. Armanee Terrace' }));
       a(mapFieldBlock(data));
-      a(h('div', { class: 'section-title' }, 'Dates & times'));
+      a(h('div', { class: 'section-title' }, 'Weekly sessions'));
       a(slotsEditor(data));
+      a(h('div', { class: 'section-title' }, 'How long does this run?'));
+      a(selectField('Repeat', data, 'repeatMode',
+        [{ value: 'forever', label: 'Every week — no end date' }, { value: 'until', label: 'Until a specific date' }],
+        () => rerenderEditor('schedule', data)));
+      if (data.repeatMode === 'until') a(field('End date', data, 'until', { type: 'date', hint: 'Reminders stop after this date.' }));
       a(field('Notes', data, 'notes', { type: 'textarea' }));
       break;
     }
@@ -562,6 +574,33 @@ function mapFieldBlock(data) {
   if (data.map && data.lat == null) setTimeout(resolveMap, 150);
   add(frag, [h('div', { class: 'field' }, h('label', null, 'Google Maps (link, address, or coordinates)'), mapInput), mapStatus]);
   return frag;
+}
+
+/* trip planner: pick categories (multi-select); ticking one auto-adds its items */
+function tripCategoryPicker(data) {
+  if (!Array.isArray(data.categories)) data.categories = [];
+  if (!Array.isArray(data.items)) data.items = [];
+  const wrap = h('div');
+  DB.listItems('tripcat').then(cats => {
+    wrap.innerHTML = '';
+    if (!cats.length) { wrap.appendChild(h('div', { class: 'hint' }, 'No categories yet — create them in the Categories tab of Trip Planner.')); return; }
+    cats.forEach(c => {
+      const cd = c.data || {};
+      const on = data.categories.includes(c.id);
+      const row = h('div', { class: 'check-row' + (on ? ' done' : '') },
+        h('div', { class: 'cb' + (on ? ' on' : '') }),
+        h('span', { class: 'ttl' }, cd.title || 'Category'));
+      row.querySelector('.cb').onclick = () => {
+        const i = data.categories.indexOf(c.id);
+        const names = (cd.items || []).filter(Boolean);
+        if (i >= 0) { data.categories.splice(i, 1); data.items = data.items.filter(it => !names.includes(it.name)); }
+        else { data.categories.push(c.id); names.forEach(n => { if (!data.items.some(it => it.name === n)) data.items.push({ name: n, checked: false }); }); }
+        rerenderEditor('trips', data);
+      };
+      wrap.appendChild(row);
+    });
+  });
+  return wrap;
 }
 
 /* weekly schedule: list of day + start/end (24h) sessions */
@@ -645,7 +684,6 @@ function stepsEditor(data) {
       drawPts();
       wrap.appendChild(h('div', { class: 'sub-item' },
         h('div', { class: 'sub-head' },
-          h('span', { class: 'num' }, 'STEP ' + (i + 1)),
           h('span', { class: 'grow' }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this step?')) return; data.steps.splice(i, 1); draw(); } }, '✕')),
         h('input', { class: 'step-header', placeholder: 'Step title (e.g. Make the broth)', value: st.header || '', oninput: e => st.header = e.target.value }),
@@ -880,16 +918,15 @@ async function renderDetail(cat, item) {
       a(rcard);
       if ((data.steps || []).length) {
         const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Steps'));
-        const ol = h('ol', { class: 'steps' });
         for (const st of data.steps) {
           const pts = Array.isArray(st.points) ? st.points.filter(Boolean) : (st.text ? [st.text] : []);
-          const li = h('li', null);
-          if (st.header) li.appendChild(h('div', { class: 'step-h' }, st.header));
-          if (pts.length) li.appendChild(h('ul', { class: 'bullets' }, pts.map(p => h('li', null, p))));
-          for (const im of await imgs(st.imgs)) li.appendChild(im);
-          ol.appendChild(li);
+          const block = h('div', { style: { marginBottom: '12px' } });
+          if (st.header) block.appendChild(h('div', { class: 'step-h' }, st.header));
+          if (pts.length) block.appendChild(h('ul', { class: 'bullets' }, pts.map(p => h('li', null, p))));
+          for (const im of await imgs(st.imgs)) block.appendChild(im);
+          card.appendChild(block);
         }
-        card.appendChild(ol); a(card);
+        a(card);
       }
       const links = h('div', { class: 'detail-card' }, linkKv('Video', data.videoUrl), linkKv('Reference', data.refUrl));
       if (links.children.length) a(links);
@@ -909,6 +946,9 @@ async function renderDetail(cat, item) {
       if (data.notes) a(h('div', { class: 'detail-card' },
         h('div', { class: 'section-title' }, 'Notes'),
         h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: '1.5' } }, data.notes)));
+      a(h('button', { class: 'btn secondary', style: { marginTop: '4px' }, onclick: async () => {
+        await duplicateItem('recipes', item); toast('Recipe duplicated'); navigate('#/cat/recipes');
+      } }, '⧉ Duplicate this recipe'));
       break;
     }
     case 'records': {
@@ -989,9 +1029,15 @@ async function renderDetail(cat, item) {
       break;
     }
     case 'trips': {
-      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Trip'),
-        kv('Type', data.tripType), kv('Notes', data.notes)));
+      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Trip'), kv('Notes', data.notes)));
       a(checklistView(item, 'items', cat, 'Packing list'));
+      break;
+    }
+    case 'tripcat': {
+      const its = (data.items || []).filter(Boolean);
+      const card = h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Category'));
+      if (its.length) card.appendChild(h('ul', { class: 'bullets' }, its.map(x => h('li', null, x))));
+      a(card);
       break;
     }
     case 'shopping': {
@@ -1033,7 +1079,9 @@ async function renderDetail(cat, item) {
     }
     case 'schedule': {
       a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Schedule'),
-        kv('Location', data.location), kv('Notes', data.notes)));
+        kv('Location', data.location),
+        kv('Repeat', (data.repeatMode === 'until' && data.until) ? ('Until ' + fmtDate(data.until)) : 'Every week'),
+        kv('Notes', data.notes)));
       const slots = (data.slots || []).filter(s => s.day !== undefined && s.start).slice()
         .sort((a, b) => (DOW_ORDER.indexOf(Number(a.day)) - DOW_ORDER.indexOf(Number(b.day))) || (a.start || '').localeCompare(b.start || ''));
       if (slots.length) {
@@ -1111,7 +1159,8 @@ function summary(cat, data) {
       return { title: data.title || 'To-Do', meta: [(next && ('next due ' + fmtDate(next))), its.filter(i => i.checked).length + '/' + its.length + ' done'].filter(Boolean).join(' · ') };
     }
     case 'party': return { title: data.title || 'Party', meta: [data.eventDate && fmtDate(data.eventDate), data.theme].filter(Boolean).join(' · ') };
-    case 'trips': return { title: data.title || 'Trip', meta: (data.tripType || '') + ' · ' + (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' packed' };
+    case 'trips': return { title: data.title || 'Trip', meta: (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' packed' };
+    case 'tripcat': return { title: data.title || 'Category', meta: (data.items || []).filter(Boolean).length + ' items' };
     case 'shopping': return { title: data.title || 'Shopping list', meta: (data.items || []).filter(i => i.checked).length + '/' + (data.items || []).length + ' picked' };
     case 'shopitem': {
       const c = cheapestPrice(data.prices);
@@ -1268,6 +1317,14 @@ function currentPosition() {
       p => res({ lat: p.coords.latitude, lon: p.coords.longitude }),
       () => res(null), { timeout: 10000, enableHighAccuracy: true });
   });
+}
+/* save last-known location (throttled) so the closed-app scheduler can estimate distance */
+let _lastLocSavedAt = 0;
+async function saveLastLocation(pos) {
+  if (!pos || !CURRENT) return;
+  if (Date.now() - _lastLocSavedAt < 10 * 60000) return;
+  _lastLocSavedAt = Date.now();
+  try { await DB.saveItem({ id: '_lastloc', cat: '_lastloc', data: { lat: pos.lat, lon: pos.lon, at: Date.now() } }); } catch (e) {}
 }
 
 /* Free, no-API rush-hour approximation. OSRM gives an ideal no-traffic time;
@@ -1467,8 +1524,9 @@ async function homeScreen() {
 
 /* ----- CATEGORY LIST ----- */
 async function listScreen(cat, sub) {
-  // saved items live under the Shopping List screen, not their own
+  // saved items / trip categories live under their parent screen, not their own
   if (cat === 'shopitem') { navigate('#/cat/shopping/items'); return; }
+  if (cat === 'tripcat') { navigate('#/cat/trips/cats'); return; }
   const bar = appbar(catName(cat), null, { back: () => goBack() });
   const listEl = h('div', { class: 'list' }, h('div', { class: 'spinner' }));
   mount(screen(bar, listEl));
@@ -1479,14 +1537,17 @@ async function listScreen(cat, sub) {
   listEl.innerHTML = '';
 
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); return; }
-  if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true }); return; }
+  if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past Events' }); return; }
+  if (cat === 'schedule') { renderArchiveList(listEl, 'schedule', items, scheduleIsCompleted, { distance: true, upcomingLabel: 'Upcoming', archiveLabel: 'Completed' }); return; }
   if (cat === 'tax') { renderTaxList(listEl, items); return; }
+  if (cat === 'trips') { renderTripScreen(listEl, items, fab, sub === 'cats' ? 'cats' : 'trips'); return; }
   if (cat === 'shopping') { renderShoppingScreen(listEl, items, fab, sub === 'items' ? 'items' : 'lists'); return; }
 
   if (!items.length) {
     listEl.appendChild(emptyState(cat));
     return;
   }
+  const posP = cat === 'schedule' ? currentPosition() : null; // ask location once for distance
   for (const it of items) {
     const canDelete = cat === 'todo' || cat === 'quick';
     const del = canDelete
@@ -1497,8 +1558,41 @@ async function listScreen(cat, sub) {
         } }, '🗑')
       : null;
     const target = cat === 'quick' ? ('#/edit/quick/' + it.id) : undefined;
-    listEl.appendChild(buildRow(cat, it, { action: del, target }));
+    const row = buildRow(cat, it, { action: del, target });
+    listEl.appendChild(row);
+    if (posP) enrichRowDistance(it, row, posP);
   }
+}
+
+async function renderTripScreen(listEl, trips, fab, initialTab) {
+  const cats = await DB.listItems('tripcat');
+  let tab = initialTab || 'trips';
+  const tabsEl = h('div', { class: 'tabs' });
+  const body = h('div', { class: 'list' });
+  function render() {
+    tabsEl.innerHTML = '';
+    [['trips', 'Trips (' + trips.length + ')'], ['cats', 'Categories (' + cats.length + ')']].forEach(([k, label]) =>
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
+    body.innerHTML = '';
+    if (tab === 'trips') {
+      if (fab) fab.onclick = () => navigate('#/edit/trips');
+      if (!trips.length) { body.appendChild(emptyState('trips', 'No trips yet. Tap + to plan one.')); return; }
+      for (const it of trips) body.appendChild(buildRow('trips', it));
+    } else {
+      if (fab) fab.onclick = () => navigate('#/edit/tripcat');
+      if (!cats.length) { body.appendChild(emptyState('trips', 'No categories yet. Tap + to add one (e.g. Beach, City).')); return; }
+      for (const it of cats) {
+        const del = h('button', { class: 'row-del', type: 'button', title: 'Delete', onclick: async (e) => {
+          e.stopPropagation(); if (!confirmDel('Delete this category?')) return;
+          await DB.deleteItem('tripcat', it.id); toast('Deleted'); navigate('#/cat/trips/cats');
+        } }, '🗑');
+        body.appendChild(buildRow('tripcat', it, { action: del }));
+      }
+    }
+  }
+  listEl.appendChild(tabsEl);
+  listEl.appendChild(body);
+  render();
 }
 
 async function renderShoppingScreen(listEl, lists, fab, initialTab) {
@@ -1616,6 +1710,14 @@ function partyIsArchived(it) {
   const d = it.data || {};
   return d.archived || dayPassed(d.eventDate);
 }
+function scheduleIsCompleted(it) {
+  const d = it.data || {};
+  // Only schedules with a fixed end date can ever finish; perpetual ones never do.
+  if (d.repeatMode !== 'until' || !d.until) return false;
+  const end = new Date(d.until + 'T23:59:59').getTime();
+  if (isNaN(end)) return false;
+  return Date.now() > end;
+}
 function eventIsArchived(it) {
   const d = it.data || {};
   if (d.archived) return true;
@@ -1642,13 +1744,15 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
   const posP = opts.distance ? currentPosition() : null;  // ask location once
+  const upLabel = opts.upcomingLabel || 'Upcoming';
+  const arLabel = opts.archiveLabel || 'Archive';
   function render() {
     tabsEl.innerHTML = '';
-    [['upcoming', 'Upcoming (' + upcoming.length + ')'], ['archive', 'Archive (' + archived.length + ')']].forEach(([k, label]) =>
+    [['upcoming', upLabel + ' (' + upcoming.length + ')'], ['archive', arLabel + ' (' + archived.length + ')']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
     body.innerHTML = '';
     const list = tab === 'upcoming' ? upcoming : archived;
-    if (!list.length) { body.appendChild(emptyState(cat, tab === 'upcoming' ? 'Nothing upcoming.' : 'Nothing archived yet.')); return; }
+    if (!list.length) { body.appendChild(emptyState(cat, tab === 'upcoming' ? ('Nothing in ' + upLabel.toLowerCase() + '.') : ('Nothing in ' + arLabel.toLowerCase() + ' yet.'))); return; }
     for (const it of list) {
       const dup = (tab === 'archive' && opts.duplicate)
         ? h('button', { class: 'btn small secondary', onclick: async (e) => { e.stopPropagation(); await duplicateItem(cat, it); toast('Duplicated to Upcoming'); navigate('#/cat/' + cat); } }, 'Duplicate')
@@ -1722,7 +1826,7 @@ async function editScreen(cat, id) {
   } else {
     const saveBtn = h('button', { class: 'btn', onclick: async () => {
       if (!hasContent()) { toast('Add a title first'); return; }
-      await saveNow(); toast('Saved'); navigate('#/view/' + cat + '/' + currentId);
+      await saveNow(); toast('Saved'); goBack();
     } }, id ? 'Save changes' : 'Save');
     const delBtn = currentId ? h('button', { class: 'btn danger', style: { marginTop: '10px' }, onclick: async () => {
       if (confirm('Delete this note?')) { await DB.deleteItem(cat, currentId); toast('Deleted'); navigate('#/cat/' + cat); }
@@ -1872,6 +1976,7 @@ let reminderTimer = null;
 function startReminders() {
   if (reminderTimer) clearInterval(reminderTimer);
   reminderTimer = setInterval(checkReminders, 60000);
+  currentPosition().then(p => saveLastLocation(p)); // capture location for the closed-app scheduler
   checkReminders();
 }
 async function checkReminders() {
@@ -1882,6 +1987,16 @@ async function checkReminders() {
     const fire = (title, body) => {
       sendTelegram(s.telegramToken, s.telegramChatId, title + (body ? '\n' + body : '')).catch(() => {});
     };
+    let _pos;
+    const getMyPos = async () => (_pos !== undefined ? _pos : (_pos = await currentPosition()));
+    const travelFor = async (d) => {
+      if (typeof d.lat !== 'number' || typeof d.lng !== 'number') return '';
+      const pos = await getMyPos();
+      if (!pos) return '';
+      saveLastLocation(pos);
+      const m = await drivingMetrics(pos, [d.lat, d.lng]);
+      return ` You're about ${m.km.toFixed(1)} KM away — roughly ${m.mins} min to get there.`;
+    };
     const lead = (s.leadMinutes || 60) * 60000;
     const now = Date.now();
     const events = await DB.listItems('events');
@@ -1889,16 +2004,20 @@ async function checkReminders() {
       const d = ev.data || {};
       if (!d.when) continue;
       const t = new Date(d.when).getTime();
-      if (isNaN(t)) continue;
-      if (now >= t - lead && now < t && d._notifiedFor !== d.when) {
-        const mins = Math.round((t - now) / 60000);
-        const at = fmtTimeOnly(d.when);
-        const title = d.title || 'your event';
+      if (isNaN(t) || now >= t) continue;
+      const mins = Math.round((t - now) / 60000);
+      const at = fmtTimeOnly(d.when);
+      const title = d.title || 'your event';
+      if (now >= t - lead && d._notifiedFor !== d.when) {
         const msg = mins > 0
           ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
           : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
-        fire(msg, '', 'ev-' + ev.id);
+        fire(msg + (await travelFor(d)), '', 'ev-' + ev.id);
         d._notifiedFor = d.when;
+        await DB.saveItem(ev);
+      } else if (now >= t - lead / 2 && d._notifiedHalf !== d.when) {
+        fire(`Hey, are you on your way to ${title}? It's at ${at}.` + (await travelFor(d)), '', 'evh-' + ev.id);
+        d._notifiedHalf = d.when;
         await DB.saveItem(ev);
       }
     }
@@ -1930,23 +2049,31 @@ async function checkReminders() {
     for (const sc of schedules) {
       const d = sc.data || {};
       let changed = false;
-      (d.slots || []).forEach((slot, idx) => {
-        if (slot.day === undefined || !slot.start) return;
+      const slots = d.slots || [];
+      for (let idx = 0; idx < slots.length; idx++) {
+        const slot = slots[idx];
+        if (slot.day === undefined || !slot.start) continue;
         const occ = nextWeekdayOccurrence(Number(slot.day), slot.start);
         const t = occ.getTime();
         const occKey = localDateStr(occ);
-        if (now >= t - schedLead && now < t && slot._notifiedFor !== occKey) {
-          const mins = Math.round((t - now) / 60000);
-          const at = slot.start; // 24h
-          const title = d.title || 'your schedule';
+        if (d.repeatMode === 'until' && d.until && occKey > d.until) continue; // schedule has ended
+        if (now >= t) continue;
+        const mins = Math.round((t - now) / 60000);
+        const at = fmtHM(slot.start); // AM/PM
+        const title = d.title || 'your schedule';
+        if (now >= t - schedLead && slot._notifiedFor !== occKey) {
           const msg = mins > 0
             ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
             : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
-          fire(msg, '', 'sched-' + sc.id + '-' + idx);
+          fire(msg + (await travelFor(d)), '', 'sched-' + sc.id + '-' + idx);
           slot._notifiedFor = occKey;
           changed = true;
+        } else if (now >= t - schedLead / 2 && slot._notifiedHalf !== occKey) {
+          fire(`Hey, are you on your way to ${title}? It's at ${at}.` + (await travelFor(d)), '', 'schedh-' + sc.id + '-' + idx);
+          slot._notifiedHalf = occKey;
+          changed = true;
         }
-      });
+      }
       if (changed) await DB.saveItem(sc);
     }
   } catch (e) { /* ignore */ }
