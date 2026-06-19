@@ -1579,7 +1579,7 @@ async function listScreen(cat, sub) {
           await DB.deleteItem(cat, it.id); toast('Deleted'); navigate('#/cat/' + cat);
         } }, '🗑')
       : null;
-    const target = cat === 'quick' ? ('#/edit/quick/' + it.id) : undefined;
+    const target = (cat === 'quick' || cat === 'todo') ? ('#/edit/' + cat + '/' + it.id) : undefined;
     const row = buildRow(cat, it, { action: del, target });
     listEl.appendChild(row);
     if (posP) enrichRowDistance(it, row, posP);
@@ -1712,11 +1712,24 @@ function emptyState(cat, msg) {
 function buildRow(cat, it, opts = {}) {
   const s = summary(cat, it.data || {});
   const target = opts.target || ('#/view/' + cat + '/' + it.id);
+  // to-do cards show a short preview of their items
+  let preview = null;
+  if (cat === 'todo') {
+    const its = (it.data && it.data.items) || [];
+    if (its.length) {
+      const show = its.slice(0, 6);
+      preview = h('ul', { class: 'row-items' }, show.map(t =>
+        h('li', { class: t.checked ? 'done' : '' }, t.name || '',
+          t.eta ? h('span', { class: 'eta' }, ' · ' + fmtDate(t.eta)) : null)));
+      if (its.length > show.length) preview.appendChild(h('li', { class: 'more' }, '+' + (its.length - show.length) + ' more'));
+    }
+  }
   const row = h('div', { class: 'row', onclick: () => navigate(target) },
     s.thumb ? h('img', { class: 'thumb', src: '' }) : null,
     h('div', { class: 'main' },
       h('div', { class: 'title' }, s.fav ? h('span', { class: 'fav-star' }, '★ ') : null, s.title),
-      s.meta ? h('div', { class: 'meta' }, s.meta) : null),
+      s.meta ? h('div', { class: 'meta' }, s.meta) : null,
+      preview),
     opts.action || h('div', { class: 'chev' }, '›'));
   if (s.thumb) DB.getImage(s.thumb).then(src => { const img = row.querySelector('.thumb'); if (img && src) img.src = src; });
   return row;

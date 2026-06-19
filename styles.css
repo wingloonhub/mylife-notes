@@ -230,6 +230,15 @@ body {
   width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg,var(--accent),var(--accent-2));
   color: #fff; display: grid; place-items: center; font-size: 13px; font-weight: 700; }
 .link-a { color: #b9b4ff; word-break: break-all; }
+.row-items { list-style: none; margin: 7px 0 0; padding: 0; }
+.row-items li { position: relative; padding-left: 16px; font-size: 13px; color: var(--text); line-height: 1.55; }
+.row-items li::before { content: '○'; position: absolute; left: 0; color: var(--muted); font-size: 11px; }
+.row-items li.done { color: var(--muted); text-decoration: line-through; }
+.row-items li.done::before { content: '✓'; color: var(--accent); text-decoration: none; }
+.row-items li .eta { color: var(--accent); font-size: 12px; }
+.row-items li.done .eta { color: var(--muted); }
+.row-items li.more { padding-left: 16px; color: var(--muted); font-style: italic; }
+.row-items li.more::before { content: ''; }
 
 /* ---------- Auth ---------- */
 .auth-wrap { min-height: 100vh; display: flex; flex-direction: column; justify-content: center; padding: 24px; }
