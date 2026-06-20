@@ -243,6 +243,14 @@ const DB = {
       LS.set(key, LS.get(key, []).filter(i => i.id !== id));
     }
   },
+  /* live listener on shared items I'm part of — fires cb whenever any of them change */
+  watchShared(cb) {
+    if (MODE !== 'firebase') return () => {};
+    try {
+      const { collection, query, where, onSnapshot } = fb.f;
+      return onSnapshot(query(collection(fb.db, 'shared'), where('participants', 'array-contains', myEmail())), () => cb(), () => {});
+    } catch (e) { return () => {}; }
+  },
   /* images stored separately to dodge document-size limits */
   async saveImage(dataUrl) {
     const id = uid();
@@ -1897,11 +1905,11 @@ async function listScreen(cat, sub) {
   const items = await DB.listItems(cat);
   listEl.innerHTML = '';
 
-  if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); return; }
+  if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past Events' }); return; }
   if (cat === 'schedule') { renderArchiveList(listEl, 'schedule', items, scheduleIsCompleted, { distance: true, upcomingLabel: 'Upcoming', archiveLabel: 'Completed' }); return; }
   if (cat === 'tax') { renderTaxList(listEl, items); return; }
-  if (cat === 'trips') { renderTripScreen(listEl, items, fab, sub === 'cats' ? 'cats' : 'trips'); return; }
+  if (cat === 'trips') { renderTripScreen(listEl, items, fab, sub === 'cats' ? 'cats' : 'trips'); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'shopping') { renderShoppingScreen(listEl, items, fab, sub === 'items' ? 'items' : 'lists'); return; }
 
   if (!items.length) {
@@ -2273,6 +2281,8 @@ async function viewScreen(cat, id) {
   const detail = await renderDetail(cat, item);
   host.innerHTML = '';
   host.appendChild(detail);
+  // live-refresh shared trips/parties when the other person edits (e.g. ticks a packing item)
+  if (SHARE_CATS.includes(cat) && item._shared) startLive(() => viewScreen(cat, id));
 }
 
 /* keys that hold arrays of image ids anywhere in a card's data */
@@ -2444,7 +2454,22 @@ function goBack() {
   navigate('#/'); // cat list, settings, import, anything else -> home
 }
 
+/* live re-render: re-run the current screen when shared data changes (skips while you're typing) */
+let _liveUnsub = null;
+function stopLive() { if (_liveUnsub) { try { _liveUnsub(); } catch (e) {} _liveUnsub = null; } }
+function startLive(renderFn) {
+  stopLive();
+  let first = true;
+  _liveUnsub = DB.watchShared(() => {
+    if (first) { first = false; return; } // initial snapshot is the data we just rendered
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return; // don't clobber active typing
+    renderFn();
+  });
+}
+
 function routeChanged() {
+  stopLive(); // drop any live listener from the previous screen
   if (!CURRENT) {
     const v = location.hash.includes('signup') ? 'signup' : location.hash.includes('forgot') ? 'forgot' : 'login';
     mount(authScreen(v));
