@@ -158,14 +158,30 @@ const Auth = {
 };
 
 /* ---------------- DATA ---------------- */
+/* categories that can be shared live across accounts (via the top-level `shared` collection) */
+const SHARE_CATS = ['party', 'trips'];
+function myEmail() { return ((CURRENT && CURRENT.email) || '').trim().toLowerCase(); }
+function cleanEmails(arr) { return Array.from(new Set((arr || []).map(e => String(e).trim().toLowerCase()).filter(Boolean))); }
+
 const DB = {
   async listItems(cat) {
     if (MODE === 'firebase') {
       const { collection, getDocs, query, where } = fb.f;
       const snap = await getDocs(query(collection(fb.db, 'users', CURRENT.uid, 'items'), where('cat', '==', cat)));
-      const out = [];
-      snap.forEach(d => out.push({ id: d.id, ...d.data() }));
-      return out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+      const byId = {};
+      snap.forEach(d => byId[d.id] = { id: d.id, ...d.data() });
+      // merge in shared items of this category (mine-and-shared, or shared with me)
+      if (SHARE_CATS.includes(cat)) {
+        try {
+          const ss = await getDocs(query(collection(fb.db, 'shared'), where('participants', 'array-contains', myEmail())));
+          ss.forEach(d => {
+            const v = d.data();
+            if (v.cat !== cat) return;
+            byId[d.id] = { id: d.id, cat: v.cat, data: v.data, updatedAt: v.updatedAt, _shared: true, _ownerUid: v.ownerUid, _ownerEmail: v.ownerEmail, _amOwner: v.ownerUid === CURRENT.uid };
+          });
+        } catch (e) { /* shared collection may need its rule/index — fall back to private only */ }
+      }
+      return Object.values(byId).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     }
     const all = LS.get('mln_items_' + CURRENT.uid, []);
     return all.filter(i => i.cat === cat).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
@@ -174,17 +190,40 @@ const DB = {
     if (MODE === 'firebase') {
       const { doc, getDoc } = fb.f;
       const d = await getDoc(doc(fb.db, 'users', CURRENT.uid, 'items', id));
-      return d.exists() ? { id: d.id, ...d.data() } : null;
+      if (d.exists()) return { id: d.id, ...d.data() };
+      if (SHARE_CATS.includes(cat)) {
+        try {
+          const s = await getDoc(doc(fb.db, 'shared', id));
+          if (s.exists()) { const v = s.data(); return { id: s.id, cat: v.cat, data: v.data, updatedAt: v.updatedAt, _shared: true, _ownerUid: v.ownerUid, _ownerEmail: v.ownerEmail, _amOwner: v.ownerUid === CURRENT.uid }; }
+        } catch (e) {}
+      }
+      return null;
     }
     return LS.get('mln_items_' + CURRENT.uid, []).find(i => i.id === id) || null;
   },
   async saveItem(item) {
     item.updatedAt = Date.now();
     if (!item.id) item.id = uid();
+    const sharedWith = (item.data && cleanEmails(item.data.sharedWith)) || [];
+    const isShareable = SHARE_CATS.includes(item.cat);
     if (MODE === 'firebase') {
-      const { doc, setDoc } = fb.f;
-      const { id, ...rest } = item;
-      await setDoc(doc(fb.db, 'users', CURRENT.uid, 'items', id), rest, { merge: true });
+      const { doc, setDoc, deleteDoc } = fb.f;
+      if (isShareable && sharedWith.length) {
+        // live-shared: store in the top-level `shared` collection
+        const ownerUid = item._ownerUid || CURRENT.uid;
+        const ownerEmail = item._ownerEmail || myEmail();
+        if (item.data) item.data.sharedWith = sharedWith;
+        const participants = cleanEmails([ownerEmail, ...sharedWith]);
+        await setDoc(doc(fb.db, 'shared', item.id), { cat: item.cat, data: item.data, ownerUid, ownerEmail, participants, updatedAt: item.updatedAt }, { merge: true });
+        // if I own it and a private copy lingers, remove it
+        if (ownerUid === CURRENT.uid) { try { await deleteDoc(doc(fb.db, 'users', CURRENT.uid, 'items', item.id)); } catch (e) {} }
+      } else {
+        // private
+        const { id, _shared, _ownerUid, _ownerEmail, _amOwner, ...rest } = item;
+        await setDoc(doc(fb.db, 'users', CURRENT.uid, 'items', id), rest, { merge: true });
+        // if it used to be shared (now un-shared), remove the shared copy
+        if (isShareable) { try { await deleteDoc(doc(fb.db, 'shared', id)); } catch (e) {} }
+      }
     } else {
       const key = 'mln_items_' + CURRENT.uid;
       const all = LS.get(key, []);
@@ -197,7 +236,8 @@ const DB = {
   async deleteItem(cat, id) {
     if (MODE === 'firebase') {
       const { doc, deleteDoc } = fb.f;
-      await deleteDoc(doc(fb.db, 'users', CURRENT.uid, 'items', id));
+      try { await deleteDoc(doc(fb.db, 'users', CURRENT.uid, 'items', id)); } catch (e) {}
+      if (SHARE_CATS.includes(cat)) { try { await deleteDoc(doc(fb.db, 'shared', id)); } catch (e) {} }
     } else {
       const key = 'mln_items_' + CURRENT.uid;
       LS.set(key, LS.get(key, []).filter(i => i.id !== id));
@@ -350,6 +390,26 @@ function stringList(obj, key, placeholder) {
   return wrap;
 }
 
+/* "Share with" editor: a list of people's login emails. onChange (optional) fires after each change. */
+function shareWithEditor(obj, onChange) {
+  if (!Array.isArray(obj.sharedWith)) obj.sharedWith = [];
+  const wrap = h('div');
+  const changed = () => { if (onChange) onChange(); };
+  function draw() {
+    wrap.innerHTML = '';
+    obj.sharedWith.forEach((em, i) => {
+      wrap.appendChild(h('div', { class: 'field', style: { marginBottom: '8px' } },
+        h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
+          h('input', { class: 'grow', type: 'email', autocapitalize: 'none', inputmode: 'email', placeholder: 'their login email (e.g. name@gmail.com)',
+            value: em, oninput: e => { obj.sharedWith[i] = e.target.value.trim().toLowerCase(); changed(); } }),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { obj.sharedWith.splice(i, 1); draw(); changed(); } }, '✕'))));
+    });
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { obj.sharedWith.push(''); draw(); changed(); } }, '+ Add person'));
+  }
+  draw();
+  return wrap;
+}
+
 /* single image picker -> stores image id in obj[key] */
 function imagePicker(obj, key) {
   if (!Array.isArray(obj[key])) obj[key] = obj[key] ? [obj[key]] : [];
@@ -389,7 +449,8 @@ function imageMulti(obj, key, multiple = true, opts = {}) {
 
 /* ---------------- per-category EDITORS ----------------
    each returns a DOM fragment; inputs mutate `data` directly */
-function buildEditor(cat, data) {
+function buildEditor(cat, data, amOwner) {
+  if (amOwner === undefined) amOwner = true;
   const F = h('div');
   const a = (...n) => add(F, n);
   switch (cat) {
@@ -441,6 +502,13 @@ function buildEditor(cat, data) {
     }
     case 'party': {
       a(field('Party event name', data, 'title', { placeholder: "e.g. Preston's birthday" }));
+      if (amOwner) {
+        a(h('div', { class: 'section-title' }, 'Share this party with (live)'));
+        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone you want to see & edit this party in real time. Leave empty to keep it private.'));
+        a(shareWithEditor(data));
+      } else {
+        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, '👥 Shared with you — you can edit the details; only the owner can change who it\'s shared with.'));
+      }
       a(h('div', { class: 'row2' },
         h('div', { class: 'field' }, h('label', null, 'Event date'), h('input', { type: 'date', value: data.eventDate || '', oninput: e => data.eventDate = e.target.value })),
         h('div', { class: 'field' }, h('label', null, 'Start time'), h('input', { type: 'time', value: data.startTime || '', oninput: e => data.startTime = e.target.value }))));
@@ -511,6 +579,13 @@ function buildEditor(cat, data) {
       a(field('Trip name', data, 'title', { placeholder: 'e.g. Japan' }));
       a(tripDates(data));
       a(field('Notes', data, 'notes', { placeholder: 'e.g. flight & hotel details' }));
+      if (amOwner) {
+        a(h('div', { class: 'section-title' }, 'Share this trip with (live)'));
+        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone you want to see & edit this trip in real time. Leave empty to keep it private.'));
+        a(shareWithEditor(data));
+      } else {
+        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, '👥 Shared with you — you can edit the details; only the owner can change who it\'s shared with.'));
+      }
       a(h('div', { class: 'section-title' }, 'Which areas? (beach, city, camping…)'));
       a(tripCategoryPicker(data));
       a(h('div', { class: 'section-title' }, 'Packing list (tick when packed in the trip view)'));
@@ -1056,8 +1131,20 @@ async function renderShoppingItems(body) {
     addWrap.style.display = showing ? 'none' : '';
     addBtn.textContent = showing ? '+ Add item' : '✕ Close';
   } }, '+ Add item');
+  // share-this-list control (collapsible)
+  const shareWrap = h('div', { class: 'detail-card', style: { display: 'none' } },
+    h('div', { class: 'hint', style: { marginBottom: '8px' } }, 'Add the login email of anyone you want to share this grocery list with — they can see & edit it live. Leave empty to keep it private.'),
+    shareWithEditor(doc.data, () => save()));
+  const shareBtn = h('button', { class: 'btn secondary', type: 'button', style: { marginTop: '8px' }, onclick: () => {
+    const showing = shareWrap.style.display !== 'none';
+    shareWrap.style.display = showing ? 'none' : '';
+    shareBtn.textContent = showing ? '👥 Share this list' : '✕ Close sharing';
+  } }, '👥 Share this list');
+
   body.appendChild(addBtn);
   body.appendChild(addWrap);
+  body.appendChild(shareBtn);
+  body.appendChild(shareWrap);
   body.appendChild(h('div', { class: 'section-title' }, 'Your list'));
   body.appendChild(listWrap);
   drawList();
@@ -1978,11 +2065,15 @@ function buildRow(cat, it, opts = {}) {
       if (its.length > show.length) preview.appendChild(h('li', { class: 'more' }, '+' + (its.length - show.length) + ' more'));
     }
   }
+  const sharedBadge = it._shared
+    ? h('div', { class: 'meta', style: { color: 'var(--accent)' } }, it._amOwner ? '👥 Shared by you' : ('👥 Shared by ' + (it._ownerEmail || 'someone')))
+    : null;
   const row = h('div', { class: 'row', onclick: () => navigate(target) },
     s.thumb ? h('img', { class: 'thumb', src: '' }) : null,
     h('div', { class: 'main' },
       h('div', { class: 'title' }, s.fav ? h('span', { class: 'fav-star' }, '★ ') : null, s.title),
       s.meta ? h('div', { class: 'meta' }, s.meta) : null,
+      sharedBadge,
       preview),
     opts.action || h('div', { class: 'chev' }, '›'));
   if (s.thumb) DB.getImage(s.thumb).then(src => { const img = row.querySelector('.thumb'); if (img && src) img.src = src; });
@@ -2113,8 +2204,12 @@ async function editScreen(cat, id) {
   let item = id ? await DB.getItem(cat, id) : null;
   let currentId = id;
   const data = item ? JSON.parse(JSON.stringify(item.data || {})) : {};
+  // ownership of a shared item (members can edit content but not the share list)
+  const amOwner = !item || !item._shared || item._amOwner === true;
+  const ownerUid = item ? item._ownerUid : undefined;
+  const ownerEmail = item ? item._ownerEmail : undefined;
   const formHost = h('div');
-  function renderForm() { formHost.innerHTML = ''; formHost.appendChild(buildEditor(cat, data)); }
+  function renderForm() { formHost.innerHTML = ''; formHost.appendChild(buildEditor(cat, data, amOwner)); }
   _rerender = renderForm;
   renderForm();
 
@@ -2126,7 +2221,7 @@ async function editScreen(cat, id) {
   };
   async function saveNow() {
     if (!hasContent()) return null;
-    const saved = await DB.saveItem({ id: currentId || undefined, cat, data });
+    const saved = await DB.saveItem({ id: currentId || undefined, cat, data, _ownerUid: ownerUid, _ownerEmail: ownerEmail });
     currentId = saved.id;
     return saved;
   }
