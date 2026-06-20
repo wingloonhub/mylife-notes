@@ -25,7 +25,7 @@ function add(parent, kids) {
   }
 }
 const $app = () => document.getElementById('app');
-function mount(node) { const a = $app(); a.innerHTML = ''; a.appendChild(node); window.scrollTo(0, 0); }
+function mount(node) { const a = $app(); a.innerHTML = ''; a.appendChild(node); if (!_suppressScroll) window.scrollTo(0, 0); }
 
 function toast(msg) {
   const t = h('div', { class: 'toast' }, msg);
@@ -63,6 +63,8 @@ function compressImage(file, maxDim = 1000, quality = 0.5) {
 let MODE = 'local';
 let fb = null;            // firebase handles
 let CURRENT = null;       // {uid, email}
+let _lastLocalWrite = 0;  // timestamp of my last save — used to skip live re-render on my own changes
+let _suppressScroll = false; // when true, mount() won't reset scroll to top (used during live re-renders)
 const imgCache = new Map();
 
 async function initStorage() {
@@ -205,6 +207,7 @@ const DB = {
   },
   async saveItem(item) {
     item.updatedAt = Date.now();
+    _lastLocalWrite = Date.now();
     if (!item.id) item.id = uid();
     const sharedWith = (item.data && cleanEmails(item.data.sharedWith)) || [];
     const isShareable = SHARE_CATS.includes(item.cat);
@@ -244,6 +247,7 @@ const DB = {
     return item;
   },
   async deleteItem(cat, id) {
+    _lastLocalWrite = Date.now();
     if (MODE === 'firebase') {
       const { doc, deleteDoc } = fb.f;
       try { await deleteDoc(doc(fb.db, 'users', CURRENT.uid, 'items', id)); } catch (e) {}
@@ -1431,15 +1435,19 @@ async function renderDetail(cat, item) {
 function checklistView(item, key, cat, title) {
   const data = item.data || {};
   const items = data[key] || [];
-  const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, title + ' (' + items.filter(i => i.checked).length + '/' + items.length + ')'));
+  const titleEl = h('div', { class: 'section-title' }, title + ' (' + items.filter(i => i.checked).length + '/' + items.length + ')');
+  const card = h('div', { class: 'detail-card' }, titleEl);
   items.forEach(it => {
+    const cb = h('div', { class: 'cb' + (it.checked ? ' on' : '') });
     const row = h('div', { class: 'check-row' + (it.checked ? ' done' : '') },
-      h('div', { class: 'cb' + (it.checked ? ' on' : '') }),
+      cb,
       h('div', { class: 'ttl' }, it.name || '', it.eta ? h('div', { class: 'px' }, 'Due ' + fmtDate(it.eta)) : null));
-    row.querySelector('.cb').onclick = async () => {
+    cb.onclick = async () => {
       it.checked = !it.checked;
-      await DB.saveItem(item);
-      navigate('#/view/' + cat + '/' + item.id);
+      row.classList.toggle('done', it.checked);
+      cb.classList.toggle('on', it.checked);
+      titleEl.textContent = title + ' (' + items.filter(i => i.checked).length + '/' + items.length + ')';
+      try { await DB.saveItem(item); } catch (e) {}
     };
     card.appendChild(row);
   });
@@ -2496,9 +2504,14 @@ function startLive(renderFn) {
   let first = true;
   _liveUnsub = DB.watchShared(() => {
     if (first) { first = false; return; } // initial snapshot is the data we just rendered
+    if (Date.now() - _lastLocalWrite < 2500) return; // my own change — already shown in place, don't rebuild
     const ae = document.activeElement;
     if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return; // don't clobber active typing
-    renderFn();
+    const y = window.scrollY; // a remote change: re-render but keep the scroll position
+    _suppressScroll = true;
+    Promise.resolve(renderFn()).finally(() => {
+      setTimeout(() => { window.scrollTo(0, y); _suppressScroll = false; }, 80);
+    });
   });
 }
 
