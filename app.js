@@ -35,7 +35,7 @@ function toast(msg) {
 }
 
 /* ---------------- image compression ---------------- */
-function compressImage(file, maxDim = 1200, quality = 0.62) {
+function compressImage(file, maxDim = 1000, quality = 0.5) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -291,7 +291,7 @@ const CATS = [
   { key: 'tax', name: 'Tax Receipts', emoji: '💵' },
   { key: 'party', name: 'Party Planner', emoji: '🎉' },
   { key: 'trips', name: 'Trip Planner', emoji: '🧳' },
-  { key: 'shopping', name: 'Shopping List', emoji: '🛒' },
+  { key: 'shopping', name: 'Grocery Planner', emoji: '🛒' },
   { key: 'shopitem', name: 'Saved Item', emoji: '🏷️', hidden: true },
   { key: 'tripcat', name: 'Trip Area', emoji: '🏷️', hidden: true },
   { key: 'recipes', name: 'Recipes', emoji: '🍳' },
@@ -395,6 +395,9 @@ function buildEditor(cat, data) {
   switch (cat) {
     case 'recipes': {
       a(field('Recipe title', data, 'title', { placeholder: 'e.g. Chicken Rice' }));
+      a(h('div', { class: 'section-title' }, 'Finished dish photo'));
+      a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Snap or add the ready dish — this is the photo shown on the Recipes page.'));
+      a(imagePicker(data, 'images'));
       a(h('div', { class: 'section-title' }, 'Ingredients'));
       a(h('div', { class: 'hint', style: { margin: '2px 2px 10px' } }, 'Add a photo to each ingredient if you like — or leave it empty.'));
       a(ingredientsEditor(data));
@@ -1011,12 +1014,22 @@ async function renderShoppingItems(body) {
   }
   if (!Array.isArray(doc.data.items)) doc.data.items = [];
   const save = () => DB.saveItem(doc);
+  // bought items disappear 2 hours after being ticked
+  const TWO_H = 2 * 3600 * 1000;
+  const purge = () => {
+    const before = doc.data.items.length;
+    doc.data.items = doc.data.items.filter(t => !(t.checked && t.boughtAt && (Date.now() - t.boughtAt > TWO_H)));
+    return doc.data.items.length !== before;
+  };
+  if (purge()) await save();
+
   const listWrap = h('div', { class: 'detail-card' });
   function drawList() {
+    if (purge()) save();
     listWrap.innerHTML = '';
     const its = doc.data.items;
-    listWrap.appendChild(h('div', { class: 'hint', style: { marginBottom: '8px' } }, its.filter(i => i.checked).length + '/' + its.length + ' bought'));
-    if (!its.length) { listWrap.appendChild(h('div', { class: 'hint' }, 'No items yet — add one above.')); return; }
+    listWrap.appendChild(h('div', { class: 'hint', style: { marginBottom: '8px' } }, its.filter(i => i.checked).length + '/' + its.length + ' bought · bought items clear after 2h'));
+    if (!its.length) { listWrap.appendChild(h('div', { class: 'hint' }, 'No items yet — tap “+ Add item”.')); return; }
     its.forEach((t, i) => {
       const ttl = h('div', { class: 'ttl' },
         (t.name || '') + (t.qty ? ('  × ' + t.qty) : ''),
@@ -1030,13 +1043,21 @@ async function renderShoppingItems(body) {
         h('div', { class: 'cb' + (t.checked ? ' on' : '') }),
         ttl,
         h('button', { class: 'row-del', type: 'button', title: 'Remove', onclick: async (e) => { e.stopPropagation(); doc.data.items.splice(i, 1); await save(); drawList(); } }, '🗑'));
-      row.querySelector('.cb').onclick = async () => { t.checked = !t.checked; await save(); drawList(); };
+      row.querySelector('.cb').onclick = async () => { t.checked = !t.checked; t.boughtAt = t.checked ? Date.now() : null; await save(); drawList(); };
       listWrap.appendChild(row);
     });
   }
+
+  // the add form stays hidden until you tap "+ Add item"
   const addPanel = await buildShoppingAddPanel(async (obj) => { doc.data.items.push(obj); await save(); drawList(); });
-  body.appendChild(h('div', { class: 'section-title', style: { marginTop: '4px' } }, 'Add item'));
-  body.appendChild(addPanel);
+  const addWrap = h('div', { class: 'detail-card', style: { display: 'none' } }, addPanel);
+  const addBtn = h('button', { class: 'btn', type: 'button', onclick: () => {
+    const showing = addWrap.style.display !== 'none';
+    addWrap.style.display = showing ? 'none' : '';
+    addBtn.textContent = showing ? '+ Add item' : '✕ Close';
+  } }, '+ Add item');
+  body.appendChild(addBtn);
+  body.appendChild(addWrap);
   body.appendChild(h('div', { class: 'section-title' }, 'Your list'));
   body.appendChild(listWrap);
   drawList();
@@ -1064,6 +1085,7 @@ async function renderDetail(cat, item) {
         onclick: async () => { data.fav = !data.fav; await DB.saveItem(item); navigate('#/view/recipes/' + item.id); } }, data.fav ? '★' : '☆');
       const rcard = h('div', { class: 'detail-card' },
         h('div', { class: 'fav-head' }, favBtn, h('h3', { style: { margin: 0 } }, data.title || 'Recipe')));
+      for (const im of await imgs(data.images)) rcard.appendChild(im);
       const ingList = (data.ingredients || []).map(x => typeof x === 'string' ? { name: x, imgs: [] } : (x || {}))
         .filter(x => (x.name && x.name.trim()) || (x.imgs && x.imgs.length));
       if (ingList.length || (data.ingredientImgs || []).length) {
@@ -1324,7 +1346,7 @@ function summary(cat, data) {
     case 'recipes': {
       const ingArr = (data.ingredients || []).map(x => typeof x === 'string' ? { name: x } : (x || {}));
       const ingCount = ingArr.filter(x => x.name && x.name.trim()).length;
-      const thumb = ingArr.flatMap(x => x.imgs || [])[0] || (data.steps || []).flatMap(s => s.imgs || [])[0] || (data.ingredientImgs || [])[0];
+      const thumb = (data.images || [])[0]; // only the finished-dish photo, never ingredient/step photos
       return { title: data.title || 'Recipe', meta: ingCount + ' ingredients · ' + (data.steps || []).length + ' steps', thumb, fav: data.fav };
     }
     case 'records': return { title: data.title || 'Record', meta: data.recType === 'address' ? (data.recipient || 'Address') : (data.bank || 'Bank account') };
@@ -1574,20 +1596,84 @@ function richTextEditor(data, key, legacyPlain) {
   if ((data[key] == null || data[key] === '') && legacyPlain) data[key] = escapeHtml(legacyPlain).replace(/\n/g, '<br>');
   const ed = h('div', { class: 'rte', contenteditable: 'true', autocapitalize: 'sentences' });
   ed.innerHTML = data[key] || '';
+  const sync = () => { data[key] = ed.innerHTML; ed.dispatchEvent(new Event('input', { bubbles: true })); };
   ed.addEventListener('input', () => data[key] = ed.innerHTML);
-  const run = (c) => { document.execCommand(c, false, null); ed.focus(); data[key] = ed.innerHTML; };
-  const btn = (content, c) => h('button', { class: 'rte-btn', type: 'button', onmousedown: e => { e.preventDefault(); run(c); } }, content);
+  const exec = (c, val) => { document.execCommand(c, false, val == null ? null : val); ed.focus(); data[key] = ed.innerHTML; };
+  const btn = (content, c) => h('button', { class: 'rte-btn', type: 'button', onmousedown: e => { e.preventDefault(); exec(c); } }, content);
+  // highlight swatches (and a "clear highlight")
+  const hilite = (color) => h('button', { class: 'rte-btn hl' + (color ? '' : ' none'), type: 'button',
+    style: color ? { background: color } : {}, title: color ? 'Highlight' : 'No highlight',
+    onmousedown: e => {
+      e.preventDefault();
+      document.execCommand('styleWithCSS', false, true);
+      if (!document.execCommand('hiliteColor', false, color || 'transparent')) document.execCommand('backColor', false, color || 'transparent');
+      ed.focus(); data[key] = ed.innerHTML;
+    } }, color ? '' : '⌫');
+  // stylus / finger drawing -> inserted as an image
+  const drawBtn = h('button', { class: 'rte-btn', type: 'button', title: 'Draw / write with pen',
+    onmousedown: e => e.preventDefault(),
+    onclick: () => openDrawingPad((url) => { ed.focus(); document.execCommand('insertHTML', false, '<img src="' + url + '" class="note-img"><br>'); sync(); }) }, '✍️');
   const toolbar = h('div', { class: 'rte-toolbar' },
     btn(h('b', null, 'B'), 'bold'),
     btn(h('i', null, 'I'), 'italic'),
     btn(h('u', null, 'U'), 'underline'),
-    btn('• List', 'insertUnorderedList'));
-  return h('div', null, toolbar, ed);
+    btn('• List', 'insertUnorderedList'),
+    drawBtn);
+  const hiBar = h('div', { class: 'rte-toolbar hilites' },
+    h('span', { class: 'hl-label' }, 'Highlight:'),
+    hilite('#fff59d'), hilite('#a5d6a7'), hilite('#f48fb1'), hilite('#90caf9'), hilite(''));
+  return h('div', null, toolbar, hiBar, ed);
+}
+
+/* full-screen pad: draw with a stylus (pressure-aware) or finger, then insert into the note */
+function openDrawingPad(onInsert) {
+  const canvas = h('canvas', { class: 'draw-canvas' });
+  const bar = h('div', { class: 'draw-bar' });
+  const overlay = h('div', { class: 'draw-overlay' }, bar, canvas);
+  let open = true;
+  const cleanup = () => { if (!open) return; open = false; overlay.remove(); window.removeEventListener('popstate', onPop); };
+  const onPop = () => cleanup();
+  const closeAndPop = () => { if (!open) return; cleanup(); history.back(); };
+  window.addEventListener('popstate', onPop);
+  history.pushState({ overlay: 'draw' }, '');
+  document.body.appendChild(overlay);
+  // size the canvas to the available area (retina-aware)
+  const ctx = canvas.getContext('2d');
+  function sizeCanvas() {
+    const r = canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(r.width * dpr); canvas.height = Math.round(r.height * dpr);
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#15151c';
+  }
+  setTimeout(sizeCanvas, 0);
+  let drawing = false, lx = 0, ly = 0;
+  const pos = (e) => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  canvas.addEventListener('pointerdown', e => { drawing = true;[lx, ly] = pos(e); try { canvas.setPointerCapture(e.pointerId); } catch (x) {} });
+  canvas.addEventListener('pointermove', e => {
+    if (!drawing) return; e.preventDefault();
+    const [x, y] = pos(e);
+    ctx.lineWidth = e.pressure && e.pressure > 0 ? (0.5 + e.pressure * 4) : 2.4;
+    ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(x, y); ctx.stroke();
+    [lx, ly] = [x, y];
+  });
+  const stop = () => { drawing = false; };
+  canvas.addEventListener('pointerup', stop);
+  canvas.addEventListener('pointercancel', stop);
+  bar.appendChild(h('button', { class: 'btn secondary small', type: 'button', onclick: closeAndPop }, 'Cancel'));
+  bar.appendChild(h('button', { class: 'btn secondary small', type: 'button', onclick: () => sizeCanvas() }, 'Clear'));
+  bar.appendChild(h('button', { class: 'btn small', type: 'button', onclick: () => { const url = canvas.toDataURL('image/jpeg', 0.6); cleanup(); history.back(); onInsert(url); } }, 'Insert'));
 }
 function openLightbox(src) {
-  const ov = h('div', { class: 'lightbox', onclick: () => ov.remove() },
-    h('img', { src }),
-    h('div', { class: 'lightbox-close' }, '✕'));
+  const ov = h('div', { class: 'lightbox' }, h('img', { src }), h('div', { class: 'lightbox-close' }, '✕'));
+  let open = true;
+  const cleanup = () => { if (!open) return; open = false; ov.remove(); window.removeEventListener('popstate', onPop); };
+  const onPop = () => cleanup();                              // phone/browser Back closes it
+  const closeByTap = () => { if (!open) return; cleanup(); history.back(); }; // remove the state we pushed
+  ov.onclick = closeByTap;
+  window.addEventListener('popstate', onPop);
+  history.pushState({ overlay: 'lightbox' }, '');
   document.body.appendChild(ov);
 }
 function confirmDel(msg) { return window.confirm(msg || 'Delete this?'); }
@@ -1791,7 +1877,7 @@ async function renderShoppingScreen(listEl, lists, fab, initialTab) {
   const body = h('div', { class: 'list' });
   function render() {
     tabsEl.innerHTML = '';
-    [['lists', 'Shopping list'], ['items', 'Saved items (' + items.length + ')'], ['cats', 'Categories']].forEach(([k, label]) =>
+    [['lists', 'Grocery list'], ['items', 'Saved items (' + items.length + ')'], ['cats', 'Categories']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
     body.innerHTML = '';
     if (tab === 'cats') {
@@ -2059,10 +2145,7 @@ async function editScreen(cat, id) {
         if (saved) history.replaceState(null, '', '#/edit/quick/' + currentId);
       }, 600);
     });
-    const delBtn = h('button', { class: 'btn danger', onclick: async () => {
-      if (confirm('Delete this note?')) { if (currentId) await DB.deleteItem(cat, currentId); toast('Deleted'); navigate('#/cat/' + cat); }
-    } }, 'Delete');
-    controls = h('div', { style: { marginTop: '18px' } }, status, delBtn);
+    controls = h('div', { style: { marginTop: '18px' } }, status);
   } else {
     const saveBtn = h('button', { class: 'btn', onclick: async () => {
       if (!hasContent()) { toast('Add a title first'); return; }

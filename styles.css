@@ -139,11 +139,22 @@ body {
   padding: 8px 0; min-width: 46px; font-size: 15px; cursor: pointer; }
 .rte-btn:active { transform: scale(.95); }
 .rte { background: var(--card); border: 1px solid var(--line); color: var(--text); border-radius: 12px;
-  padding: 13px 14px; min-height: 220px; font-size: 16px; line-height: 1.55; outline: none; }
+  padding: 13px 14px; min-height: 320px; max-height: 62vh; overflow-y: auto; font-size: 16px; line-height: 1.55; outline: none;
+  -webkit-overflow-scrolling: touch; }
+.rte mark { padding: 0 1px; border-radius: 3px; }
 .rte:focus { border-color: var(--accent); }
 .rte:empty::before { content: 'Write anything…'; color: var(--muted); }
 .rte ul, .rte-view ul { padding-left: 20px; margin: 6px 0; }
 .rte-view { line-height: 1.55; }
+.rte img.note-img, .rte-view img.note-img { max-width: 100%; border-radius: 10px; margin: 6px 0; display: block; }
+.rte-toolbar.hilites { align-items: center; flex-wrap: wrap; }
+.hl-label { color: var(--muted); font-size: 13px; }
+.rte-btn.hl { min-width: 30px; width: 30px; height: 30px; padding: 0; border-radius: 8px; }
+.rte-btn.hl.none { background: var(--card); }
+.draw-overlay { position: fixed; inset: 0; z-index: 250; background: var(--bg); display: flex; flex-direction: column;
+  padding: calc(var(--safe-top) + 8px) 10px calc(var(--safe-bottom) + 10px); }
+.draw-bar { display: flex; gap: 8px; justify-content: flex-end; margin-bottom: 8px; }
+.draw-canvas { flex: 1; width: 100%; background: #fff; border-radius: 12px; touch-action: none; cursor: crosshair; }
 
 .sub-item {
   background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-bottom: 10px;
