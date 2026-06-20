@@ -77,10 +77,13 @@ async function patchData(project, uid, idToken, id, data) {
   });
 }
 async function tg(token, chatId, text) {
-  await fetch('https://api.telegram.org/bot' + token + '/sendMessage', {
+  const r = await fetch('https://api.telegram.org/bot' + String(token).trim() + '/sendMessage', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text })
+    body: JSON.stringify({ chat_id: String(chatId).trim(), text })
   });
+  const j = await r.json().catch(() => ({}));
+  if (!j.ok) throw new Error('Telegram rejected the message: ' + (j.description || ('HTTP ' + r.status)));
+  return j;
 }
 
 /* ---- date helpers (interpret the app's naive local times in the user's tz) ---- */
@@ -153,11 +156,16 @@ async function travelLine(loc, destLat, destLng, now, offMin) {
   return '';
 }
 
-async function processUser(u, apiKey, project, offMin, now, debug) {
+async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
   const items = await listItems(project, uid, idToken);
   const settings = (items.find(i => i.cat === '_settings') || {}).data || {};
   const token = settings.telegramToken, chat = settings.telegramChatId;
+  if (tgtest) {
+    if (!token || !chat) return { uid, tgtest: 'no Telegram token/chat in Settings' };
+    try { await tg(token, chat, '✅ Scheduler test — closed-app reminders can reach this chat.'); return { uid, tgtest: 'SENT OK' }; }
+    catch (e) { return { uid, tgtest: 'FAILED', error: String((e && e.message) || e) }; }
+  }
   const userOff = (typeof settings.tzOffset === 'number') ? settings.tzOffset : offMin;
   const leadMs = (settings.leadMinutes || 60) * 60000;
   const schedLeadMsDbg = (settings.scheduleLeadMinutes || 60) * 60000;
@@ -274,9 +282,10 @@ module.exports = async (req, res) => {
   catch (e) { res.status(500).json({ error: 'MLN_USERS is not valid JSON' }); return; }
   const now = Date.now();
   const debug = (req.query && req.query.debug) === '1';
+  const tgtest = (req.query && req.query.tgtest) === '1';
   const results = [];
   for (const u of users) {
-    try { results.push({ email: u.email, ...(await processUser(u, apiKey, project, offMin, now, debug)) }); }
+    try { results.push({ email: u.email, ...(await processUser(u, apiKey, project, offMin, now, debug, tgtest)) }); }
     catch (e) { results.push({ email: u.email, error: String((e && e.message) || e) }); }
   }
   res.status(200).json({ ok: true, ranAt: new Date(now).toISOString(), results });
