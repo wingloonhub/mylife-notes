@@ -1099,8 +1099,8 @@ async function buildShoppingAddPanel(onAdd) {
   return panel;
 }
 
-/* render ONE grocery list as a card (your own, or one shared with you). Edits save to `doc` and sync live. */
-function renderGroceryCard(doc, amOwner) {
+/* render the grocery list as one card (add + tick). Sharing is configured in Settings, not here. */
+function renderGroceryCard(doc) {
   if (!doc.data) doc.data = {};
   if (!Array.isArray(doc.data.items)) doc.data.items = [];
   const save = () => DB.saveItem(doc);
@@ -1138,9 +1138,6 @@ function renderGroceryCard(doc, amOwner) {
     });
   }
 
-  if (doc._shared) card.appendChild(h('div', { class: 'meta', style: { color: 'var(--accent)', marginBottom: '6px' } },
-    amOwner ? '👥 Shared by you' : ('👥 Shared by ' + (doc._ownerEmail || 'someone'))));
-
   // add form (collapsible, built lazily)
   let addPanelEl = null;
   const addWrap = h('div', { style: { display: 'none', marginBottom: '8px' } });
@@ -1151,47 +1148,60 @@ function renderGroceryCard(doc, amOwner) {
     addBtn.textContent = showing ? '+ Add item' : '✕ Close';
   } }, '+ Add item');
   card.appendChild(addBtn);
-
-  // share control — only the owner can change who it's shared with
-  if (amOwner) {
-    const shareWrap = h('div', { style: { display: 'none', marginTop: '8px' } },
-      h('div', { class: 'hint', style: { marginBottom: '8px' } }, 'Add the login email of anyone to share this grocery list with — they can see & edit it live. Leave empty to keep it private.'),
-      shareWithEditor(doc.data, () => save()));
-    const shareBtn = h('button', { class: 'btn secondary small', type: 'button', style: { marginLeft: '8px' }, onclick: () => {
-      const showing = shareWrap.style.display !== 'none';
-      shareWrap.style.display = showing ? 'none' : '';
-      shareBtn.textContent = showing ? '👥 Share' : '✕ Close sharing';
-    } }, '👥 Share');
-    card.appendChild(shareBtn);
-    card.appendChild(addWrap);
-    card.appendChild(shareWrap);
-  } else {
-    card.appendChild(addWrap);
-  }
+  card.appendChild(addWrap);
   card.appendChild(listWrap);
   drawList();
   return card;
 }
 
-/* grocery screen: your own list + any grocery lists shared with you (option A: one household list you both edit) */
+let _groceryRenderToken = 0;
+/* grocery screen: ONE household list. Sharing is set in Settings → whoever's added shares this one list. */
 async function renderShoppingItems(body) {
+  const tok = ++_groceryRenderToken;
+  const settings = await DB.getSettings();
+  const shareEmails = cleanEmails(settings.groceryShare || []);
   const all = await DB.listItems('shopping');
-  let myList = all.find(it => !it._shared || it._amOwner);
-  if (!myList) {
-    myList = { id: '_shoplist', cat: 'shopping', data: { title: 'Grocery list', items: [] } };
-    // one-time: fold any old private named lists into the single list
-    const old = all.filter(x => !x._shared && x.id !== '_shoplist');
-    for (const o of old) for (const t of ((o.data && o.data.items) || [])) myList.data.items.push(t);
-    if (myList.data.items.length) await DB.saveItem(myList);
-  }
-  const othersLists = all.filter(it => it._shared && !it._amOwner);
+  if (tok !== _groceryRenderToken) return; // a newer render superseded this one
 
-  body.appendChild(h('div', { class: 'section-title', style: { marginTop: '4px' } }, 'Your grocery list'));
-  body.appendChild(renderGroceryCard(myList, true));
-  othersLists.forEach(ol => {
-    body.appendChild(h('div', { class: 'section-title' }, '👥 Shared with you'));
-    body.appendChild(renderGroceryCard(ol, false));
-  });
+  // pick THE one grocery list: a shared one if it exists, else my private list
+  const sharedDocs = all.filter(it => it._shared).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  let doc, amOwner;
+  if (sharedDocs.length) {
+    doc = sharedDocs[0];
+    amOwner = !!doc._amOwner;
+    // delete any stale duplicate shared lists I own (leftovers from earlier versions)
+    for (let i = 1; i < sharedDocs.length; i++) { if (sharedDocs[i]._amOwner) { try { await DB.deleteItem('shopping', sharedDocs[i].id); } catch (e) {} } }
+  } else {
+    doc = all.find(it => !it._shared);
+    if (!doc) {
+      doc = { id: '_shoplist', cat: 'shopping', data: { title: 'Grocery list', items: [] } };
+      const old = all.filter(x => !x._shared && x.id !== '_shoplist');
+      for (const o of old) for (const t of ((o.data && o.data.items) || [])) doc.data.items.push(t);
+    }
+    amOwner = true;
+  }
+  if (!doc.data) doc.data = {};
+
+  // owner: keep this list's share list in sync with the Settings setting
+  if (amOwner) {
+    const cur = cleanEmails(doc.data.sharedWith);
+    if (!settings.groceryShareSet && cur.length) {
+      // first load after upgrade: adopt any existing per-list sharing INTO Settings (don't wipe it)
+      try { await DB.saveSettings(Object.assign({}, settings, { groceryShare: cur, groceryShareSet: true })); } catch (e) {}
+    } else if (settings.groceryShareSet && JSON.stringify(cur) !== JSON.stringify(shareEmails)) {
+      // Settings is authoritative once configured — apply it (shares, re-shares, or un-shares)
+      doc.data.sharedWith = shareEmails;
+      await DB.saveItem(doc); // moves between private/shared as needed
+      if (tok !== _groceryRenderToken) return;
+    }
+  }
+
+  body.innerHTML = '';
+  const heading = doc._shared
+    ? (amOwner ? 'Grocery list · 👥 shared' : 'Grocery list · 👥 shared by ' + (doc._ownerEmail || 'someone'))
+    : 'Your grocery list';
+  body.appendChild(h('div', { class: 'section-title', style: { marginTop: '4px' } }, heading));
+  body.appendChild(renderGroceryCard(doc));
 }
 
 let _rerender = null;
@@ -2586,6 +2596,7 @@ async function settingsScreen() {
   let schedUnit = (sLM % 60 === 0 && sLM >= 60) ? 'hours' : 'minutes';
   let schedAmount = schedUnit === 'hours' ? sLM / 60 : sLM;
   const form = { amount: String(amount), unit, telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0), schedAmount: String(schedAmount), schedUnit };
+  const gShareObj = { sharedWith: (s.groceryShare || []).slice() }; // grocery sharing list lives in settings
 
   const body = h('div', null,
     h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Set it up below.'),
@@ -2609,6 +2620,9 @@ async function settingsScreen() {
         h('select', { onchange: e => form.schedUnit = e.target.value },
           h('option', { value: 'minutes', selected: form.schedUnit === 'minutes' ? 'selected' : null }, 'minutes before'),
           h('option', { value: 'hours', selected: form.schedUnit === 'hours' ? 'selected' : null }, 'hours before')))),
+    h('div', { class: 'section-title' }, 'Grocery list sharing'),
+    h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone in your household. You\'ll all share ONE grocery list — whoever adds an item, everyone sees it. Stays on until you remove them here.'),
+    shareWithEditor(gShareObj),
     telegramSection(form),
     h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
       const n = Math.max(1, parseInt(form.amount) || 1);
@@ -2616,7 +2630,7 @@ async function settingsScreen() {
       const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
       const sn = Math.max(1, parseInt(form.schedAmount) || 1);
       const scheduleLeadMinutes = form.schedUnit === 'hours' ? sn * 60 : sn;
-      await DB.saveSettings({ leadMinutes, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, scheduleLeadMinutes });
+      await DB.saveSettings({ leadMinutes, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, scheduleLeadMinutes, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
       toast('Settings saved');
       startReminders();
       navigate('#/');
