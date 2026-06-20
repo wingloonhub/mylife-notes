@@ -159,7 +159,7 @@ const Auth = {
 
 /* ---------------- DATA ---------------- */
 /* categories that can be shared live across accounts (via the top-level `shared` collection) */
-const SHARE_CATS = ['party', 'trips'];
+const SHARE_CATS = ['party', 'trips', 'shopping'];
 function myEmail() { return ((CURRENT && CURRENT.email) || '').trim().toLowerCase(); }
 function cleanEmails(arr) { return Array.from(new Set((arr || []).map(e => String(e).trim().toLowerCase()).filter(Boolean))); }
 
@@ -192,8 +192,10 @@ const DB = {
       const d = await getDoc(doc(fb.db, 'users', CURRENT.uid, 'items', id));
       if (d.exists()) return { id: d.id, ...d.data() };
       if (SHARE_CATS.includes(cat)) {
+        // the grocery singleton uses a per-owner shared id to avoid collisions
+        const sharedId = (cat === 'shopping' && id === '_shoplist') ? (CURRENT.uid + '_shoplist') : id;
         try {
-          const s = await getDoc(doc(fb.db, 'shared', id));
+          const s = await getDoc(doc(fb.db, 'shared', sharedId));
           if (s.exists()) { const v = s.data(); return { id: s.id, cat: v.cat, data: v.data, updatedAt: v.updatedAt, _shared: true, _ownerUid: v.ownerUid, _ownerEmail: v.ownerEmail, _amOwner: v.ownerUid === CURRENT.uid }; }
         } catch (e) {}
       }
@@ -214,15 +216,23 @@ const DB = {
         const ownerEmail = item._ownerEmail || myEmail();
         if (item.data) item.data.sharedWith = sharedWith;
         const participants = cleanEmails([ownerEmail, ...sharedWith]);
-        await setDoc(doc(fb.db, 'shared', item.id), { cat: item.cat, data: item.data, ownerUid, ownerEmail, participants, updatedAt: item.updatedAt }, { merge: true });
+        // grocery is a singleton; give it a per-owner shared id so two people's lists don't collide
+        const sid = (item.cat === 'shopping') ? (ownerUid + '_shoplist') : item.id;
+        await setDoc(doc(fb.db, 'shared', sid), { cat: item.cat, data: item.data, ownerUid, ownerEmail, participants, updatedAt: item.updatedAt }, { merge: true });
         // if I own it and a private copy lingers, remove it
-        if (ownerUid === CURRENT.uid) { try { await deleteDoc(doc(fb.db, 'users', CURRENT.uid, 'items', item.id)); } catch (e) {} }
+        if (ownerUid === CURRENT.uid) {
+          const privId = (item.cat === 'shopping') ? '_shoplist' : item.id;
+          try { await deleteDoc(doc(fb.db, 'users', CURRENT.uid, 'items', privId)); } catch (e) {}
+        }
+        item.id = sid;
       } else {
         // private
+        const privId = (item.cat === 'shopping') ? '_shoplist' : item.id;
         const { id, _shared, _ownerUid, _ownerEmail, _amOwner, ...rest } = item;
-        await setDoc(doc(fb.db, 'users', CURRENT.uid, 'items', id), rest, { merge: true });
+        await setDoc(doc(fb.db, 'users', CURRENT.uid, 'items', privId), rest, { merge: true });
         // if it used to be shared (now un-shared), remove the shared copy
-        if (isShareable) { try { await deleteDoc(doc(fb.db, 'shared', id)); } catch (e) {} }
+        if (isShareable) { try { await deleteDoc(doc(fb.db, 'shared', (item.cat === 'shopping') ? (CURRENT.uid + '_shoplist') : id)); } catch (e) {} }
+        item.id = privId;
       }
     } else {
       const key = 'mln_items_' + CURRENT.uid;
@@ -1085,28 +1095,21 @@ async function buildShoppingAddPanel(onAdd) {
   return panel;
 }
 
-/* the single, flat shopping list: add straight in, tick off as you buy */
-async function renderShoppingItems(body) {
-  let doc = await DB.getItem('shopping', '_shoplist');
-  if (!doc) {
-    doc = { id: '_shoplist', cat: 'shopping', data: { title: 'Shopping list', items: [] } };
-    // one-time: fold any previously-created named lists into the single list
-    const old = (await DB.listItems('shopping')).filter(x => x.id !== '_shoplist');
-    for (const o of old) for (const t of ((o.data && o.data.items) || [])) doc.data.items.push(t);
-    if (doc.data.items.length) await DB.saveItem(doc);
-  }
+/* render ONE grocery list as a card (your own, or one shared with you). Edits save to `doc` and sync live. */
+function renderGroceryCard(doc, amOwner) {
+  if (!doc.data) doc.data = {};
   if (!Array.isArray(doc.data.items)) doc.data.items = [];
   const save = () => DB.saveItem(doc);
-  // bought items disappear 2 hours after being ticked
   const TWO_H = 2 * 3600 * 1000;
   const purge = () => {
     const before = doc.data.items.length;
     doc.data.items = doc.data.items.filter(t => !(t.checked && t.boughtAt && (Date.now() - t.boughtAt > TWO_H)));
     return doc.data.items.length !== before;
   };
-  if (purge()) await save();
+  if (purge()) save();
 
-  const listWrap = h('div', { class: 'detail-card' });
+  const card = h('div', { class: 'detail-card' });
+  const listWrap = h('div');
   function drawList() {
     if (purge()) save();
     listWrap.innerHTML = '';
@@ -1131,31 +1134,60 @@ async function renderShoppingItems(body) {
     });
   }
 
-  // the add form stays hidden until you tap "+ Add item"
-  const addPanel = await buildShoppingAddPanel(async (obj) => { doc.data.items.push(obj); await save(); drawList(); });
-  const addWrap = h('div', { class: 'detail-card', style: { display: 'none' } }, addPanel);
-  const addBtn = h('button', { class: 'btn', type: 'button', onclick: () => {
+  if (doc._shared) card.appendChild(h('div', { class: 'meta', style: { color: 'var(--accent)', marginBottom: '6px' } },
+    amOwner ? '👥 Shared by you' : ('👥 Shared by ' + (doc._ownerEmail || 'someone'))));
+
+  // add form (collapsible, built lazily)
+  let addPanelEl = null;
+  const addWrap = h('div', { style: { display: 'none', marginBottom: '8px' } });
+  const addBtn = h('button', { class: 'btn small', type: 'button', onclick: async () => {
+    if (!addPanelEl) { addPanelEl = await buildShoppingAddPanel(async (obj) => { doc.data.items.push(obj); await save(); drawList(); }); addWrap.appendChild(addPanelEl); }
     const showing = addWrap.style.display !== 'none';
     addWrap.style.display = showing ? 'none' : '';
     addBtn.textContent = showing ? '+ Add item' : '✕ Close';
   } }, '+ Add item');
-  // share-this-list control (collapsible)
-  const shareWrap = h('div', { class: 'detail-card', style: { display: 'none' } },
-    h('div', { class: 'hint', style: { marginBottom: '8px' } }, 'Add the login email of anyone you want to share this grocery list with — they can see & edit it live. Leave empty to keep it private.'),
-    shareWithEditor(doc.data, () => save()));
-  const shareBtn = h('button', { class: 'btn secondary', type: 'button', style: { marginTop: '8px' }, onclick: () => {
-    const showing = shareWrap.style.display !== 'none';
-    shareWrap.style.display = showing ? 'none' : '';
-    shareBtn.textContent = showing ? '👥 Share this list' : '✕ Close sharing';
-  } }, '👥 Share this list');
+  card.appendChild(addBtn);
 
-  body.appendChild(addBtn);
-  body.appendChild(addWrap);
-  body.appendChild(shareBtn);
-  body.appendChild(shareWrap);
-  body.appendChild(h('div', { class: 'section-title' }, 'Your list'));
-  body.appendChild(listWrap);
+  // share control — only the owner can change who it's shared with
+  if (amOwner) {
+    const shareWrap = h('div', { style: { display: 'none', marginTop: '8px' } },
+      h('div', { class: 'hint', style: { marginBottom: '8px' } }, 'Add the login email of anyone to share this grocery list with — they can see & edit it live. Leave empty to keep it private.'),
+      shareWithEditor(doc.data, () => save()));
+    const shareBtn = h('button', { class: 'btn secondary small', type: 'button', style: { marginLeft: '8px' }, onclick: () => {
+      const showing = shareWrap.style.display !== 'none';
+      shareWrap.style.display = showing ? 'none' : '';
+      shareBtn.textContent = showing ? '👥 Share' : '✕ Close sharing';
+    } }, '👥 Share');
+    card.appendChild(shareBtn);
+    card.appendChild(addWrap);
+    card.appendChild(shareWrap);
+  } else {
+    card.appendChild(addWrap);
+  }
+  card.appendChild(listWrap);
   drawList();
+  return card;
+}
+
+/* grocery screen: your own list + any grocery lists shared with you (option A: one household list you both edit) */
+async function renderShoppingItems(body) {
+  const all = await DB.listItems('shopping');
+  let myList = all.find(it => !it._shared || it._amOwner);
+  if (!myList) {
+    myList = { id: '_shoplist', cat: 'shopping', data: { title: 'Grocery list', items: [] } };
+    // one-time: fold any old private named lists into the single list
+    const old = all.filter(x => !x._shared && x.id !== '_shoplist');
+    for (const o of old) for (const t of ((o.data && o.data.items) || [])) myList.data.items.push(t);
+    if (myList.data.items.length) await DB.saveItem(myList);
+  }
+  const othersLists = all.filter(it => it._shared && !it._amOwner);
+
+  body.appendChild(h('div', { class: 'section-title', style: { marginTop: '4px' } }, 'Your grocery list'));
+  body.appendChild(renderGroceryCard(myList, true));
+  othersLists.forEach(ol => {
+    body.appendChild(h('div', { class: 'section-title' }, '👥 Shared with you'));
+    body.appendChild(renderGroceryCard(ol, false));
+  });
 }
 
 let _rerender = null;
@@ -1971,6 +2003,7 @@ async function renderShoppingScreen(listEl, lists, fab, initialTab) {
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
   function render() {
+    stopLive(); // clear any live listener from a previous tab
     tabsEl.innerHTML = '';
     [['lists', 'Grocery list'], ['items', 'Saved items (' + items.length + ')'], ['cats', 'Categories']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
@@ -1983,6 +2016,7 @@ async function renderShoppingScreen(listEl, lists, fab, initialTab) {
     if (tab === 'lists') {
       if (fab) fab.style.display = 'none'; // adding happens inline, no separate list cards
       renderShoppingItems(body);
+      startLive(() => render()); // live-refresh when a shared grocery list changes
       return;
     }
     if (fab) fab.style.display = '';
