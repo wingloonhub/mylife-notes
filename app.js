@@ -356,6 +356,7 @@ const CATS = [
   { key: 'shopping', name: 'Grocery Planner', emoji: '🛒' },
   { key: 'shopitem', name: 'Saved Item', emoji: '🏷️', hidden: true },
   { key: 'tripcat', name: 'Trip Area', emoji: '🏷️', hidden: true },
+  { key: 'activity', name: 'Activity', emoji: '📌', hidden: true },
   { key: 'recipes', name: 'Recipes', emoji: '🍳' },
   { key: 'warranty', name: 'Warranty Tracker', emoji: '🧾' }
 ];
@@ -1596,6 +1597,78 @@ function nextWeekdayOccurrence(dayIdx, startHM) {
   if (occ.getTime() <= now.getTime()) occ.setDate(occ.getDate() + 7);
   return occ;
 }
+/* materialise the next 7 days of activities from the weekly schedule definitions (idempotent; drops past days) */
+async function generateActivities() {
+  let schedules, existing;
+  try { schedules = await DB.listItems('schedule'); existing = await DB.listItems('activity'); }
+  catch (e) { return; }
+  const today = localDateStr(new Date());
+  const have = new Set(existing.map(a => a.id));
+  for (const a of existing) { if (((a.data && a.data.date) || '') < today) { try { await DB.deleteItem('activity', a.id); } catch (e) {} } }
+  const jobs = [];
+  for (let off = 0; off < 7; off++) {
+    const dt = new Date(); dt.setHours(0, 0, 0, 0); dt.setDate(dt.getDate() + off);
+    const dateStr = localDateStr(dt), dow = dt.getDay();
+    for (const sc of schedules) {
+      const d = sc.data || {};
+      (d.slots || []).forEach((slot, idx) => {
+        if (Number(slot.day) !== dow) return;
+        if (d.repeatMode === 'until' && d.until && dateStr > d.until) return; // schedule has ended
+        const id = sc.id + '__' + dateStr + '__' + idx;
+        if (have.has(id)) return;
+        have.add(id);
+        jobs.push(DB.saveItem({ id, cat: 'activity', data: { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', cancelled: false } }));
+      });
+    }
+  }
+  await Promise.all(jobs);
+}
+
+async function renderScheduleScreen(listEl, definitions, fab, initialTab) {
+  await generateActivities();
+  const today = localDateStr(new Date());
+  const acts = (await DB.listItems('activity')).filter(a => (a.data.date || '') >= today)
+    .sort((a, b) => ((a.data.date || '') + (a.data.start || '')).localeCompare((b.data.date || '') + (b.data.start || '')));
+  let tab = initialTab || 'upcoming';
+  const tabsEl = h('div', { class: 'tabs' });
+  const body = h('div', { class: 'list' });
+  function render() {
+    tabsEl.innerHTML = '';
+    [['upcoming', 'Upcoming (' + acts.filter(a => !a.data.cancelled).length + ')'], ['schedule', 'Schedule (' + definitions.length + ')']].forEach(([k, label]) =>
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
+    body.innerHTML = '';
+    if (tab === 'schedule') {
+      if (fab) { fab.style.display = ''; fab.onclick = () => navigate('#/edit/schedule'); }
+      if (!definitions.length) { body.appendChild(emptyState('schedule', 'No weekly schedules yet. Tap + to add one.')); return; }
+      for (const it of definitions) body.appendChild(buildRow('schedule', it));
+      return;
+    }
+    if (fab) fab.style.display = 'none';
+    if (!acts.length) { body.appendChild(h('div', { class: 'hint' }, 'No activities in the next 7 days — they appear here automatically from your schedule.')); return; }
+    for (const a of acts) body.appendChild(buildActivityRow(a, render));
+  }
+  listEl.appendChild(tabsEl);
+  listEl.appendChild(body);
+  render();
+}
+
+function buildActivityRow(act, rerender) {
+  const d = act.data || {};
+  const dt = new Date(d.date + 'T00:00:00');
+  const dayLabel = (isNaN(dt) ? d.date : (DOW_SHORT[dt.getDay()] + ', ' + fmtDate(d.date)));
+  const timeLabel = d.start ? (fmtHM(d.start) + (d.end ? '–' + fmtHM(d.end) : '')) : '';
+  return h('div', { class: 'row' + (d.cancelled ? ' cancelled-row' : '') },
+    h('div', { class: 'main' },
+      h('div', { class: 'title' }, d.title || 'Activity'),
+      h('div', { class: 'meta' }, [dayLabel, timeLabel, d.location].filter(Boolean).join(' · ')),
+      d.cancelled ? h('div', { class: 'meta', style: { color: 'var(--amber)' } }, 'Cancelled for this day') : null),
+    h('button', { class: 'btn small ' + (d.cancelled ? '' : 'secondary'), type: 'button', onclick: async (e) => {
+      e.stopPropagation();
+      d.cancelled = !d.cancelled;
+      await DB.saveItem(act);
+      rerender();
+    } }, d.cancelled ? 'Restore' : 'Cancel'));
+}
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
@@ -2066,7 +2139,11 @@ async function homeScreen() {
       h('div', { class: 'emoji' }, c.emoji),
       h('div', null, h('div', { class: 'name' }, c.name), h('div', { class: 'count' }, '…')));
     grid.appendChild(card);
-    DB.listItems(c.key).then(items => { card.querySelector('.count').textContent = homeCount(c.key, items); });
+    if (c.key === 'schedule') {
+      (async () => { try { await generateActivities(); } catch (e) {} const today = localDateStr(new Date()); const n = (await DB.listItems('activity')).filter(a => !a.data.cancelled && (a.data.date || '') >= today).length; card.querySelector('.count').textContent = n + ' upcoming ' + (n === 1 ? 'activity' : 'activities'); })();
+    } else {
+      DB.listItems(c.key).then(items => { card.querySelector('.count').textContent = homeCount(c.key, items); });
+    }
   }
 }
 
@@ -2086,7 +2163,7 @@ async function listScreen(cat, sub) {
 
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past Events' }); return; }
-  if (cat === 'schedule') { renderArchiveList(listEl, 'schedule', items, scheduleIsCompleted, { distance: true, upcomingLabel: 'Upcoming', archiveLabel: 'Completed' }); return; }
+  if (cat === 'schedule') { renderScheduleScreen(listEl, items, fab, sub === 'def' ? 'schedule' : 'upcoming'); return; }
   if (cat === 'tax') { renderTaxList(listEl, items); return; }
   if (cat === 'trips') { renderTripScreen(listEl, items, fab, sub === 'cats' ? 'cats' : 'trips'); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'shopping') { renderShoppingScreen(listEl, items, fab, sub === 'items' ? 'items' : 'lists'); return; }

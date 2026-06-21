@@ -165,6 +165,8 @@ body {
 .pad-color { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--line); cursor: pointer; padding: 0; }
 .note-canvas { width: 100%; display: block; background: var(--card); border: 1px solid var(--line);
   border-radius: 12px; touch-action: pan-y; }
+.cancelled-row { opacity: .65; }
+.cancelled-row .title { text-decoration: line-through; }
 
 .sub-item {
   background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-bottom: 10px;
