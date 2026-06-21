@@ -640,8 +640,25 @@ function buildEditor(cat, data, amOwner) {
     }
     case 'quick': {
       a(field('Title', data, 'title', { placeholder: 'Title' }));
-      a(h('div', { class: 'section-title' }, 'Note'));
-      a(richTextEditor(data, 'bodyHtml', data.body));
+      const textWrap = h('div', null, richTextEditor(data, 'bodyHtml', data.body));
+      const drawWrap = h('div');
+      let drawBuilt = false;
+      const tType = h('button', { class: 'btn small', type: 'button' }, '⌨️ Type');
+      const tDraw = h('button', { class: 'btn small secondary', type: 'button' }, '✍️ Write / draw');
+      const setMode = (m) => {
+        if (m === 'draw' && !drawBuilt) { drawWrap.appendChild(drawingCanvas(data)); drawBuilt = true; }
+        textWrap.style.display = m === 'text' ? '' : 'none';
+        drawWrap.style.display = m === 'draw' ? '' : 'none';
+        tType.className = 'btn small' + (m === 'text' ? '' : ' secondary');
+        tDraw.className = 'btn small' + (m === 'draw' ? '' : ' secondary');
+      };
+      tType.onclick = () => setMode('text');
+      tDraw.onclick = () => setMode('draw');
+      a(h('div', { class: 'mode-toggle' }, tType, tDraw));
+      a(textWrap);
+      a(drawWrap);
+      // open in whichever mode the note already uses
+      setMode((data.strokes && data.strokes.length && !((data.bodyHtml || '').replace(/<[^>]+>/g, '').trim())) ? 'draw' : 'text');
       break;
     }
     case 'events': {
@@ -1408,8 +1425,10 @@ async function renderDetail(cat, item) {
     }
     case 'quick': {
       const html = data.bodyHtml != null ? data.bodyHtml : escapeHtml(data.body || '').replace(/\n/g, '<br>');
-      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Note'),
-        h('div', { class: 'rte-view', style: { marginTop: '6px' }, html: html })));
+      const card = h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Note'));
+      if ((html || '').replace(/<[^>]+>/g, '').trim()) card.appendChild(h('div', { class: 'rte-view', style: { marginTop: '6px' }, html: html }));
+      if (data.strokes && data.strokes.length) card.appendChild(inkView(data.strokes));
+      a(card);
       break;
     }
     case 'events': {
@@ -1519,7 +1538,10 @@ function summary(cat, data) {
       const c = cheapestPrice(data.prices);
       return { title: data.title || 'Item', meta: [data.category, data.brand, c && (fmtMYR(c.price) + ' / ' + unitOf(data) + ' @ ' + c.shop)].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
     }
-    case 'quick': return { title: data.title || 'Note', meta: ((data.bodyHtml || '').replace(/<[^>]+>/g, ' ').trim() || data.body || '').slice(0, 60) };
+    case 'quick': {
+      const txt = ((data.bodyHtml || '').replace(/<[^>]+>/g, ' ').trim() || data.body || '').slice(0, 60);
+      return { title: data.title || 'Note', meta: txt || ((data.strokes && data.strokes.length) ? '✍️ Handwritten note' : '') };
+    }
     case 'events': return { title: data.title || 'Event', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
     case 'schedule': {
       const slots = (data.slots || []).filter(s => s.day !== undefined);
@@ -1754,20 +1776,106 @@ function richTextEditor(data, key, legacyPlain) {
       if (!document.execCommand('hiliteColor', false, color || 'transparent')) document.execCommand('backColor', false, color || 'transparent');
       ed.focus(); data[key] = ed.innerHTML;
     } }, color ? '' : '⌫');
-  // stylus / finger drawing -> inserted as an image
-  const drawBtn = h('button', { class: 'rte-btn', type: 'button', title: 'Draw / write with pen',
-    onmousedown: e => e.preventDefault(),
-    onclick: () => openDrawingPad((url) => { ed.focus(); document.execCommand('insertHTML', false, '<img src="' + url + '" class="note-img"><br>'); sync(); }) }, '✍️');
   const toolbar = h('div', { class: 'rte-toolbar' },
     btn(h('b', null, 'B'), 'bold'),
     btn(h('i', null, 'I'), 'italic'),
     btn(h('u', null, 'U'), 'underline'),
-    btn('• List', 'insertUnorderedList'),
-    drawBtn);
+    btn('• List', 'insertUnorderedList'));
   const hiBar = h('div', { class: 'rte-toolbar hilites' },
     h('span', { class: 'hl-label' }, 'Highlight:'),
     hilite('#fff59d'), hilite('#a5d6a7'), hilite('#f48fb1'), hilite('#90caf9'), hilite(''));
   return h('div', null, toolbar, hiBar, ed);
+}
+
+/* paint a list of vector strokes onto a 2d context (shared by editor + read-only view) */
+function paintStrokes(ctx, strokes, dpr) {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  for (const s of (strokes || [])) {
+    if (!s.pts || !s.pts.length) continue;
+    ctx.save();
+    ctx.globalCompositeOperation = (s.tool === 'eraser') ? 'destination-out' : 'source-over';
+    ctx.globalAlpha = (s.tool === 'hl') ? 0.3 : 1;
+    ctx.lineWidth = s.width;
+    ctx.strokeStyle = (s.tool === 'eraser') ? 'rgba(0,0,0,1)' : s.color;
+    ctx.beginPath(); ctx.moveTo(s.pts[0][0], s.pts[0][1]);
+    for (let i = 1; i < s.pts.length; i++) ctx.lineTo(s.pts[i][0], s.pts[i][1]);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+/* full-page handwriting/drawing canvas. Strokes saved as vectors in data.strokes (so undo + redraw work). */
+function drawingCanvas(data) {
+  if (!Array.isArray(data.strokes)) data.strokes = [];
+  const PEN_COLORS = ['#ffffff', '#5b9cff', '#ff6b6b', '#ffd93d', '#69db7c'];
+  const state = { tool: 'pen', penColor: '#5b9cff' };
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const HEIGHT = 1600;
+  const canvas = h('canvas', { class: 'note-canvas' });
+  const ctx = canvas.getContext('2d');
+  const redraw = () => paintStrokes(ctx, data.strokes, dpr);
+  function size() {
+    const w = canvas.clientWidth || 360;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(HEIGHT * dpr);
+    canvas.style.height = HEIGHT + 'px';
+    redraw();
+  }
+  setTimeout(size, 0);
+
+  let cur = null;
+  const pos = e => { const r = canvas.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  const drawSeg = (s, pts) => {
+    ctx.save();
+    ctx.globalCompositeOperation = (s.tool === 'eraser') ? 'destination-out' : 'source-over';
+    ctx.globalAlpha = (s.tool === 'hl') ? 0.3 : 1;
+    ctx.lineWidth = s.width; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.strokeStyle = (s.tool === 'eraser') ? 'rgba(0,0,0,1)' : s.color;
+    ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.stroke(); ctx.restore();
+  };
+  canvas.addEventListener('pointerdown', e => {
+    if (e.pointerType === 'touch') return; // finger scrolls the page; pen/mouse draws
+    e.preventDefault();
+    const width = state.tool === 'hl' ? 18 : state.tool === 'eraser' ? 24 : (e.pressure > 0 ? 1 + e.pressure * 4 : 2.6);
+    cur = { tool: state.tool, color: state.tool === 'hl' ? '#ffe066' : state.penColor, width, pts: [pos(e)] };
+    try { canvas.setPointerCapture(e.pointerId); } catch (x) {}
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!cur || e.pointerType === 'touch') return;
+    e.preventDefault(); cur.pts.push(pos(e)); drawSeg(cur, cur.pts.slice(-2));
+  });
+  const end = () => { if (!cur) return; if (cur.pts.length > 1 || cur.pts.length === 1) { data.strokes.push(cur); canvas.dispatchEvent(new Event('input', { bubbles: true })); } cur = null; };
+  canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointercancel', end);
+
+  const tools = h('div', { class: 'pad-toolbar' });
+  const refresh = () => [...tools.querySelectorAll('.pad-tool')].forEach(b => b.classList.toggle('on', b.dataset.t === state.tool));
+  const toolBtn = (label, t, title) => h('button', { class: 'pad-tool', type: 'button', title, 'data-t': t, onclick: () => { state.tool = t; refresh(); } }, label);
+  const fireInput = () => canvas.dispatchEvent(new Event('input', { bubbles: true }));
+  tools.appendChild(toolBtn('✏️', 'pen', 'Pen'));
+  tools.appendChild(toolBtn('🖍️', 'hl', 'Highlighter'));
+  tools.appendChild(toolBtn('🧹', 'eraser', 'Eraser'));
+  PEN_COLORS.forEach(c => tools.appendChild(h('button', { class: 'pad-color', type: 'button', style: { background: c }, title: 'Pen colour', onclick: () => { state.penColor = c; state.tool = 'pen'; refresh(); } })));
+  tools.appendChild(h('button', { class: 'pad-tool', type: 'button', title: 'Undo', onclick: () => { data.strokes.pop(); redraw(); fireInput(); } }, '↩︎'));
+  tools.appendChild(h('button', { class: 'pad-tool', type: 'button', title: 'Clear all', onclick: () => { if (!confirmDel('Clear the whole drawing?')) return; data.strokes = []; redraw(); fireInput(); } }, '🗑'));
+  refresh();
+  return h('div', { class: 'note-pad' }, h('div', { class: 'hint', style: { margin: '0 0 6px' } }, 'Write or draw with your stylus. Use your finger to scroll.'), tools, canvas);
+}
+
+/* read-only render of saved ink strokes (for the note detail view) */
+function inkView(strokes) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const HEIGHT = (strokes || []).reduce((m, s) => Math.max(m, ...(s.pts || []).map(p => p[1])), 0) + 40 || 200;
+  const canvas = h('canvas', { class: 'note-canvas', style: { height: HEIGHT + 'px' } });
+  setTimeout(() => {
+    const w = canvas.clientWidth || 360;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(HEIGHT * dpr);
+    paintStrokes(canvas.getContext('2d'), strokes, dpr);
+  }, 0);
+  return canvas;
 }
 
 /* full-screen pad: draw with a stylus (pressure-aware) or finger, then insert into the note */
@@ -1920,6 +2028,27 @@ function friendlyErr(e) {
 }
 
 /* ----- HOME ----- */
+/* category-specific home-card count, correctly singular/plural */
+function homeCount(cat, items) {
+  const plural = (n, s, p) => n + ' ' + (n === 1 ? s : (p || s + 's'));
+  const d = it => it.data || {};
+  switch (cat) {
+    case 'todo': return plural(items.filter(it => (d(it).items || []).some(t => !t.checked)).length, 'list');
+    case 'events': return plural(items.filter(it => !eventIsArchived(it)).length, 'upcoming event');
+    case 'schedule': return plural(items.filter(it => !scheduleIsCompleted(it)).length, 'activity', 'activities');
+    case 'records': return plural(items.length, 'record');
+    case 'memberships': return plural(items.length, 'membership');
+    case 'tax': { const y = String(new Date().getFullYear()); return plural(items.filter(it => String(d(it).year || '') === y).length, 'receipt') + ' (' + y + ')'; }
+    case 'party': return plural(items.filter(it => !partyIsArchived(it)).length, 'upcoming party', 'upcoming parties');
+    case 'trips': return plural(items.filter(it => !(d(it).endDate && dayPassed(d(it).endDate))).length, 'upcoming trip');
+    case 'shopping': return plural(items.reduce((n, it) => n + (d(it).items || []).filter(t => !t.checked).length, 0), 'item to buy', 'items to buy');
+    case 'recipes': return plural(items.length, 'recipe');
+    case 'warranty': return plural(items.filter(it => !(d(it).expiry && dayPassed(d(it).expiry))).length, 'active warranty', 'active warranties');
+    case 'quick': return plural(items.length, 'note');
+    default: return plural(items.length, 'item');
+  }
+}
+
 async function homeScreen() {
   const grid = h('div', { class: 'grid' });
   const bar = appbar('MyLife Hub', CURRENT && CURRENT.email, {
@@ -1937,7 +2066,7 @@ async function homeScreen() {
       h('div', { class: 'emoji' }, c.emoji),
       h('div', null, h('div', { class: 'name' }, c.name), h('div', { class: 'count' }, '…')));
     grid.appendChild(card);
-    DB.listItems(c.key).then(items => { card.querySelector('.count').textContent = items.length + (items.length === 1 ? ' note' : ' notes'); });
+    DB.listItems(c.key).then(items => { card.querySelector('.count').textContent = homeCount(c.key, items); });
   }
 }
 
@@ -2262,6 +2391,7 @@ async function enrichRowDistance(it, row, posP) {
 /* ----- EDITOR ----- */
 async function editScreen(cat, id) {
   let item = id ? await DB.getItem(cat, id) : null;
+  if (id && !item) { redirectReplace('#/cat/' + cat); return; } // editing a deleted item — skip it for Back
   let currentId = id;
   const data = item ? JSON.parse(JSON.stringify(item.data || {})) : {};
   // ownership of a shared item (members can edit content but not the share list)
@@ -2276,7 +2406,7 @@ async function editScreen(cat, id) {
   const isQuick = cat === 'quick';
   const hasContent = () => {
     if (cat === 'records') return true;
-    if (isQuick) return !!(data.title || (data.bodyHtml || '').replace(/<[^>]+>/g, '').trim());
+    if (isQuick) return !!(data.title || (data.bodyHtml || '').replace(/<[^>]+>/g, '').trim() || (data.strokes && data.strokes.length));
     return !!data.title;
   };
   async function saveNow() {
@@ -2321,7 +2451,7 @@ async function editScreen(cat, id) {
 /* ----- DETAIL ----- */
 async function viewScreen(cat, id) {
   const item = await DB.getItem(cat, id);
-  if (!item) { navigate('#/cat/' + cat); return; }
+  if (!item) { redirectReplace('#/cat/' + cat); return; } // deleted/missing — skip over it for Back
   const bar = appbar(catName(cat).replace(/s$/, ''), null, {
     back: () => goBack(),
     action: h('div', { style: { display: 'flex', gap: '6px' } },
@@ -2493,17 +2623,13 @@ function showOpenInChrome(code) {
    ROUTER
    ============================================================ */
 function navigate(hash) { if (location.hash === hash) routeChanged(); else location.hash = hash; }
-/* deterministic "back": go to the logical parent screen — never leaves the app */
+/* replace the current history entry (used to skip over a deleted item so the phone Back button doesn't loop) */
+function redirectReplace(hash) { history.replaceState(null, '', hash); routeChanged(); }
+/* in-app "‹" back = pop browser history, exactly like the phone's Back button.
+   Navigations push history, so Back pops screen-by-screen to Home, then exits the app at Home. */
 function goBack() {
-  const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  const type = parts[0], cat = parts[1], id = parts[2];
-  if (type === 'view' && cat) return void navigate('#/cat/' + cat);
-  if (type === 'edit' && cat) {
-    // recipes/events/etc. were opened from their detail view; to-dos & notes open straight to edit
-    if (id && cat !== 'todo' && cat !== 'quick') return void navigate('#/view/' + cat + '/' + id);
-    return void navigate('#/cat/' + cat);
-  }
-  navigate('#/'); // cat list, settings, import, anything else -> home
+  if (window.history.length > 1) window.history.back();
+  else navigate('#/');
 }
 
 /* live re-render: re-run the current screen when shared data changes (skips while you're typing) */

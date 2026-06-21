@@ -155,6 +155,16 @@ body {
   padding: calc(var(--safe-top) + 8px) 10px calc(var(--safe-bottom) + 10px); }
 .draw-bar { display: flex; gap: 8px; justify-content: flex-end; margin-bottom: 8px; }
 .draw-canvas { flex: 1; width: 100%; background: #fff; border-radius: 12px; touch-action: none; cursor: crosshair; }
+.mode-toggle { display: flex; gap: 8px; margin-bottom: 10px; }
+.note-pad { margin-top: 4px; }
+.pad-toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px;
+  position: sticky; top: 0; background: var(--bg); padding: 4px 0; z-index: 5; }
+.pad-tool { width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--line); background: var(--card);
+  color: var(--text); font-size: 17px; display: grid; place-items: center; cursor: pointer; }
+.pad-tool.on { border-color: var(--accent); background: rgba(109,99,255,.18); }
+.pad-color { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--line); cursor: pointer; padding: 0; }
+.note-canvas { width: 100%; display: block; background: var(--card); border: 1px solid var(--line);
+  border-radius: 12px; touch-action: pan-y; }
 
 .sub-item {
   background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 12px; margin-bottom: 10px;
