@@ -161,7 +161,7 @@ const Auth = {
 
 /* ---------------- DATA ---------------- */
 /* categories that can be shared live across accounts (via the top-level `shared` collection) */
-const SHARE_CATS = ['party', 'trips', 'shopping', 'schedule', 'activity'];
+const SHARE_CATS = ['party', 'trips', 'shopping'];
 function myEmail() { return ((CURRENT && CURRENT.email) || '').trim().toLowerCase(); }
 function cleanEmails(arr) { return Array.from(new Set((arr || []).map(e => String(e).trim().toLowerCase()).filter(Boolean))); }
 
@@ -687,11 +687,18 @@ function buildEditor(cat, data, amOwner) {
       a(h('div', { class: 'section-title' }, 'Weekly sessions'));
       a(slotsEditor(data));
       a((() => {
-        const label = () => (data.endReminder ? '✓ Remind 20 min before each session ends' : 'Remind 20 min before each session ends');
+        if (data.endRemindMin == null) data.endRemindMin = 20;
+        const label = () => (data.endReminder ? '✓ Remind before each session ends' : 'Remind before each session ends');
+        const wrap = h('div', { class: 'field', style: { marginTop: '8px' } });
+        const minRow = h('div', { class: 'field', style: { marginTop: '8px', display: data.endReminder ? '' : 'none' } },
+          h('label', null, 'Minutes before it ends'),
+          h('input', { type: 'number', inputmode: 'numeric', min: '1', step: '1', value: data.endRemindMin,
+            oninput: e => { const v = parseInt(e.target.value, 10); data.endRemindMin = (isNaN(v) || v < 1) ? '' : v; } }),
+          h('div', { class: 'hint' }, 'Telegram fires this many minutes before the end time — handy for pick-ups.'));
         const b = h('button', { class: 'btn small ' + (data.endReminder ? '' : 'secondary'), type: 'button' }, label());
-        b.onclick = () => { data.endReminder = !data.endReminder; b.className = 'btn small ' + (data.endReminder ? '' : 'secondary'); b.textContent = label(); };
-        return h('div', { class: 'field', style: { marginTop: '8px' } }, b,
-          h('div', { class: 'hint' }, 'Handy for pick-ups — also sends a Telegram 20 min before the end time.'));
+        b.onclick = () => { data.endReminder = !data.endReminder; b.className = 'btn small ' + (data.endReminder ? '' : 'secondary'); b.textContent = label(); minRow.style.display = data.endReminder ? '' : 'none'; };
+        wrap.append(b);
+        return h('div', null, wrap, minRow);
       })());
       a(h('div', { class: 'section-title' }, 'How long does this run?'));
       a(selectField('Repeat', data, 'repeatMode',
@@ -1624,11 +1631,7 @@ async function generateActivities() {
         const id = sc.id + '__' + dateStr + '__' + idx;
         if (have.has(id)) return; // already exists (incl. a shared one someone else created) — leave its cancel state alone
         have.add(id);
-        const item = { id, cat: 'activity', data: { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', endReminder: !!d.endReminder, cancelled: false } };
-        // a shared schedule produces a SHARED activity (so anyone can cancel it for everyone)
-        const sw = cleanEmails(d.sharedWith);
-        if (sw.length) { item.data.sharedWith = sw; item._ownerUid = sc._ownerUid || CURRENT.uid; item._ownerEmail = sc._ownerEmail || myEmail(); }
-        jobs.push(DB.saveItem(item));
+        jobs.push(DB.saveItem({ id, cat: 'activity', data: { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', endReminder: !!d.endReminder, endRemindMin: (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20), cancelled: false } }));
       });
     }
   }
@@ -1642,17 +1645,6 @@ function activityActive(d) {
 }
 
 async function renderScheduleScreen(listEl, definitions, fab, initialTab) {
-  // keep my schedules' share-list in sync with Settings → "Weekly schedule sharing"
-  const settings = await DB.getSettings();
-  const shareEmails = cleanEmails(settings.scheduleShare || []);
-  let resync = false;
-  for (const sc of definitions) {
-    if (sc._shared && !sc._amOwner) continue; // someone else's shared schedule
-    const cur = cleanEmails((sc.data || {}).sharedWith);
-    if (!settings.scheduleShareSet && cur.length) { try { await DB.saveSettings(Object.assign({}, settings, { scheduleShare: cur, scheduleShareSet: true })); } catch (e) {} break; }
-    if (settings.scheduleShareSet && JSON.stringify(cur) !== JSON.stringify(shareEmails)) { sc.data.sharedWith = shareEmails; await DB.saveItem(sc); resync = true; }
-  }
-  if (resync) definitions = await DB.listItems('schedule');
   await generateActivities();
   const today = localDateStr(new Date());
   const acts = (await DB.listItems('activity')).filter(a => (a.data.date || '') >= today && activityActive(a.data))
@@ -2842,7 +2834,6 @@ async function settingsScreen() {
   let schedAmount = schedUnit === 'hours' ? sLM / 60 : sLM;
   const form = { amount: String(amount), unit, telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0), schedAmount: String(schedAmount), schedUnit };
   const gShareObj = { sharedWith: (s.groceryShare || []).slice() }; // grocery sharing list lives in settings
-  const schedShareObj = { sharedWith: (s.scheduleShare || []).slice() }; // weekly-schedule sharing list
 
   const body = h('div', null,
     h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Set it up below.'),
@@ -2869,9 +2860,6 @@ async function settingsScreen() {
     h('div', { class: 'section-title' }, 'Grocery list sharing'),
     h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone in your household. You\'ll all share ONE grocery list — whoever adds an item, everyone sees it. Stays on until you remove them here.'),
     shareWithEditor(gShareObj),
-    h('div', { class: 'section-title' }, 'Weekly schedule sharing'),
-    h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone you want to share your weekly schedule with — they\'ll see your upcoming activities in their app. Stays on until you remove them here.'),
-    shareWithEditor(schedShareObj),
     telegramSection(form),
     h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
       const n = Math.max(1, parseInt(form.amount) || 1);
@@ -2879,7 +2867,7 @@ async function settingsScreen() {
       const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
       const sn = Math.max(1, parseInt(form.schedAmount) || 1);
       const scheduleLeadMinutes = form.schedUnit === 'hours' ? sn * 60 : sn;
-      await DB.saveSettings({ leadMinutes, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, scheduleLeadMinutes, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true, scheduleShare: cleanEmails(schedShareObj.sharedWith), scheduleShareSet: true });
+      await DB.saveSettings({ leadMinutes, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, scheduleLeadMinutes, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
       toast('Settings saved');
       startReminders();
       navigate('#/');
@@ -2914,6 +2902,14 @@ async function checkReminders() {
       saveLastLocation(pos);
       const m = await drivingMetrics(pos, [d.lat, d.lng]);
       return ` You're about ${m.km.toFixed(1)} km away — roughly ${m.mins} min to get there.`;
+    };
+    const travelMinsFor = async (d) => {
+      if (typeof d.lat !== 'number' || typeof d.lng !== 'number') return null;
+      const pos = await getMyPos();
+      if (!pos) return null;
+      saveLastLocation(pos);
+      const m = await drivingMetrics(pos, [d.lat, d.lng]);
+      return m.mins;
     };
     const lead = (s.leadMinutes || 60) * 60000;
     const now = Date.now();
@@ -2970,12 +2966,16 @@ async function checkReminders() {
       if (d.cancelled || !d.date || !d.start) continue;
       const title = d.title || 'your activity';
       let changed = false;
-      // "ending soon" reminder — 20 min before the end time (e.g. for pick-up)
+      // "ending soon" reminder — user-set minutes before the end time (e.g. for pick-up)
       if (d.endReminder && d.end) {
+        const endLead = (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20);
         const endT = new Date(d.date + 'T' + d.end).getTime();
-        if (!isNaN(endT) && now >= endT - 20 * 60000 && now < endT && d._notifiedEnd !== d.date) {
+        if (!isNaN(endT) && now >= endT - endLead * 60000 && now < endT && d._notifiedEnd !== d.date) {
           const em = Math.max(1, Math.round((endT - now) / 60000));
-          fire(`Heads up — ${title} ends in ${em} minute${em === 1 ? '' : 's'} (at ${fmtHM(d.end)}).` + (await travelFor(d)));
+          let endMsg = `${title} will end at ${fmtHM(d.end)} — about ${em} minute${em === 1 ? '' : 's'} from now.`;
+          const tm = await travelMinsFor(d);
+          if (tm != null) endMsg += `\n\nYou're around ${tm} minute${tm === 1 ? '' : 's'} away, so you still have some time. Maybe start wrapping up and head over soon.`;
+          fire(endMsg);
           d._notifiedEnd = d.date; changed = true;
         }
       }

@@ -135,7 +135,7 @@ async function ensureActivities(project, uid, email, idToken, items, now, offMin
         const id = sc.id + '__' + dateStr + '__' + idx;
         if (have.has(id)) return;
         have.add(id);
-        const data = { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', endReminder: !!d.endReminder, cancelled: false };
+        const data = { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', endReminder: !!d.endReminder, endRemindMin: (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20), cancelled: false };
         const sw = Array.isArray(d.sharedWith) ? d.sharedWith.map(e => String(e).trim().toLowerCase()).filter(Boolean) : [];
         if (sw.length) {
           const ownerEmail = sc.ownerEmail || email;
@@ -233,6 +233,15 @@ async function travelLine(loc, destLat, destLng, now, offMin) {
   } catch (e) {}
   return '';
 }
+async function travelMins(loc, destLat, destLng, now, offMin) {
+  if (!loc || typeof loc.lat !== 'number' || typeof destLat !== 'number') return null;
+  try {
+    const r = await fetch('https://router.project-osrm.org/route/v1/driving/' + loc.lon + ',' + loc.lat + ';' + destLng + ',' + destLat + '?overview=false').then(x => x.json());
+    const route = r.routes && r.routes[0];
+    if (route) return Math.max(1, Math.round(route.duration / 60 * trafficFactor(now, offMin)));
+  } catch (e) {}
+  return null;
+}
 
 async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
@@ -322,12 +331,16 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
     const title = d.title || 'your activity';
     const loc2 = (typeof d.lat === 'number') ? await travelLine(loc, d.lat, d.lng, now, userOff) : '';
     let changed = false;
-    // "ending soon" reminder — 20 min before the end time (e.g. for pick-up)
+    // "ending soon" reminder — user-set minutes before the end time (e.g. for pick-up)
     if (d.endReminder && d.end) {
+      const endLead = (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20);
       const endT = naiveToUTC(d.date + 'T' + d.end, userOff);
-      if (!isNaN(endT) && now >= endT - 20 * 60000 && now < endT && d._notifiedEnd !== d.date) {
+      if (!isNaN(endT) && now >= endT - endLead * 60000 && now < endT && d._notifiedEnd !== d.date) {
         const em = Math.max(1, Math.round((endT - now) / 60000));
-        await tg(token, chat, `Heads up — ${title} ends in ${em} minute${em === 1 ? '' : 's'} (at ${fmtHM12(d.end)}).` + loc2);
+        let endMsg = `${title} will end at ${fmtHM12(d.end)} — about ${em} minute${em === 1 ? '' : 's'} from now.`;
+        const tm = (typeof d.lat === 'number') ? await travelMins(loc, d.lat, d.lng, now, userOff) : null;
+        if (tm != null) endMsg += `\n\nYou're around ${tm} minute${tm === 1 ? '' : 's'} away, so you still have some time. Maybe start wrapping up and head over soon.`;
+        await tg(token, chat, endMsg);
         d._notifiedEnd = d.date; changed = true; sent++;
       }
     }

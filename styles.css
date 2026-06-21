@@ -139,7 +139,7 @@ body {
   padding: 8px 0; min-width: 46px; font-size: 15px; cursor: pointer; }
 .rte-btn:active { transform: scale(.95); }
 .rte { background: var(--card); border: 1px solid var(--line); color: var(--text); border-radius: 12px;
-  padding: 13px 14px; min-height: 320px; max-height: 62vh; overflow-y: auto; font-size: 16px; line-height: 1.55; outline: none;
+  padding: 13px 14px; min-height: calc(100vh - 300px); font-size: 16px; line-height: 1.55; outline: none;
   -webkit-overflow-scrolling: touch; }
 .rte mark { padding: 0 1px; border-radius: 3px; }
 .rte:focus { border-color: var(--accent); }
