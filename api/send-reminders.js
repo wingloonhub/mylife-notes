@@ -135,7 +135,7 @@ async function ensureActivities(project, uid, email, idToken, items, now, offMin
         const id = sc.id + '__' + dateStr + '__' + idx;
         if (have.has(id)) return;
         have.add(id);
-        const data = { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', cancelled: false };
+        const data = { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', endReminder: !!d.endReminder, cancelled: false };
         const sw = Array.isArray(d.sharedWith) ? d.sharedWith.map(e => String(e).trim().toLowerCase()).filter(Boolean) : [];
         if (sw.length) {
           const ownerEmail = sc.ownerEmail || email;
@@ -319,28 +319,43 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
   for (const it of activities) {
     const d = it.data || {};
     if (d.cancelled || !d.date || !d.start) continue;
-    const t = naiveToUTC(d.date + 'T' + d.start, userOff);
-    if (isNaN(t) || now >= t) continue;
-    const mainDue = now >= t - schedLeadMs && d._notifiedFor !== d.date;
-    const halfDue = !mainDue && now >= t - schedLeadMs / 2 && d._notifiedHalf !== d.date;
-    if (!mainDue && !halfDue) continue;
-    const mins = Math.round((t - now) / 60000);
-    const at = fmtHM12(d.start);
     const title = d.title || 'your activity';
-    const travel = (typeof d.lat === 'number') ? await travelLine(loc, d.lat, d.lng, now, userOff) : '';
-    if (mainDue) {
-      const msg = mins > 0
-        ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
-        : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
-      await tg(token, chat, msg + travel);
-      d._notifiedFor = d.date;
-    } else {
-      await tg(token, chat, `Hey, are you on your way to ${title}? It's at ${at}.` + travel);
-      d._notifiedHalf = d.date;
+    const loc2 = (typeof d.lat === 'number') ? await travelLine(loc, d.lat, d.lng, now, userOff) : '';
+    let changed = false;
+    // "ending soon" reminder — 20 min before the end time (e.g. for pick-up)
+    if (d.endReminder && d.end) {
+      const endT = naiveToUTC(d.date + 'T' + d.end, userOff);
+      if (!isNaN(endT) && now >= endT - 20 * 60000 && now < endT && d._notifiedEnd !== d.date) {
+        const em = Math.max(1, Math.round((endT - now) / 60000));
+        await tg(token, chat, `Heads up — ${title} ends in ${em} minute${em === 1 ? '' : 's'} (at ${fmtHM12(d.end)}).` + loc2);
+        d._notifiedEnd = d.date; changed = true; sent++;
+      }
     }
-    if (it._shared) await putShared(project, idToken, it.id, { data: d });
-    else await patchData(project, uid, idToken, it.id, d);
-    sent++;
+    // start-based reminders (main + half)
+    const t = naiveToUTC(d.date + 'T' + d.start, userOff);
+    if (!isNaN(t) && now < t) {
+      const mainDue = now >= t - schedLeadMs && d._notifiedFor !== d.date;
+      const halfDue = !mainDue && now >= t - schedLeadMs / 2 && d._notifiedHalf !== d.date;
+      if (mainDue || halfDue) {
+        const mins = Math.round((t - now) / 60000);
+        const at = fmtHM12(d.start);
+        if (mainDue) {
+          const msg = mins > 0
+            ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
+            : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
+          await tg(token, chat, msg + loc2);
+          d._notifiedFor = d.date;
+        } else {
+          await tg(token, chat, `Hey, are you on your way to ${title}? It's at ${at}.` + loc2);
+          d._notifiedHalf = d.date;
+        }
+        changed = true; sent++;
+      }
+    }
+    if (changed) {
+      if (it._shared) await putShared(project, idToken, it.id, { data: d });
+      else await patchData(project, uid, idToken, it.id, d);
+    }
   }
 
   return { uid, sent };

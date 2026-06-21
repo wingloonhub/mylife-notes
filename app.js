@@ -686,6 +686,13 @@ function buildEditor(cat, data, amOwner) {
       a(mapFieldBlock(data));
       a(h('div', { class: 'section-title' }, 'Weekly sessions'));
       a(slotsEditor(data));
+      a((() => {
+        const label = () => (data.endReminder ? '✓ Remind 20 min before each session ends' : 'Remind 20 min before each session ends');
+        const b = h('button', { class: 'btn small ' + (data.endReminder ? '' : 'secondary'), type: 'button' }, label());
+        b.onclick = () => { data.endReminder = !data.endReminder; b.className = 'btn small ' + (data.endReminder ? '' : 'secondary'); b.textContent = label(); };
+        return h('div', { class: 'field', style: { marginTop: '8px' } }, b,
+          h('div', { class: 'hint' }, 'Handy for pick-ups — also sends a Telegram 20 min before the end time.'));
+      })());
       a(h('div', { class: 'section-title' }, 'How long does this run?'));
       a(selectField('Repeat', data, 'repeatMode',
         [{ value: 'forever', label: 'Every week — no end date' }, { value: 'until', label: 'Until a specific date' }],
@@ -1617,7 +1624,7 @@ async function generateActivities() {
         const id = sc.id + '__' + dateStr + '__' + idx;
         if (have.has(id)) return; // already exists (incl. a shared one someone else created) — leave its cancel state alone
         have.add(id);
-        const item = { id, cat: 'activity', data: { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', cancelled: false } };
+        const item = { id, cat: 'activity', data: { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', endReminder: !!d.endReminder, cancelled: false } };
         // a shared schedule produces a SHARED activity (so anyone can cancel it for everyone)
         const sw = cleanEmails(d.sharedWith);
         if (sw.length) { item.data.sharedWith = sw; item._ownerUid = sc._ownerUid || CURRENT.uid; item._ownerEmail = sc._ownerEmail || myEmail(); }
@@ -1626,6 +1633,12 @@ async function generateActivities() {
     }
   }
   await Promise.all(jobs);
+}
+
+/* an activity stays on the Upcoming list until 1 hour after its end time (then it drops off) */
+function activityActive(d) {
+  const end = new Date((d.date || '') + 'T' + (d.end || d.start || '00:00')).getTime();
+  return isNaN(end) ? true : (Date.now() < end + 3600000);
 }
 
 async function renderScheduleScreen(listEl, definitions, fab, initialTab) {
@@ -1642,7 +1655,7 @@ async function renderScheduleScreen(listEl, definitions, fab, initialTab) {
   if (resync) definitions = await DB.listItems('schedule');
   await generateActivities();
   const today = localDateStr(new Date());
-  const acts = (await DB.listItems('activity')).filter(a => (a.data.date || '') >= today)
+  const acts = (await DB.listItems('activity')).filter(a => (a.data.date || '') >= today && activityActive(a.data))
     .sort((a, b) => ((a.data.date || '') + (a.data.start || '')).localeCompare((b.data.date || '') + (b.data.start || '')));
   let tab = initialTab || 'upcoming';
   const tabsEl = h('div', { class: 'tabs' });
@@ -2169,7 +2182,7 @@ async function homeScreen() {
       h('div', null, h('div', { class: 'name' }, c.name), h('div', { class: 'count' }, '…')));
     grid.appendChild(card);
     if (c.key === 'schedule') {
-      (async () => { try { await generateActivities(); } catch (e) {} const today = localDateStr(new Date()); const n = (await DB.listItems('activity')).filter(a => !a.data.cancelled && (a.data.date || '') >= today).length; card.querySelector('.count').textContent = n + ' upcoming ' + (n === 1 ? 'activity' : 'activities'); })();
+      (async () => { try { await generateActivities(); } catch (e) {} const today = localDateStr(new Date()); const n = (await DB.listItems('activity')).filter(a => !a.data.cancelled && (a.data.date || '') >= today && activityActive(a.data)).length; card.querySelector('.count').textContent = n + ' upcoming ' + (n === 1 ? 'activity' : 'activities'); })();
     } else {
       DB.listItems(c.key).then(items => { card.querySelector('.count').textContent = homeCount(c.key, items); });
     }
@@ -2955,23 +2968,34 @@ async function checkReminders() {
     for (const act of acts) {
       const d = act.data || {};
       if (d.cancelled || !d.date || !d.start) continue;
-      const t = new Date(d.date + 'T' + d.start).getTime();
-      if (isNaN(t) || now >= t) continue;
-      const mins = Math.round((t - now) / 60000);
-      const at = fmtHM(d.start);
       const title = d.title || 'your activity';
-      if (now >= t - schedLead && d._notifiedFor !== d.date) {
-        const msg = mins > 0
-          ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
-          : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
-        fire(msg + (await travelFor(d)));
-        d._notifiedFor = d.date;
-        await DB.saveItem(act);
-      } else if (now >= t - schedLead / 2 && d._notifiedHalf !== d.date) {
-        fire(`Hey, are you on your way to ${title}? It's at ${at}.` + (await travelFor(d)));
-        d._notifiedHalf = d.date;
-        await DB.saveItem(act);
+      let changed = false;
+      // "ending soon" reminder — 20 min before the end time (e.g. for pick-up)
+      if (d.endReminder && d.end) {
+        const endT = new Date(d.date + 'T' + d.end).getTime();
+        if (!isNaN(endT) && now >= endT - 20 * 60000 && now < endT && d._notifiedEnd !== d.date) {
+          const em = Math.max(1, Math.round((endT - now) / 60000));
+          fire(`Heads up — ${title} ends in ${em} minute${em === 1 ? '' : 's'} (at ${fmtHM(d.end)}).` + (await travelFor(d)));
+          d._notifiedEnd = d.date; changed = true;
+        }
       }
+      // start-based reminders (main + half)
+      const t = new Date(d.date + 'T' + d.start).getTime();
+      if (!isNaN(t) && now < t) {
+        const mins = Math.round((t - now) / 60000);
+        const at = fmtHM(d.start);
+        if (now >= t - schedLead && d._notifiedFor !== d.date) {
+          const msg = mins > 0
+            ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
+            : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
+          fire(msg + (await travelFor(d)));
+          d._notifiedFor = d.date; changed = true;
+        } else if (now >= t - schedLead / 2 && d._notifiedHalf !== d.date) {
+          fire(`Hey, are you on your way to ${title}? It's at ${at}.` + (await travelFor(d)));
+          d._notifiedHalf = d.date; changed = true;
+        }
+      }
+      if (changed) await DB.saveItem(act);
     }
   } catch (e) { /* ignore */ }
 }
