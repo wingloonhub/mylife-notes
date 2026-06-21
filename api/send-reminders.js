@@ -88,13 +88,39 @@ async function deleteItem(project, uid, idToken, id) {
   await fetch(`https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/users/${uid}/items/${id}`,
     { method: 'DELETE', headers: { Authorization: 'Bearer ' + idToken } });
 }
-/* materialise the next 7 days of activities from the schedule definitions (idempotent). Returns the full activity list (incl. newly created). */
-async function ensureActivities(project, uid, idToken, items, now, offMin) {
+/* ---- shared collection (live-shared items: schedules, activities, etc.) ---- */
+async function listShared(project, idToken, email) {
+  const url = `https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents:runQuery`;
+  const body = { structuredQuery: { from: [{ collectionId: 'shared' }], where: { fieldFilter: { field: { fieldPath: 'participants' }, op: 'ARRAY_CONTAINS', value: { stringValue: email } } } } };
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + idToken }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => []);
+  const out = [];
+  (Array.isArray(j) ? j : []).forEach(row => {
+    if (!row.document) return;
+    const o = { id: row.document.name.split('/').pop(), _shared: true };
+    for (const k in (row.document.fields || {})) o[k] = fromFs(row.document.fields[k]);
+    out.push(o);
+  });
+  return out;
+}
+async function putShared(project, idToken, id, fields) {
+  const masks = Object.keys(fields).map(k => 'updateMask.fieldPaths=' + k).join('&');
+  const fsFields = {}; for (const k in fields) fsFields[k] = toFs(fields[k]);
+  await fetch(`https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/shared/${id}?${masks}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + idToken }, body: JSON.stringify({ fields: fsFields })
+  });
+}
+async function deleteShared(project, idToken, id) {
+  await fetch(`https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/shared/${id}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + idToken } });
+}
+
+/* materialise the next 7 days of activities from the schedule definitions (idempotent). A shared schedule makes a SHARED activity. */
+async function ensureActivities(project, uid, email, idToken, items, now, offMin) {
   const today = dateStrInTz(now, offMin);
   let acts = items.filter(i => i.cat === 'activity');
   const have = new Set(acts.map(a => a.id));
   const jobs = [];
-  for (const a of acts) { if (((a.data && a.data.date) || '') < today) jobs.push(deleteItem(project, uid, idToken, a.id)); }
+  for (const a of acts) { if (((a.data && a.data.date) || '') < today) jobs.push(a._shared ? deleteShared(project, idToken, a.id) : deleteItem(project, uid, idToken, a.id)); }
   acts = acts.filter(a => ((a.data && a.data.date) || '') >= today);
   const schedules = items.filter(i => i.cat === 'schedule');
   for (let off = 0; off < 7; off++) {
@@ -110,8 +136,18 @@ async function ensureActivities(project, uid, idToken, items, now, offMin) {
         if (have.has(id)) return;
         have.add(id);
         const data = { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', cancelled: false };
-        jobs.push(putItem(project, uid, idToken, id, 'activity', data));
-        acts.push({ id, cat: 'activity', data });
+        const sw = Array.isArray(d.sharedWith) ? d.sharedWith.map(e => String(e).trim().toLowerCase()).filter(Boolean) : [];
+        if (sw.length) {
+          const ownerEmail = sc.ownerEmail || email;
+          const ownerUid = sc.ownerUid || uid;
+          data.sharedWith = sw;
+          const participants = Array.from(new Set([ownerEmail, ...sw]));
+          jobs.push(putShared(project, idToken, id, { cat: 'activity', data, ownerUid, ownerEmail, participants }));
+          acts.push({ id, cat: 'activity', data, _shared: true, ownerUid, ownerEmail });
+        } else {
+          jobs.push(putItem(project, uid, idToken, id, 'activity', data));
+          acts.push({ id, cat: 'activity', data });
+        }
       });
     }
   }
@@ -200,7 +236,10 @@ async function travelLine(loc, destLat, destLng, now, offMin) {
 
 async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
+  const email = (u.email || '').trim().toLowerCase();
   const items = await listItems(project, uid, idToken);
+  // include live-shared items (shared schedules/activities others shared with me, or mine)
+  try { const sh = await listShared(project, idToken, email); for (const si of sh) items.push(si); } catch (e) {}
   const settings = (items.find(i => i.cat === '_settings') || {}).data || {};
   const token = settings.telegramToken, chat = settings.telegramChatId;
   if (tgtest) {
@@ -213,7 +252,7 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
   const schedLeadMsDbg = (settings.scheduleLeadMinutes || 60) * 60000;
   const todoLeadDays = Math.max(0, settings.todoLeadDays || 0);
   // materialise the next 7 days of activities from the weekly schedule, then drive reminders from those
-  const activities = await ensureActivities(project, uid, idToken, items, now, userOff);
+  const activities = await ensureActivities(project, uid, email, idToken, items, now, userOff);
   if (debug) {
     return {
       uid, nowLocal: new Date(now + userOff * 60000).toISOString().slice(0, 16).replace('T', ' '),
@@ -299,7 +338,8 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
       await tg(token, chat, `Hey, are you on your way to ${title}? It's at ${at}.` + travel);
       d._notifiedHalf = d.date;
     }
-    await patchData(project, uid, idToken, it.id, d);
+    if (it._shared) await putShared(project, idToken, it.id, { data: d });
+    else await patchData(project, uid, idToken, it.id, d);
     sent++;
   }
 

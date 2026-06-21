@@ -161,7 +161,7 @@ const Auth = {
 
 /* ---------------- DATA ---------------- */
 /* categories that can be shared live across accounts (via the top-level `shared` collection) */
-const SHARE_CATS = ['party', 'trips', 'shopping'];
+const SHARE_CATS = ['party', 'trips', 'shopping', 'schedule', 'activity'];
 function myEmail() { return ((CURRENT && CURRENT.email) || '').trim().toLowerCase(); }
 function cleanEmails(arr) { return Array.from(new Set((arr || []).map(e => String(e).trim().toLowerCase()).filter(Boolean))); }
 
@@ -1615,9 +1615,13 @@ async function generateActivities() {
         if (Number(slot.day) !== dow) return;
         if (d.repeatMode === 'until' && d.until && dateStr > d.until) return; // schedule has ended
         const id = sc.id + '__' + dateStr + '__' + idx;
-        if (have.has(id)) return;
+        if (have.has(id)) return; // already exists (incl. a shared one someone else created) — leave its cancel state alone
         have.add(id);
-        jobs.push(DB.saveItem({ id, cat: 'activity', data: { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', cancelled: false } }));
+        const item = { id, cat: 'activity', data: { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', cancelled: false } };
+        // a shared schedule produces a SHARED activity (so anyone can cancel it for everyone)
+        const sw = cleanEmails(d.sharedWith);
+        if (sw.length) { item.data.sharedWith = sw; item._ownerUid = sc._ownerUid || CURRENT.uid; item._ownerEmail = sc._ownerEmail || myEmail(); }
+        jobs.push(DB.saveItem(item));
       });
     }
   }
@@ -1625,6 +1629,17 @@ async function generateActivities() {
 }
 
 async function renderScheduleScreen(listEl, definitions, fab, initialTab) {
+  // keep my schedules' share-list in sync with Settings → "Weekly schedule sharing"
+  const settings = await DB.getSettings();
+  const shareEmails = cleanEmails(settings.scheduleShare || []);
+  let resync = false;
+  for (const sc of definitions) {
+    if (sc._shared && !sc._amOwner) continue; // someone else's shared schedule
+    const cur = cleanEmails((sc.data || {}).sharedWith);
+    if (!settings.scheduleShareSet && cur.length) { try { await DB.saveSettings(Object.assign({}, settings, { scheduleShare: cur, scheduleShareSet: true })); } catch (e) {} break; }
+    if (settings.scheduleShareSet && JSON.stringify(cur) !== JSON.stringify(shareEmails)) { sc.data.sharedWith = shareEmails; await DB.saveItem(sc); resync = true; }
+  }
+  if (resync) definitions = await DB.listItems('schedule');
   await generateActivities();
   const today = localDateStr(new Date());
   const acts = (await DB.listItems('activity')).filter(a => (a.data.date || '') >= today)
@@ -1653,7 +1668,12 @@ async function renderScheduleScreen(listEl, definitions, fab, initialTab) {
     }
     if (fab) fab.style.display = 'none';
     if (!acts.length) { body.appendChild(h('div', { class: 'hint' }, 'No activities in the next 7 days — they appear here automatically from your schedule.')); return; }
-    for (const a of acts) body.appendChild(buildActivityRow(a, render));
+    const sorted = acts.slice().sort((a, b) => {
+      const ac = a.data.cancelled ? 1 : 0, bc = b.data.cancelled ? 1 : 0;
+      if (ac !== bc) return ac - bc; // active first, cancelled to the bottom
+      return ((a.data.date || '') + (a.data.start || '')).localeCompare((b.data.date || '') + (b.data.start || ''));
+    });
+    for (const a of sorted) body.appendChild(buildActivityRow(a, render));
   }
   listEl.appendChild(tabsEl);
   listEl.appendChild(body);
@@ -1665,7 +1685,8 @@ function buildActivityRow(act, rerender) {
   const dt = new Date(d.date + 'T00:00:00');
   const dayLabel = (isNaN(dt) ? d.date : (DOW_SHORT[dt.getDay()] + ', ' + fmtDate(d.date)));
   const timeLabel = d.start ? (fmtHM(d.start) + (d.end ? '–' + fmtHM(d.end) : '')) : '';
-  return h('div', { class: 'row' + (d.cancelled ? ' cancelled-row' : '') },
+  return h('div', { class: 'row' + (d.cancelled ? ' cancelled-row' : ''),
+    onclick: () => { if (d.scheduleId) navigate('#/view/schedule/' + d.scheduleId); } },
     h('div', { class: 'main' },
       h('div', { class: 'title' }, d.title || 'Activity'),
       h('div', { class: 'meta' }, [dayLabel, timeLabel, d.location].filter(Boolean).join(' · ')),
@@ -2808,6 +2829,7 @@ async function settingsScreen() {
   let schedAmount = schedUnit === 'hours' ? sLM / 60 : sLM;
   const form = { amount: String(amount), unit, telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0), schedAmount: String(schedAmount), schedUnit };
   const gShareObj = { sharedWith: (s.groceryShare || []).slice() }; // grocery sharing list lives in settings
+  const schedShareObj = { sharedWith: (s.scheduleShare || []).slice() }; // weekly-schedule sharing list
 
   const body = h('div', null,
     h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Set it up below.'),
@@ -2834,6 +2856,9 @@ async function settingsScreen() {
     h('div', { class: 'section-title' }, 'Grocery list sharing'),
     h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone in your household. You\'ll all share ONE grocery list — whoever adds an item, everyone sees it. Stays on until you remove them here.'),
     shareWithEditor(gShareObj),
+    h('div', { class: 'section-title' }, 'Weekly schedule sharing'),
+    h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone you want to share your weekly schedule with — they\'ll see your upcoming activities in their app. Stays on until you remove them here.'),
+    shareWithEditor(schedShareObj),
     telegramSection(form),
     h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
       const n = Math.max(1, parseInt(form.amount) || 1);
@@ -2841,7 +2866,7 @@ async function settingsScreen() {
       const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
       const sn = Math.max(1, parseInt(form.schedAmount) || 1);
       const scheduleLeadMinutes = form.schedUnit === 'hours' ? sn * 60 : sn;
-      await DB.saveSettings({ leadMinutes, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, scheduleLeadMinutes, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
+      await DB.saveSettings({ leadMinutes, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, scheduleLeadMinutes, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true, scheduleShare: cleanEmails(schedShareObj.sharedWith), scheduleShareSet: true });
       toast('Settings saved');
       startReminders();
       navigate('#/');
