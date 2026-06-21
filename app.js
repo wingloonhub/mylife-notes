@@ -1632,15 +1632,23 @@ async function renderScheduleScreen(listEl, definitions, fab, initialTab) {
   let tab = initialTab || 'upcoming';
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
+  const activeDefs = definitions.filter(it => !scheduleIsCompleted(it));
+  const doneDefs = definitions.filter(it => scheduleIsCompleted(it));
   function render() {
     tabsEl.innerHTML = '';
-    [['upcoming', 'Upcoming (' + acts.filter(a => !a.data.cancelled).length + ')'], ['schedule', 'Schedule (' + definitions.length + ')']].forEach(([k, label]) =>
+    [['upcoming', 'Upcoming (' + acts.filter(a => !a.data.cancelled).length + ')'], ['schedule', 'Schedule (' + activeDefs.length + ')'], ['completed', 'Completed (' + doneDefs.length + ')']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
     body.innerHTML = '';
     if (tab === 'schedule') {
       if (fab) { fab.style.display = ''; fab.onclick = () => navigate('#/edit/schedule'); }
-      if (!definitions.length) { body.appendChild(emptyState('schedule', 'No weekly schedules yet. Tap + to add one.')); return; }
-      for (const it of definitions) body.appendChild(buildRow('schedule', it));
+      if (!activeDefs.length) { body.appendChild(emptyState('schedule', 'No active schedules yet. Tap + to add one.')); return; }
+      for (const it of activeDefs) body.appendChild(buildRow('schedule', it));
+      return;
+    }
+    if (tab === 'completed') {
+      if (fab) fab.style.display = 'none';
+      if (!doneDefs.length) { body.appendChild(h('div', { class: 'hint' }, 'No completed schedules — ones whose end date has passed appear here.')); return; }
+      for (const it of doneDefs) body.appendChild(buildRow('schedule', it));
       return;
     }
     if (fab) fab.style.display = 'none';
@@ -2915,38 +2923,30 @@ async function checkReminders() {
       });
       if (changed) await DB.saveItem(td);
     }
-    // weekly schedule sessions (each date+time, like events)
+    // weekly schedule → reminders come from the Upcoming activities (so a cancelled day stays silent)
     const schedLead = (s.scheduleLeadMinutes || 60) * 60000;
-    const schedules = await DB.listItems('schedule');
-    for (const sc of schedules) {
-      const d = sc.data || {};
-      let changed = false;
-      const slots = d.slots || [];
-      for (let idx = 0; idx < slots.length; idx++) {
-        const slot = slots[idx];
-        if (slot.day === undefined || !slot.start) continue;
-        const occ = nextWeekdayOccurrence(Number(slot.day), slot.start);
-        const t = occ.getTime();
-        const occKey = localDateStr(occ);
-        if (d.repeatMode === 'until' && d.until && occKey > d.until) continue; // schedule has ended
-        if (now >= t) continue;
-        const mins = Math.round((t - now) / 60000);
-        const at = fmtHM(slot.start); // AM/PM
-        const title = d.title || 'your schedule';
-        if (now >= t - schedLead && slot._notifiedFor !== occKey) {
-          const msg = mins > 0
-            ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
-            : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
-          fire(msg + (await travelFor(d)), '', 'sched-' + sc.id + '-' + idx);
-          slot._notifiedFor = occKey;
-          changed = true;
-        } else if (now >= t - schedLead / 2 && slot._notifiedHalf !== occKey) {
-          fire(`Hey, are you on your way to ${title}? It's at ${at}.` + (await travelFor(d)), '', 'schedh-' + sc.id + '-' + idx);
-          slot._notifiedHalf = occKey;
-          changed = true;
-        }
+    await generateActivities();
+    const acts = await DB.listItems('activity');
+    for (const act of acts) {
+      const d = act.data || {};
+      if (d.cancelled || !d.date || !d.start) continue;
+      const t = new Date(d.date + 'T' + d.start).getTime();
+      if (isNaN(t) || now >= t) continue;
+      const mins = Math.round((t - now) / 60000);
+      const at = fmtHM(d.start);
+      const title = d.title || 'your activity';
+      if (now >= t - schedLead && d._notifiedFor !== d.date) {
+        const msg = mins > 0
+          ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
+          : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
+        fire(msg + (await travelFor(d)));
+        d._notifiedFor = d.date;
+        await DB.saveItem(act);
+      } else if (now >= t - schedLead / 2 && d._notifiedHalf !== d.date) {
+        fire(`Hey, are you on your way to ${title}? It's at ${at}.` + (await travelFor(d)));
+        d._notifiedHalf = d.date;
+        await DB.saveItem(act);
       }
-      if (changed) await DB.saveItem(sc);
     }
   } catch (e) { /* ignore */ }
 }

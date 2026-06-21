@@ -76,6 +76,48 @@ async function patchData(project, uid, idToken, id, data) {
     body: JSON.stringify({ fields: { data: toFs(data) } })
   });
 }
+async function putItem(project, uid, idToken, id, cat, data) {
+  const url = `https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/users/${uid}/items/${id}?updateMask.fieldPaths=cat&updateMask.fieldPaths=data`;
+  await fetch(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + idToken },
+    body: JSON.stringify({ fields: { cat: toFs(cat), data: toFs(data) } })
+  });
+}
+async function deleteItem(project, uid, idToken, id) {
+  await fetch(`https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents/users/${uid}/items/${id}`,
+    { method: 'DELETE', headers: { Authorization: 'Bearer ' + idToken } });
+}
+/* materialise the next 7 days of activities from the schedule definitions (idempotent). Returns the full activity list (incl. newly created). */
+async function ensureActivities(project, uid, idToken, items, now, offMin) {
+  const today = dateStrInTz(now, offMin);
+  let acts = items.filter(i => i.cat === 'activity');
+  const have = new Set(acts.map(a => a.id));
+  const jobs = [];
+  for (const a of acts) { if (((a.data && a.data.date) || '') < today) jobs.push(deleteItem(project, uid, idToken, a.id)); }
+  acts = acts.filter(a => ((a.data && a.data.date) || '') >= today);
+  const schedules = items.filter(i => i.cat === 'schedule');
+  for (let off = 0; off < 7; off++) {
+    const dayMs = now + off * 86400000;
+    const dateStr = dateStrInTz(dayMs, offMin);
+    const dow = new Date(dayMs + offMin * 60000).getUTCDay();
+    for (const sc of schedules) {
+      const d = sc.data || {};
+      (d.slots || []).forEach((slot, idx) => {
+        if (Number(slot.day) !== dow) return;
+        if (d.repeatMode === 'until' && d.until && dateStr > d.until) return;
+        const id = sc.id + '__' + dateStr + '__' + idx;
+        if (have.has(id)) return;
+        have.add(id);
+        const data = { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', cancelled: false };
+        jobs.push(putItem(project, uid, idToken, id, 'activity', data));
+        acts.push({ id, cat: 'activity', data });
+      });
+    }
+  }
+  await Promise.all(jobs);
+  return acts;
+}
 async function tg(token, chatId, text) {
   const r = await fetch('https://api.telegram.org/bot' + String(token).trim() + '/sendMessage', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -170,12 +212,14 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
   const leadMs = (settings.leadMinutes || 60) * 60000;
   const schedLeadMsDbg = (settings.scheduleLeadMinutes || 60) * 60000;
   const todoLeadDays = Math.max(0, settings.todoLeadDays || 0);
+  // materialise the next 7 days of activities from the weekly schedule, then drive reminders from those
+  const activities = await ensureActivities(project, uid, idToken, items, now, userOff);
   if (debug) {
     return {
       uid, nowLocal: new Date(now + userOff * 60000).toISOString().slice(0, 16).replace('T', ' '),
       tzOffset: userOff, telegramSet: !!(token && chat), eventLeadMin: settings.leadMinutes || 60, scheduleLeadMin: settings.scheduleLeadMinutes || 60,
       events: items.filter(i => i.cat === 'events').map(it => { const d = it.data || {}; const t = naiveToUTC(d.when, userOff); return { title: d.title, when: d.when, dueNow: !isNaN(t) && now >= t - leadMs && now < t, alreadyNotified: d._notifiedFor || null }; }),
-      schedules: items.filter(i => i.cat === 'schedule').map(it => { const d = it.data || {}; return { title: d.title, slots: (d.slots || []).map(s => { const t = nextWeekdayOccurrenceUTC(Number(s.day), s.start, userOff, now); return { day: s.day, start: s.start, nextLocal: new Date(t + userOff * 60000).toISOString().slice(0, 16).replace('T', ' '), dueNow: now >= t - schedLeadMsDbg && now < t }; }) }; })
+      activities: activities.map(it => { const d = it.data || {}; const t = naiveToUTC(d.date + 'T' + d.start, userOff); return { title: d.title, date: d.date, start: d.start, cancelled: !!d.cancelled, dueNow: !isNaN(t) && now >= t - schedLeadMsDbg && now < t, alreadyNotified: d._notifiedFor || null }; })
     };
   }
   if (!token || !chat) return { skipped: 'no Telegram configured in Settings' };
@@ -231,39 +275,32 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
     if (toSend.length) await patchData(project, uid, idToken, it.id, d);
   }
 
-  // weekly schedule sessions (each date+time, like events)
+  // weekly schedule → reminders from the Upcoming activities (a cancelled day stays silent)
   const schedLeadMs = (settings.scheduleLeadMinutes || 60) * 60000;
-  for (const it of items.filter(i => i.cat === 'schedule')) {
+  for (const it of activities) {
     const d = it.data || {};
-    let changed = false;
-    const slots = d.slots || [];
-    for (const slot of slots) {
-      if (slot.day === undefined || !slot.start) continue;
-      const t = nextWeekdayOccurrenceUTC(Number(slot.day), slot.start, userOff, now);
-      const occKey = dateStrInTz(t, userOff);
-      if (d.repeatMode === 'until' && d.until && occKey > d.until) continue; // schedule has ended
-      if (now >= t) continue;
-      const mainDue = now >= t - schedLeadMs && slot._notifiedFor !== occKey;
-      const halfDue = !mainDue && now >= t - schedLeadMs / 2 && slot._notifiedHalf !== occKey;
-      if (!mainDue && !halfDue) continue;
-      const mins = Math.round((t - now) / 60000);
-      const at = fmtHM12(slot.start);
-      const title = d.title || 'your schedule';
-      const travel = (typeof d.lat === 'number') ? await travelLine(loc, d.lat, d.lng, now, userOff) : '';
-      if (mainDue) {
-        const msg = mins > 0
-          ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
-          : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
-        await tg(token, chat, msg + travel);
-        slot._notifiedFor = occKey;
-      } else {
-        await tg(token, chat, `Hey, are you on your way to ${title}? It's at ${at}.` + travel);
-        slot._notifiedHalf = occKey;
-      }
-      changed = true;
-      sent++;
+    if (d.cancelled || !d.date || !d.start) continue;
+    const t = naiveToUTC(d.date + 'T' + d.start, userOff);
+    if (isNaN(t) || now >= t) continue;
+    const mainDue = now >= t - schedLeadMs && d._notifiedFor !== d.date;
+    const halfDue = !mainDue && now >= t - schedLeadMs / 2 && d._notifiedHalf !== d.date;
+    if (!mainDue && !halfDue) continue;
+    const mins = Math.round((t - now) / 60000);
+    const at = fmtHM12(d.start);
+    const title = d.title || 'your activity';
+    const travel = (typeof d.lat === 'number') ? await travelLine(loc, d.lat, d.lng, now, userOff) : '';
+    if (mainDue) {
+      const msg = mins > 0
+        ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
+        : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
+      await tg(token, chat, msg + travel);
+      d._notifiedFor = d.date;
+    } else {
+      await tg(token, chat, `Hey, are you on your way to ${title}? It's at ${at}.` + travel);
+      d._notifiedHalf = d.date;
     }
-    if (changed) await patchData(project, uid, idToken, it.id, d);
+    await patchData(project, uid, idToken, it.id, d);
+    sent++;
   }
 
   return { uid, sent };
