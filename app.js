@@ -2055,9 +2055,10 @@ async function copyText(text) {
 /* ============================================================
    SCREENS
    ============================================================ */
-function appbar(title, sub, { back, action } = {}) {
+function appbar(title, sub, { back, action, home } = {}) {
   return h('div', { class: 'appbar' },
     back ? h('button', { class: 'iconbtn back', onclick: back }, '‹') : null,
+    back ? h('button', { class: 'iconbtn', title: 'Menu', onclick: home || (() => navigate('#/')) }, '⌂') : null,
     h('div', { style: { flex: 1 } }, h('h1', null, title), sub ? h('div', { class: 'sub' }, sub) : null),
     action || null);
 }
@@ -2554,7 +2555,8 @@ async function editScreen(cat, id) {
   }
 
   const bar = appbar((id ? 'Edit ' : 'New ') + catName(cat).replace(/s$/, ''), null, {
-    back: async () => { if (isQuick) await saveNow(); goBack(); }
+    back: async () => { if (isQuick) await saveNow(); goBack(); },
+    home: async () => { if (isQuick) await saveNow(); navigate('#/'); }
   });
   mount(screen(bar, h('div', null, formHost, controls)));
 }
