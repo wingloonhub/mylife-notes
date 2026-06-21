@@ -346,7 +346,7 @@ const DB = {
 const CATS = [
   { key: 'quick', name: 'Quick Note', emoji: '📝' },
   { key: 'todo', name: 'To-Do List', emoji: '✅' },
-  { key: 'events', name: 'Events', emoji: '📅' },
+  { key: 'events', name: 'Events & Appointments', singular: 'Event / Appointment', emoji: '📅' },
   { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
@@ -361,6 +361,8 @@ const CATS = [
   { key: 'warranty', name: 'Warranty Tracker', emoji: '🧾' }
 ];
 const catName = k => (CATS.find(c => c.key === k) || {}).name || k;
+/* singular label for editor/detail titles — uses an explicit `singular` if set, else drops a trailing "s" */
+const catSingular = k => { const c = CATS.find(c => c.key === k) || {}; return c.singular || (c.name || k).replace(/s$/, ''); };
 
 /* ---------------- generic form widgets ---------------- */
 function field(label, obj, key, opts = {}) {
@@ -663,8 +665,8 @@ function buildEditor(cat, data, amOwner) {
       break;
     }
     case 'events': {
-      a(field('Event title', data, 'title', { placeholder: 'e.g. Dentist appointment' }));
-      a(field('Date & time', data, 'when', { type: 'datetime-local', hint: 'Moves to the Archive tab the day after.' }));
+      a(field('Title', data, 'title', { placeholder: 'e.g. Dentist appointment' }));
+      a(field('Date & time', data, 'when', { type: 'datetime-local', hint: 'Moves to the Past tab the day after.' }));
       a(field('Location name', data, 'location', { placeholder: 'e.g. Sunway Lagoon' }));
       a(mapFieldBlock(data));
       a(field('Notes', data, 'notes', { type: 'textarea' }));
@@ -2197,7 +2199,7 @@ async function listScreen(cat, sub) {
   listEl.innerHTML = '';
 
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
-  if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past Events' }); return; }
+  if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past' }); return; }
   if (cat === 'schedule') { renderScheduleScreen(listEl, items, fab, sub === 'def' ? 'schedule' : 'upcoming'); return; }
   if (cat === 'tax') { renderTaxList(listEl, items); return; }
   if (cat === 'trips') { renderTripScreen(listEl, items, fab, sub === 'cats' ? 'cats' : 'trips'); startLive(() => listScreen(cat, sub)); return; }
@@ -2554,7 +2556,7 @@ async function editScreen(cat, id) {
     controls = h('div', { style: { marginTop: '18px' } }, saveBtn, delBtn);
   }
 
-  const bar = appbar((id ? 'Edit ' : 'New ') + catName(cat).replace(/s$/, ''), null, {
+  const bar = appbar((id ? 'Edit ' : 'New ') + catSingular(cat), null, {
     back: async () => { if (isQuick) await saveNow(); goBack(); },
     home: async () => { if (isQuick) await saveNow(); navigate('#/'); }
   });
@@ -2565,7 +2567,7 @@ async function editScreen(cat, id) {
 async function viewScreen(cat, id) {
   const item = await DB.getItem(cat, id);
   if (!item) { redirectReplace('#/cat/' + cat); return; } // deleted/missing — skip over it for Back
-  const bar = appbar(catName(cat).replace(/s$/, ''), null, {
+  const bar = appbar(catSingular(cat), null, {
     back: () => goBack(),
     action: h('div', { style: { display: 'flex', gap: '6px' } },
       h('button', { class: 'iconbtn', title: 'Share', onclick: () => shareCard(cat, item) }, '⤴'),
