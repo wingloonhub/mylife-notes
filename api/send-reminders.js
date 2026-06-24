@@ -266,7 +266,7 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
     return {
       uid, nowLocal: new Date(now + userOff * 60000).toISOString().slice(0, 16).replace('T', ' '),
       tzOffset: userOff, telegramSet: !!(token && chat),
-      events: items.filter(i => i.cat === 'events').map(it => { const d = it.data || {}; const t = naiveToUTC(d.when, userOff); return { title: d.title, when: d.when, leadMin: leadMsOf(d) / 60000, dueNow: !isNaN(t) && d.startReminder !== false && now >= t - leadMsOf(d) && now < t, alreadyNotified: d._notifiedFor || null }; }),
+      events: items.filter(i => i.cat === 'events' || i.cat === 'appointments').map(it => { const d = it.data || {}; const t = naiveToUTC(d.when, userOff); return { cat: it.cat, title: d.title, when: d.when, leadMin: leadMsOf(d) / 60000, dueNow: !isNaN(t) && d.startReminder !== false && now >= t - leadMsOf(d) && now < t, alreadyNotified: d._notifiedFor || null }; }),
       activities: activities.map(it => { const d = it.data || {}; const t = naiveToUTC(d.date + 'T' + d.start, userOff); return { title: d.title, date: d.date, start: d.start, leadMin: leadMsOf(d) / 60000, cancelled: !!d.cancelled, dueNow: !isNaN(t) && d.startReminder !== false && now >= t - leadMsOf(d) && now < t, alreadyNotified: d._notifiedFor || null }; })
     };
   }
@@ -274,8 +274,8 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
   const loc = (items.find(i => i.cat === '_lastloc') || {}).data; // last-known location from the app
   let sent = 0;
 
-  // events — each event carries its own reminder lead times
-  for (const it of items.filter(i => i.cat === 'events')) {
+  // events & appointments — each card carries its own reminder lead times
+  for (const it of items.filter(i => i.cat === 'events' || i.cat === 'appointments')) {
     const d = it.data || {};
     if (!d.when) continue;
     const t = naiveToUTC(d.when, userOff);
@@ -300,7 +300,8 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
       await tg(token, chat, `Hey, are you on your way to ${title}? It's at ${at}.` + travel);
       d._notifiedHalf = d.when;
     }
-    await patchData(project, uid, idToken, it.id, d);
+    if (it._shared) await putShared(project, idToken, it.id, { data: d });
+    else await patchData(project, uid, idToken, it.id, d);
     sent++;
   }
 
@@ -323,7 +324,10 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
       s.task._notified = todayStr;
       sent++;
     }
-    if (toSend.length) await patchData(project, uid, idToken, it.id, d);
+    if (toSend.length) {
+      if (it._shared) await putShared(project, idToken, it.id, { data: d });
+      else await patchData(project, uid, idToken, it.id, d);
+    }
   }
 
   // weekly schedule → reminders from the Upcoming activities (a cancelled day stays silent)

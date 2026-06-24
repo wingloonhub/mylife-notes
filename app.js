@@ -161,7 +161,7 @@ const Auth = {
 
 /* ---------------- DATA ---------------- */
 /* categories that can be shared live across accounts (via the top-level `shared` collection) */
-const SHARE_CATS = ['party', 'trips', 'shopping'];
+const SHARE_CATS = ['party', 'trips', 'shopping', 'events', 'appointments', 'todo'];
 function myEmail() { return ((CURRENT && CURRENT.email) || '').trim().toLowerCase(); }
 function cleanEmails(arr) { return Array.from(new Set((arr || []).map(e => String(e).trim().toLowerCase()).filter(Boolean))); }
 
@@ -346,7 +346,8 @@ const DB = {
 const CATS = [
   { key: 'quick', name: 'Quick Note', emoji: '📝' },
   { key: 'todo', name: 'To-Do List', emoji: '✅' },
-  { key: 'events', name: 'Events & Appointments', singular: 'Event / Appointment', emoji: '📅' },
+  { key: 'events', name: 'Events', singular: 'Event', emoji: '📅' },
+  { key: 'appointments', name: 'Appointments', singular: 'Appointment', emoji: '🗓️' },
   { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
@@ -611,6 +612,13 @@ function buildEditor(cat, data, amOwner) {
     }
     case 'todo': {
       a(field('List title', data, 'title', { placeholder: 'e.g. Today' }));
+      if (amOwner) {
+        a(h('div', { class: 'section-title' }, 'Share this list with (live)'));
+        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone you want to see & edit this list in real time. Leave empty to keep it private.'));
+        a(shareWithEditor(data));
+      } else {
+        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, '👥 Shared with you — you can edit the items; only the owner can change who it\'s shared with.'));
+      }
       a(h('div', { class: 'section-title' }, 'To-do items (each can have its own due date)'));
       a(h('div', { class: 'hint', style: { margin: '2px 2px 10px' } }, 'Set a reminder cadence in ⚙ Settings.'));
       a(todoItemsEditor(data));
@@ -680,12 +688,21 @@ function buildEditor(cat, data, amOwner) {
       setMode((data.strokes && data.strokes.length && !((data.bodyHtml || '').replace(/<[^>]+>/g, '').trim())) ? 'draw' : 'text');
       break;
     }
-    case 'events': {
-      a(field('Title', data, 'title', { placeholder: 'e.g. Dentist appointment' }));
+    case 'events':
+    case 'appointments': {
+      const noun = cat === 'appointments' ? 'appointment' : 'event';
+      a(field('Title', data, 'title', { placeholder: cat === 'appointments' ? 'e.g. Dentist — scaling' : 'e.g. School concert' }));
       a(field('Date & time', data, 'when', { type: 'datetime-local', hint: 'Moves to the Past tab the day after.' }));
       a(field('Location name', data, 'location', { placeholder: 'e.g. Sunway Lagoon' }));
       a(mapFieldBlock(data));
       a(field('Notes', data, 'notes', { type: 'textarea' }));
+      if (amOwner) {
+        a(h('div', { class: 'section-title' }, 'Share this ' + noun + ' with (live)'));
+        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone you want to see & edit this ' + noun + ' in real time. Leave empty to keep it private.'));
+        a(shareWithEditor(data));
+      } else {
+        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, '👥 Shared with you — you can edit the details; only the owner can change who it\'s shared with.'));
+      }
       a(h('div', { class: 'section-title' }, 'Reminders'));
       a(h('div', { class: 'hint', style: { margin: '-4px 2px 6px' } }, 'Sent to your Telegram.'));
       a(remindRow(data, 'startReminder', 'startRemindMin', 'Reminder before it starts', null, 60, true));
@@ -1449,11 +1466,10 @@ async function renderDetail(cat, item) {
       a(card);
       break;
     }
-    case 'events': {
-      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Event'),
-        kv('When', fmtDT(data.when)), kv('Location', data.location), kv('Notes', data.notes),
-        kv('Reminder', data.remindAt ? fmtDT(data.remindAt) : null),
-        data.telegram ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Telegram'), h('span', { class: 'v' }, h('span', { class: 'pill' }, 'reminder on'))) : null));
+    case 'events':
+    case 'appointments': {
+      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || (cat === 'appointments' ? 'Appointment' : 'Event')),
+        kv('When', fmtDT(data.when)), kv('Location', data.location), kv('Notes', data.notes)));
       if (data.map || data.location) a(mapCard(item));
       break;
     }
@@ -1561,6 +1577,7 @@ function summary(cat, data) {
       return { title: data.title || 'Note', meta: txt || ((data.strokes && data.strokes.length) ? '✍️ Handwritten note' : '') };
     }
     case 'events': return { title: data.title || 'Event', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
+    case 'appointments': return { title: data.title || 'Appointment', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
     case 'schedule': {
       const slots = (data.slots || []).filter(s => s.day !== undefined);
       const days = [...new Set(slots.slice().sort((a, b) => DOW_ORDER.indexOf(Number(a.day)) - DOW_ORDER.indexOf(Number(b.day))).map(s => DOW_SHORT[Number(s.day)]))].join(', ');
@@ -2146,6 +2163,7 @@ function homeCount(cat, items) {
   switch (cat) {
     case 'todo': return plural(items.filter(it => (d(it).items || []).some(t => !t.checked)).length, 'list');
     case 'events': return plural(items.filter(it => !eventIsArchived(it)).length, 'upcoming event');
+    case 'appointments': return plural(items.filter(it => !eventIsArchived(it)).length, 'upcoming appointment');
     case 'schedule': return plural(items.filter(it => !scheduleIsCompleted(it)).length, 'activity', 'activities');
     case 'records': return plural(items.length, 'record');
     case 'memberships': return plural(items.length, 'membership');
@@ -2200,11 +2218,14 @@ async function listScreen(cat, sub) {
   listEl.innerHTML = '';
 
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
-  if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past' }); return; }
+  if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past' }); startLive(() => listScreen(cat, sub)); return; }
+  if (cat === 'appointments') { renderArchiveList(listEl, 'appointments', items, eventIsArchived, { distance: true, archiveLabel: 'Past', duplicateAll: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'schedule') { renderScheduleScreen(listEl, items, fab, sub === 'def' ? 'schedule' : 'upcoming'); return; }
   if (cat === 'tax') { renderTaxList(listEl, items); return; }
   if (cat === 'trips') { renderTripScreen(listEl, items, fab, sub === 'cats' ? 'cats' : 'trips'); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'shopping') { renderShoppingScreen(listEl, items, fab, sub === 'items' ? 'items' : 'lists'); return; }
+
+  if (cat === 'todo') startLive(() => listScreen(cat, sub)); // live updates for shared lists
 
   if (!items.length) {
     listEl.appendChild(emptyState(cat));
@@ -2394,15 +2415,20 @@ function buildTodoRow(item) {
     const next = its.filter(i => !i.checked && i.eta).map(i => i.eta).sort()[0];
     meta.textContent = [(next && ('next due ' + fmtDate(next))), done + '/' + its.length + ' done'].filter(Boolean).join(' · ');
   }
+  const isOwner = !item._shared || item._amOwner === true;
+  const shareBtn = h('button', { class: 'iconbtn small', title: 'Share', onclick: (e) => { e.stopPropagation(); navigate('#/edit/todo/' + item.id); } }, '👤');
   const editBtn = h('button', { class: 'iconbtn small', title: 'Edit', onclick: (e) => { e.stopPropagation(); navigate('#/edit/todo/' + item.id); } }, '✎');
-  const delBtn = h('button', { class: 'iconbtn small', title: 'Delete', onclick: async (e) => {
+  const delBtn = isOwner ? h('button', { class: 'iconbtn small', title: 'Delete', onclick: async (e) => {
     e.stopPropagation();
     if (!confirmDel('Delete this to-do list?')) return;
     await DB.deleteItem('todo', item.id); toast('Deleted'); navigate('#/cat/todo');
-  } }, '🗑');
+  } }, '🗑') : null;
+  const sharedBadge = item._shared
+    ? h('div', { class: 'meta', style: { color: 'var(--accent)' } }, item._amOwner ? '👥 Shared by you' : ('👥 Shared by ' + (item._ownerEmail || 'someone')))
+    : null;
   const head = h('div', { class: 'todo-head' },
     h('div', { class: 'title' }, d.title || 'To-Do'),
-    h('div', { class: 'todo-actions' }, editBtn, delBtn));
+    h('div', { class: 'todo-actions' }, isOwner ? shareBtn : null, editBtn, delBtn));
   const ul = h('ul', { class: 'row-items tappable' });
   its.forEach((t) => {
     const li = h('li', { class: t.checked ? 'done' : '' },
@@ -2417,7 +2443,7 @@ function buildTodoRow(item) {
   });
   setMeta();
   return h('div', { class: 'row todo-row' },
-    h('div', { class: 'main' }, head, meta,
+    h('div', { class: 'main' }, head, meta, sharedBadge,
       its.length ? ul : h('div', { class: 'hint', style: { marginTop: '6px' } }, 'No items yet — tap ✎ to add.')));
 }
 
@@ -2455,6 +2481,8 @@ async function duplicateItem(cat, it) {
   data.eventDate = '';
   data.when = '';
   data.title = (data.title || 'Item') + ' (copy)';
+  delete data.sharedWith;                       // the copy starts private
+  delete data._notifiedFor; delete data._notifiedHalf; delete data._notifiedEnd;
   await DB.saveItem({ cat, data });
 }
 
@@ -2475,7 +2503,8 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
     const list = tab === 'upcoming' ? upcoming : archived;
     if (!list.length) { body.appendChild(emptyState(cat, tab === 'upcoming' ? ('Nothing in ' + upLabel.toLowerCase() + '.') : ('Nothing in ' + arLabel.toLowerCase() + ' yet.'))); return; }
     for (const it of list) {
-      const dup = (tab === 'archive' && opts.duplicate)
+      const canDup = opts.duplicateAll || (tab === 'archive' && opts.duplicate);
+      const dup = canDup
         ? h('button', { class: 'btn small secondary', onclick: async (e) => { e.stopPropagation(); await duplicateItem(cat, it); toast('Duplicated to Upcoming'); navigate('#/cat/' + cat); } }, 'Duplicate')
         : null;
       const row = buildRow(cat, it, { action: dup });
@@ -2893,7 +2922,7 @@ async function checkReminders() {
       return m.mins;
     };
     const now = Date.now();
-    const events = await DB.listItems('events');
+    const events = [...await DB.listItems('events'), ...await DB.listItems('appointments')];
     for (const ev of events) {
       const d = ev.data || {};
       if (!d.when) continue;
