@@ -394,6 +394,22 @@ function toggleField(label, obj, key) {
   btn.onclick = () => { obj[key] = !obj[key]; btn.className = 'btn small ' + (obj[key] ? '' : 'secondary'); btn.textContent = obj[key] ? '★ Favourite' : '☆ Mark favourite'; };
   return h('div', { class: 'field' }, btn);
 }
+/* a per-card reminder control: on/off toggle that reveals a "minutes before" number input.
+   defOn = whether the toggle starts ON for a brand-new card. */
+function remindRow(data, onKey, minKey, label, hint, defMin, defOn) {
+  if (data[onKey] == null) data[onKey] = !!defOn;
+  if (data[minKey] == null) data[minKey] = defMin;
+  const on = () => data[onKey] !== false;
+  const minRow = h('div', { class: 'field', style: { marginTop: '6px', display: on() ? '' : 'none' } },
+    h('label', null, 'Minutes before'),
+    h('input', { type: 'number', inputmode: 'numeric', min: '1', step: '1', value: data[minKey],
+      oninput: e => { const v = parseInt(e.target.value, 10); data[minKey] = (isNaN(v) || v < 1) ? '' : v; } }),
+    hint ? h('div', { class: 'hint' }, hint) : null);
+  const lbl = () => (on() ? '✓ ' : '') + label;
+  const b = h('button', { class: 'btn small ' + (on() ? '' : 'secondary'), type: 'button' }, lbl());
+  b.onclick = () => { data[onKey] = !on(); b.className = 'btn small ' + (on() ? '' : 'secondary'); b.textContent = lbl(); minRow.style.display = on() ? '' : 'none'; };
+  return h('div', null, h('div', { class: 'field', style: { marginTop: '8px' } }, b), minRow);
+}
 
 /* editable list of simple strings */
 function stringList(obj, key, placeholder) {
@@ -670,16 +686,10 @@ function buildEditor(cat, data, amOwner) {
       a(field('Location name', data, 'location', { placeholder: 'e.g. Sunway Lagoon' }));
       a(mapFieldBlock(data));
       a(field('Notes', data, 'notes', { type: 'textarea' }));
-      a(h('div', { class: 'section-title' }, 'Reminder'));
-      a(field('Remind me at', data, 'remindAt', { type: 'datetime-local' }));
-      a(h('div', { class: 'field' },
-        (() => {
-          const b = h('button', { class: 'btn small ' + (data.telegram ? '' : 'secondary'), type: 'button' },
-            data.telegram ? '✓ Send to Telegram' : 'Send reminder to Telegram');
-          b.onclick = () => { data.telegram = !data.telegram; b.className = 'btn small ' + (data.telegram ? '' : 'secondary'); b.textContent = data.telegram ? '✓ Send to Telegram' : 'Send reminder to Telegram'; };
-          return b;
-        })(),
-        h('div', { class: 'hint' }, 'Telegram delivery is activated once the scheduler is connected (see README).')));
+      a(h('div', { class: 'section-title' }, 'Reminders'));
+      a(h('div', { class: 'hint', style: { margin: '-4px 2px 6px' } }, 'Sent to your Telegram.'));
+      a(remindRow(data, 'startReminder', 'startRemindMin', 'Reminder before it starts', null, 60, true));
+      a(remindRow(data, 'startReminder2', 'startRemind2Min', '2nd reminder before it starts', null, 15, false));
       break;
     }
     case 'schedule': {
@@ -688,20 +698,11 @@ function buildEditor(cat, data, amOwner) {
       a(mapFieldBlock(data));
       a(h('div', { class: 'section-title' }, 'Weekly sessions'));
       a(slotsEditor(data));
-      a((() => {
-        if (data.endRemindMin == null) data.endRemindMin = 20;
-        const label = () => (data.endReminder ? '✓ Remind before each session ends' : 'Remind before each session ends');
-        const wrap = h('div', { class: 'field', style: { marginTop: '8px' } });
-        const minRow = h('div', { class: 'field', style: { marginTop: '8px', display: data.endReminder ? '' : 'none' } },
-          h('label', null, 'Minutes before it ends'),
-          h('input', { type: 'number', inputmode: 'numeric', min: '1', step: '1', value: data.endRemindMin,
-            oninput: e => { const v = parseInt(e.target.value, 10); data.endRemindMin = (isNaN(v) || v < 1) ? '' : v; } }),
-          h('div', { class: 'hint' }, 'Telegram fires this many minutes before the end time — handy for pick-ups.'));
-        const b = h('button', { class: 'btn small ' + (data.endReminder ? '' : 'secondary'), type: 'button' }, label());
-        b.onclick = () => { data.endReminder = !data.endReminder; b.className = 'btn small ' + (data.endReminder ? '' : 'secondary'); b.textContent = label(); minRow.style.display = data.endReminder ? '' : 'none'; };
-        wrap.append(b);
-        return h('div', null, wrap, minRow);
-      })());
+      a(h('div', { class: 'section-title' }, 'Reminders'));
+      a(h('div', { class: 'hint', style: { margin: '-4px 2px 6px' } }, 'Sent to your Telegram, per session.'));
+      a(remindRow(data, 'startReminder', 'startRemindMin', 'Reminder before each session starts', null, 60, true));
+      a(remindRow(data, 'startReminder2', 'startRemind2Min', '2nd reminder before each session starts', null, 15, false));
+      a(remindRow(data, 'endReminder', 'endRemindMin', 'Reminder before each session ends', 'Handy for pick-ups.', 20, false));
       a(h('div', { class: 'section-title' }, 'How long does this run?'));
       a(selectField('Repeat', data, 'repeatMode',
         [{ value: 'forever', label: 'Every week — no end date' }, { value: 'until', label: 'Until a specific date' }],
@@ -1633,7 +1634,7 @@ async function generateActivities() {
         const id = sc.id + '__' + dateStr + '__' + idx;
         if (have.has(id)) return; // already exists (incl. a shared one someone else created) — leave its cancel state alone
         have.add(id);
-        jobs.push(DB.saveItem({ id, cat: 'activity', data: { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', endReminder: !!d.endReminder, endRemindMin: (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20), cancelled: false } }));
+        jobs.push(DB.saveItem({ id, cat: 'activity', data: { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', startReminder: d.startReminder !== false, startRemindMin: (parseInt(d.startRemindMin, 10) > 0 ? parseInt(d.startRemindMin, 10) : 60), startReminder2: !!d.startReminder2, startRemind2Min: (parseInt(d.startRemind2Min, 10) > 0 ? parseInt(d.startRemind2Min, 10) : 15), endReminder: !!d.endReminder, endRemindMin: (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20), cancelled: false } }));
       });
     }
   }
@@ -2830,48 +2831,24 @@ function telegramSection(form) {
 /* ----- SETTINGS ----- */
 async function settingsScreen() {
   const s = await DB.getSettings();
-  // present lead time as value + unit
-  let unit = (s.leadMinutes % 60 === 0 && s.leadMinutes >= 60) ? 'hours' : 'minutes';
-  let amount = unit === 'hours' ? s.leadMinutes / 60 : s.leadMinutes;
-  const sLM = s.scheduleLeadMinutes != null ? s.scheduleLeadMinutes : 60;
-  let schedUnit = (sLM % 60 === 0 && sLM >= 60) ? 'hours' : 'minutes';
-  let schedAmount = schedUnit === 'hours' ? sLM / 60 : sLM;
-  const form = { amount: String(amount), unit, telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0), schedAmount: String(schedAmount), schedUnit };
+  const form = { telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0) };
   const gShareObj = { sharedWith: (s.groceryShare || []).slice() }; // grocery sharing list lives in settings
 
   const body = h('div', null,
-    h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Set it up below.'),
-    h('div', { class: 'section-title' }, 'Event reminders'),
-    h('div', { class: 'field' }, h('label', null, 'Remind me before each event'),
-      h('div', { class: 'row2' },
-        h('input', { type: 'number', inputmode: 'numeric', min: '1', value: form.amount, oninput: e => form.amount = e.target.value }),
-        h('select', { onchange: e => form.unit = e.target.value },
-          h('option', { value: 'minutes', selected: form.unit === 'minutes' ? 'selected' : null }, 'minutes before'),
-          h('option', { value: 'hours', selected: form.unit === 'hours' ? 'selected' : null }, 'hours before')))),
+    h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Reminder timing for events and weekly schedules is now set on each card.'),
     h('div', { class: 'section-title' }, 'To-do reminders'),
     h('div', { class: 'field' }, h('label', null, 'Start reminding me before the due date'),
       h('div', { class: 'row2' },
         h('input', { type: 'number', inputmode: 'numeric', min: '0', value: form.todoDays, oninput: e => form.todoDays = e.target.value }),
         h('div', { class: 'total-box' }, 'days before')),
       h('div', { class: 'hint' }, 'Set 0 to remind only on the due date. It nudges once a day until the list is done.')),
-    h('div', { class: 'section-title' }, 'Weekly schedule reminders'),
-    h('div', { class: 'field' }, h('label', null, 'Remind me before each session'),
-      h('div', { class: 'row2' },
-        h('input', { type: 'number', inputmode: 'numeric', min: '1', value: form.schedAmount, oninput: e => form.schedAmount = e.target.value }),
-        h('select', { onchange: e => form.schedUnit = e.target.value },
-          h('option', { value: 'minutes', selected: form.schedUnit === 'minutes' ? 'selected' : null }, 'minutes before'),
-          h('option', { value: 'hours', selected: form.schedUnit === 'hours' ? 'selected' : null }, 'hours before')))),
     h('div', { class: 'section-title' }, 'Grocery list sharing'),
     h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone in your household. You\'ll all share ONE grocery list — whoever adds an item, everyone sees it. Stays on until you remove them here.'),
     shareWithEditor(gShareObj),
     telegramSection(form),
     h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
-      const n = Math.max(1, parseInt(form.amount) || 1);
-      const leadMinutes = form.unit === 'hours' ? n * 60 : n;
       const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
-      const sn = Math.max(1, parseInt(form.schedAmount) || 1);
-      const scheduleLeadMinutes = form.schedUnit === 'hours' ? sn * 60 : sn;
-      await DB.saveSettings({ leadMinutes, telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, scheduleLeadMinutes, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
+      await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
       toast('Settings saved');
       startReminders();
       navigate('#/');
@@ -2915,7 +2892,6 @@ async function checkReminders() {
       const m = await drivingMetrics(pos, [d.lat, d.lng]);
       return m.mins;
     };
-    const lead = (s.leadMinutes || 60) * 60000;
     const now = Date.now();
     const events = await DB.listItems('events');
     for (const ev of events) {
@@ -2926,18 +2902,21 @@ async function checkReminders() {
       const mins = Math.round((t - now) / 60000);
       const at = fmtTimeOnly(d.when);
       const title = d.title || 'your event';
-      if (now >= t - lead && d._notifiedFor !== d.when) {
+      const lead1 = (parseInt(d.startRemindMin, 10) > 0 ? parseInt(d.startRemindMin, 10) : 60) * 60000;
+      const lead2 = (parseInt(d.startRemind2Min, 10) > 0 ? parseInt(d.startRemind2Min, 10) : 15) * 60000;
+      let changed = false;
+      if (d.startReminder !== false && now >= t - lead1 && d._notifiedFor !== d.when) {
         const msg = mins > 0
           ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
           : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
         fire(msg + (await travelFor(d)), '', 'ev-' + ev.id);
-        d._notifiedFor = d.when;
-        await DB.saveItem(ev);
-      } else if (now >= t - lead / 2 && d._notifiedHalf !== d.when) {
-        fire(`Hey, are you on your way to ${title}? It's at ${at}.` + (await travelFor(d)), '', 'evh-' + ev.id);
-        d._notifiedHalf = d.when;
-        await DB.saveItem(ev);
+        d._notifiedFor = d.when; changed = true;
       }
+      if (d.startReminder2 === true && now >= t - lead2 && d._notifiedHalf !== d.when) {
+        fire(`Hey, are you on your way to ${title}? It's at ${at}.` + (await travelFor(d)), '', 'evh-' + ev.id);
+        d._notifiedHalf = d.when; changed = true;
+      }
+      if (changed) await DB.saveItem(ev);
     }
     // to-do due dates: nudge once a day from (eta - todoLeadDays) through the due date
     const todoLeadDays = Math.max(0, s.todoLeadDays || 0);
@@ -2962,7 +2941,6 @@ async function checkReminders() {
       if (changed) await DB.saveItem(td);
     }
     // weekly schedule → reminders come from the Upcoming activities (so a cancelled day stays silent)
-    const schedLead = (s.scheduleLeadMinutes || 60) * 60000;
     await generateActivities();
     const acts = await DB.listItems('activity');
     for (const act of acts) {
@@ -2983,18 +2961,21 @@ async function checkReminders() {
           d._notifiedEnd = d.date; changed = true;
         }
       }
-      // start-based reminders (main + half)
+      // start-based reminders (main + optional 2nd) — each session carries its own lead times
       const t = new Date(d.date + 'T' + d.start).getTime();
       if (!isNaN(t) && now < t) {
         const mins = Math.round((t - now) / 60000);
         const at = fmtHM(d.start);
-        if (now >= t - schedLead && d._notifiedFor !== d.date) {
+        const lead1 = (parseInt(d.startRemindMin, 10) > 0 ? parseInt(d.startRemindMin, 10) : 60) * 60000;
+        const lead2 = (parseInt(d.startRemind2Min, 10) > 0 ? parseInt(d.startRemind2Min, 10) : 15) * 60000;
+        if (d.startReminder !== false && now >= t - lead1 && d._notifiedFor !== d.date) {
           const msg = mins > 0
             ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
             : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
           fire(msg + (await travelFor(d)));
           d._notifiedFor = d.date; changed = true;
-        } else if (now >= t - schedLead / 2 && d._notifiedHalf !== d.date) {
+        }
+        if (d.startReminder2 === true && now >= t - lead2 && d._notifiedHalf !== d.date) {
           fire(`Hey, are you on your way to ${title}? It's at ${at}.` + (await travelFor(d)));
           d._notifiedHalf = d.date; changed = true;
         }

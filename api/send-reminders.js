@@ -135,7 +135,7 @@ async function ensureActivities(project, uid, email, idToken, items, now, offMin
         const id = sc.id + '__' + dateStr + '__' + idx;
         if (have.has(id)) return;
         have.add(id);
-        const data = { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', endReminder: !!d.endReminder, endRemindMin: (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20), cancelled: false };
+        const data = { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', startReminder: d.startReminder !== false, startRemindMin: (parseInt(d.startRemindMin, 10) > 0 ? parseInt(d.startRemindMin, 10) : 60), startReminder2: !!d.startReminder2, startRemind2Min: (parseInt(d.startRemind2Min, 10) > 0 ? parseInt(d.startRemind2Min, 10) : 15), endReminder: !!d.endReminder, endRemindMin: (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20), cancelled: false };
         const sw = Array.isArray(d.sharedWith) ? d.sharedWith.map(e => String(e).trim().toLowerCase()).filter(Boolean) : [];
         if (sw.length) {
           const ownerEmail = sc.ownerEmail || email;
@@ -257,32 +257,34 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
     catch (e) { return { uid, tgtest: 'FAILED', error: String((e && e.message) || e) }; }
   }
   const userOff = (typeof settings.tzOffset === 'number') ? settings.tzOffset : offMin;
-  const leadMs = (settings.leadMinutes || 60) * 60000;
-  const schedLeadMsDbg = (settings.scheduleLeadMinutes || 60) * 60000;
   const todoLeadDays = Math.max(0, settings.todoLeadDays || 0);
+  // per-card lead time (minutes before start) → ms, with sensible fallback
+  const leadMsOf = (d) => (parseInt(d.startRemindMin, 10) > 0 ? parseInt(d.startRemindMin, 10) : 60) * 60000;
   // materialise the next 7 days of activities from the weekly schedule, then drive reminders from those
   const activities = await ensureActivities(project, uid, email, idToken, items, now, userOff);
   if (debug) {
     return {
       uid, nowLocal: new Date(now + userOff * 60000).toISOString().slice(0, 16).replace('T', ' '),
-      tzOffset: userOff, telegramSet: !!(token && chat), eventLeadMin: settings.leadMinutes || 60, scheduleLeadMin: settings.scheduleLeadMinutes || 60,
-      events: items.filter(i => i.cat === 'events').map(it => { const d = it.data || {}; const t = naiveToUTC(d.when, userOff); return { title: d.title, when: d.when, dueNow: !isNaN(t) && now >= t - leadMs && now < t, alreadyNotified: d._notifiedFor || null }; }),
-      activities: activities.map(it => { const d = it.data || {}; const t = naiveToUTC(d.date + 'T' + d.start, userOff); return { title: d.title, date: d.date, start: d.start, cancelled: !!d.cancelled, dueNow: !isNaN(t) && now >= t - schedLeadMsDbg && now < t, alreadyNotified: d._notifiedFor || null }; })
+      tzOffset: userOff, telegramSet: !!(token && chat),
+      events: items.filter(i => i.cat === 'events').map(it => { const d = it.data || {}; const t = naiveToUTC(d.when, userOff); return { title: d.title, when: d.when, leadMin: leadMsOf(d) / 60000, dueNow: !isNaN(t) && d.startReminder !== false && now >= t - leadMsOf(d) && now < t, alreadyNotified: d._notifiedFor || null }; }),
+      activities: activities.map(it => { const d = it.data || {}; const t = naiveToUTC(d.date + 'T' + d.start, userOff); return { title: d.title, date: d.date, start: d.start, leadMin: leadMsOf(d) / 60000, cancelled: !!d.cancelled, dueNow: !isNaN(t) && d.startReminder !== false && now >= t - leadMsOf(d) && now < t, alreadyNotified: d._notifiedFor || null }; })
     };
   }
   if (!token || !chat) return { skipped: 'no Telegram configured in Settings' };
   const loc = (items.find(i => i.cat === '_lastloc') || {}).data; // last-known location from the app
   let sent = 0;
 
-  // events
+  // events — each event carries its own reminder lead times
   for (const it of items.filter(i => i.cat === 'events')) {
     const d = it.data || {};
     if (!d.when) continue;
     const t = naiveToUTC(d.when, userOff);
     if (isNaN(t) || now >= t) continue;
-    const mainDue = now >= t - leadMs && d._notifiedFor !== d.when;
-    const halfDue = !mainDue && now >= t - leadMs / 2 && d._notifiedHalf !== d.when;
-    if (!mainDue && !halfDue) continue;
+    const lead1 = leadMsOf(d);
+    const lead2 = (parseInt(d.startRemind2Min, 10) > 0 ? parseInt(d.startRemind2Min, 10) : 15) * 60000;
+    const mainDue = d.startReminder !== false && now >= t - lead1 && d._notifiedFor !== d.when;
+    const secondDue = d.startReminder2 === true && now >= t - lead2 && d._notifiedHalf !== d.when;
+    if (!mainDue && !secondDue) continue;
     const mins = Math.round((t - now) / 60000);
     const at = fmtTime(t, userOff);
     const title = d.title || 'your event';
@@ -293,7 +295,8 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
         : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
       await tg(token, chat, msg + travel);
       d._notifiedFor = d.when;
-    } else {
+    }
+    if (secondDue) {
       await tg(token, chat, `Hey, are you on your way to ${title}? It's at ${at}.` + travel);
       d._notifiedHalf = d.when;
     }
@@ -324,7 +327,6 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
   }
 
   // weekly schedule → reminders from the Upcoming activities (a cancelled day stays silent)
-  const schedLeadMs = (settings.scheduleLeadMinutes || 60) * 60000;
   for (const it of activities) {
     const d = it.data || {};
     if (d.cancelled || !d.date || !d.start) continue;
@@ -344,12 +346,14 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
         d._notifiedEnd = d.date; changed = true; sent++;
       }
     }
-    // start-based reminders (main + half)
+    // start-based reminders (main + optional 2nd) — each session carries its own lead times
     const t = naiveToUTC(d.date + 'T' + d.start, userOff);
     if (!isNaN(t) && now < t) {
-      const mainDue = now >= t - schedLeadMs && d._notifiedFor !== d.date;
-      const halfDue = !mainDue && now >= t - schedLeadMs / 2 && d._notifiedHalf !== d.date;
-      if (mainDue || halfDue) {
+      const lead1 = leadMsOf(d);
+      const lead2 = (parseInt(d.startRemind2Min, 10) > 0 ? parseInt(d.startRemind2Min, 10) : 15) * 60000;
+      const mainDue = d.startReminder !== false && now >= t - lead1 && d._notifiedFor !== d.date;
+      const secondDue = d.startReminder2 === true && now >= t - lead2 && d._notifiedHalf !== d.date;
+      if (mainDue || secondDue) {
         const mins = Math.round((t - now) / 60000);
         const at = fmtHM12(d.start);
         if (mainDue) {
@@ -358,7 +362,8 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
             : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
           await tg(token, chat, msg + loc2);
           d._notifiedFor = d.date;
-        } else {
+        }
+        if (secondDue) {
           await tg(token, chat, `Hey, are you on your way to ${title}? It's at ${at}.` + loc2);
           d._notifiedHalf = d.date;
         }
