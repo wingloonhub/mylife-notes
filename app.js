@@ -359,7 +359,8 @@ const CATS = [
   { key: 'tripcat', name: 'Trip Area', emoji: '🏷️', hidden: true },
   { key: 'activity', name: 'Activity', emoji: '📌', hidden: true },
   { key: 'recipes', name: 'Recipes', emoji: '🍳' },
-  { key: 'warranty', name: 'Warranty Tracker', emoji: '🧾' }
+  { key: 'warranty', name: 'Warranty Tracker', emoji: '🧾' },
+  { key: 'worldcup', name: 'FIFA World Cup 2026', emoji: '⚽' }
 ];
 const catName = k => (CATS.find(c => c.key === k) || {}).name || k;
 /* singular label for editor/detail titles — uses an explicit `singular` if set, else drops a trailing "s" */
@@ -2195,7 +2196,9 @@ async function homeScreen() {
       h('div', { class: 'emoji' }, c.emoji),
       h('div', null, h('div', { class: 'name' }, c.name), h('div', { class: 'count' }, '…')));
     grid.appendChild(card);
-    if (c.key === 'schedule') {
+    if (c.key === 'worldcup') {
+      card.querySelector('.count').textContent = 'Live scores & tables';
+    } else if (c.key === 'schedule') {
       (async () => { try { await generateActivities(); } catch (e) {} const today = localDateStr(new Date()); const n = (await DB.listItems('activity')).filter(a => !a.data.cancelled && (a.data.date || '') >= today && activityActive(a.data)).length; card.querySelector('.count').textContent = n + ' upcoming ' + (n === 1 ? 'activity' : 'activities'); })();
     } else {
       DB.listItems(c.key).then(items => { card.querySelector('.count').textContent = homeCount(c.key, items); });
@@ -2211,6 +2214,7 @@ async function listScreen(cat, sub) {
   const bar = appbar(catName(cat), null, { back: () => goBack() });
   const listEl = h('div', { class: 'list' }, h('div', { class: 'spinner' }));
   mount(screen(bar, listEl));
+  if (cat === 'worldcup') { renderWorldCupScreen(listEl); return; } // read-only live screen, no add button
   const fab = h('button', { class: 'fab', onclick: () => navigate('#/edit/' + cat) }, '+');
   $app().appendChild(fab);
 
@@ -2517,6 +2521,124 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
   render();
 }
 
+/* ============================================================
+   FIFA WORLD CUP 2026 — live scores, group tables, knockout.
+   Data via the /api/worldcup proxy (football-data.org). Read-only.
+   ============================================================ */
+let _wcTimer = null;
+function stopWorldCup() { if (_wcTimer) { clearInterval(_wcTimer); _wcTimer = null; } }
+function wcIsLive(s) { return s === 'IN_PLAY' || s === 'PAUSED' || s === 'LIVE'; }
+function wcScore(m) { const f = (m.score && m.score.fullTime) || {}; return [f.home == null ? 0 : f.home, f.away == null ? 0 : f.away]; }
+function wcTeam(t) { return (t && t.name) || 'TBD'; }
+function wcStageLabel(stage, group) {
+  if (stage === 'GROUP_STAGE') return group ? group.replace('GROUP_', 'Group ') : 'Group stage';
+  return ({ LEAGUE_STAGE: 'League stage', PLAYOFFS: 'Play-offs', LAST_32: 'Round of 32', LAST_16: 'Round of 16',
+    QUARTER_FINALS: 'Quarter-final', SEMI_FINALS: 'Semi-final', THIRD_PLACE: 'Third place', FINAL: 'Final' }[stage]
+    || (stage ? stage.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()) : ''));
+}
+function wcFmtTime(utc) {
+  try { return new Date(utc).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+  catch (e) { return ''; }
+}
+function wcMatchRow(m) {
+  const [hs, as] = wcScore(m);
+  const live = wcIsLive(m.status), fin = m.status === 'FINISHED';
+  const right = (live || fin)
+    ? h('div', { class: 'wc-score' }, hs + ' – ' + as)
+    : h('div', { class: 'wc-time' }, wcFmtTime(m.utcDate));
+  const badge = live ? h('span', { class: 'wc-live' }, '● LIVE') : (fin ? h('span', { class: 'wc-ft' }, 'FT') : null);
+  return h('div', { class: 'wc-match' + (live ? ' is-live' : '') },
+    h('div', { class: 'wc-teams' },
+      h('div', { class: 'wc-tm' }, wcTeam(m.homeTeam)),
+      h('div', { class: 'wc-tm' }, wcTeam(m.awayTeam))),
+    h('div', { class: 'wc-right' }, badge, right));
+}
+function wcMatchesView(matches) {
+  if (!matches.length) return h('div', { class: 'empty' }, h('div', { class: 'big' }, '⚽'), h('div', null, 'No fixtures published yet.'));
+  const wrap = h('div', null);
+  const live = matches.filter(m => wcIsLive(m.status));
+  const upcoming = matches.filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED').sort((a, b) => (a.utcDate || '').localeCompare(b.utcDate || ''));
+  const recent = matches.filter(m => m.status === 'FINISHED').sort((a, b) => (b.utcDate || '').localeCompare(a.utcDate || ''));
+  if (live.length) { wrap.appendChild(h('div', { class: 'wc-h live' }, 'Live now')); live.forEach(m => wrap.appendChild(wcMatchRow(m))); }
+  if (upcoming.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Upcoming')); upcoming.slice(0, 40).forEach(m => wrap.appendChild(wcMatchRow(m))); }
+  if (recent.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Results')); recent.slice(0, 40).forEach(m => wrap.appendChild(wcMatchRow(m))); }
+  return wrap;
+}
+function wcGroupsView(standings) {
+  const groups = (standings || []).filter(s => s.type === 'TOTAL' && (s.stage === 'GROUP_STAGE' || s.group));
+  if (!groups.length) return h('div', { class: 'empty' }, h('div', { class: 'big' }, '📊'), h('div', null, 'Group tables appear once the group stage starts.'));
+  const wrap = h('div', null);
+  groups.forEach(g => {
+    wrap.appendChild(h('div', { class: 'wc-h' }, (g.group || '').replace('GROUP_', 'Group ')));
+    wrap.appendChild(h('table', { class: 'wc-table' },
+      h('thead', null, h('tr', null,
+        h('th', null, '#'), h('th', { class: 'tl' }, 'Team'), h('th', null, 'P'),
+        h('th', null, 'W'), h('th', null, 'D'), h('th', null, 'L'), h('th', null, 'GD'), h('th', null, 'Pts'))),
+      h('tbody', null, (g.table || []).map(r =>
+        h('tr', { class: r.position <= 2 ? 'qual' : '' },
+          h('td', null, r.position), h('td', { class: 'tl' }, wcTeam(r.team)),
+          h('td', null, r.playedGames), h('td', null, r.won), h('td', null, r.draw), h('td', null, r.lost),
+          h('td', null, (r.goalDifference > 0 ? '+' : '') + r.goalDifference), h('td', { class: 'pts' }, r.points))))));
+  });
+  return wrap;
+}
+function wcKnockoutView(matches) {
+  const order = ['PLAYOFFS', 'LAST_32', 'LAST_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'THIRD_PLACE', 'FINAL'];
+  const ko = matches.filter(m => m.stage && m.stage !== 'GROUP_STAGE' && m.stage !== 'LEAGUE_STAGE');
+  if (!ko.length) return h('div', { class: 'empty' }, h('div', { class: 'big' }, '🏆'), h('div', null, 'Knockout fixtures appear after the group stage.'));
+  const wrap = h('div', null);
+  const known = new Set(order);
+  order.forEach(stage => {
+    const ms = ko.filter(m => m.stage === stage).sort((a, b) => (a.utcDate || '').localeCompare(b.utcDate || ''));
+    if (!ms.length) return;
+    wrap.appendChild(h('div', { class: 'wc-h' }, wcStageLabel(stage)));
+    ms.forEach(m => wrap.appendChild(wcMatchRow(m)));
+  });
+  ko.filter(m => !known.has(m.stage)).forEach(m => wrap.appendChild(wcMatchRow(m)));
+  return wrap;
+}
+async function wcFetch(type) {
+  const r = await fetch('/api/worldcup?type=' + type, { cache: 'no-store' });
+  return r.json();
+}
+async function renderWorldCupScreen(listEl) {
+  stopWorldCup();
+  let tab = 'matches';
+  let matches = null, standings = null, errMsg = null;
+  const tabsEl = h('div', { class: 'tabs' });
+  const body = h('div', null);
+  listEl.innerHTML = '';
+  listEl.appendChild(tabsEl);
+  listEl.appendChild(body);
+
+  function drawTabs() {
+    tabsEl.innerHTML = '';
+    [['matches', 'Matches'], ['groups', 'Groups'], ['knockout', 'Knockout']].forEach(([k, label]) =>
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
+  }
+  function render() {
+    drawTabs();
+    body.innerHTML = '';
+    if (matches == null && !errMsg) { body.appendChild(h('div', { class: 'spinner' })); return; }
+    if (errMsg) { body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '⚽'), h('div', null, errMsg), h('div', { style: { marginTop: '6px', fontSize: '13px' } }, 'Live World Cup data needs a free API key set up on the server.'))); return; }
+    if (tab === 'matches') body.appendChild(wcMatchesView(matches));
+    else if (tab === 'groups') body.appendChild(wcGroupsView(standings));
+    else body.appendChild(wcKnockoutView(matches));
+  }
+  async function load() {
+    try {
+      const [mj, sj] = await Promise.all([wcFetch('matches'), wcFetch('standings')]);
+      if (mj && mj.error) { errMsg = mj.message || 'World Cup data is not available right now.'; }
+      else { matches = (mj && mj.matches) || []; standings = (sj && sj.standings) || []; errMsg = null; }
+    } catch (e) { errMsg = 'Could not load — check your connection.'; }
+    render();
+  }
+  render(); // initial spinner
+  await load();
+  // refresh live scores while the screen stays open
+  _wcTimer = setInterval(() => { if (location.hash.replace(/^#/, '').startsWith('/cat/worldcup')) load(); else stopWorldCup(); }, 45000);
+}
+
 /* add "x km · ~y min" to an event row (rough straight-line estimate) */
 async function enrichRowDistance(it, row, posP) {
   const d = it.data || {};
@@ -2798,6 +2920,7 @@ function startLive(renderFn) {
 
 function routeChanged() {
   stopLive(); // drop any live listener from the previous screen
+  stopWorldCup(); // drop the World Cup auto-refresh from the previous screen
   if (!CURRENT) {
     const v = location.hash.includes('signup') ? 'signup' : location.hash.includes('forgot') ? 'forgot' : 'login';
     mount(authScreen(v));
@@ -2860,8 +2983,14 @@ function telegramSection(form) {
 /* ----- SETTINGS ----- */
 async function settingsScreen() {
   const s = await DB.getSettings();
-  const form = { telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0) };
+  const form = { telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0), wcAlerts: s.worldcupAlerts !== false };
   const gShareObj = { sharedWith: (s.groceryShare || []).slice() }; // grocery sharing list lives in settings
+  const wcToggle = (() => {
+    const lbl = () => (form.wcAlerts ? '✓ World Cup score alerts on' : 'World Cup score alerts off');
+    const b = h('button', { class: 'btn small ' + (form.wcAlerts ? '' : 'secondary'), type: 'button' }, lbl());
+    b.onclick = () => { form.wcAlerts = !form.wcAlerts; b.className = 'btn small ' + (form.wcAlerts ? '' : 'secondary'); b.textContent = lbl(); };
+    return b;
+  })();
 
   const body = h('div', null,
     h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Reminder timing for events and weekly schedules is now set on each card.'),
@@ -2874,10 +3003,13 @@ async function settingsScreen() {
     h('div', { class: 'section-title' }, 'Grocery list sharing'),
     h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone in your household. You\'ll all share ONE grocery list — whoever adds an item, everyone sees it. Stays on until you remove them here.'),
     shareWithEditor(gShareObj),
+    h('div', { class: 'section-title' }, 'FIFA World Cup 2026'),
+    h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Get live goal & full-time score updates pushed to your Telegram during matches.'),
+    h('div', { class: 'field' }, wcToggle),
     telegramSection(form),
     h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
       const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
-      await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
+      await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, worldcupAlerts: form.wcAlerts, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
       toast('Settings saved');
       startReminders();
       navigate('#/');

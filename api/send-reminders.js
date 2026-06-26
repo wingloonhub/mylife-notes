@@ -164,6 +164,47 @@ async function tg(token, chatId, text) {
   return j;
 }
 
+/* ---- FIFA World Cup live-score push ---- */
+async function fetchWcMatches(key) {
+  const r = await fetch('https://api.football-data.org/v4/competitions/WC/matches', { headers: { 'X-Auth-Token': key } });
+  const j = await r.json();
+  if (!r.ok) throw new Error((j && j.message) || ('HTTP ' + r.status));
+  return j.matches || [];
+}
+function wcStage(stage, group) {
+  if (stage === 'GROUP_STAGE') return group ? group.replace('GROUP_', 'Group ') : 'Group stage';
+  return ({ LAST_32: 'Round of 32', LAST_16: 'Round of 16', QUARTER_FINALS: 'Quarter-final',
+    SEMI_FINALS: 'Semi-final', THIRD_PLACE: 'Third place', FINAL: 'Final' }[stage]
+    || (stage ? stage.replace(/_/g, ' ') : ''));
+}
+// compare matches against the user's stored snapshot; send goal/kick-off/full-time updates.
+// returns the number of messages sent.
+async function pushWorldCup(matches, stateItem, project, uid, idToken, token, chat) {
+  const seen = (stateItem && stateItem.data && stateItem.data.m) || {};
+  let changed = false, sent = 0;
+  for (const m of matches) {
+    const st = m.status;
+    if (st !== 'IN_PLAY' && st !== 'PAUSED' && st !== 'LIVE' && st !== 'FINISHED') continue;
+    const f = (m.score && m.score.fullTime) || {};
+    const hs = f.home == null ? 0 : f.home, as = f.away == null ? 0 : f.away;
+    const live = (st === 'IN_PLAY' || st === 'PAUSED' || st === 'LIVE'), fin = (st === 'FINISHED');
+    const sig = (fin ? 'F' : 'L') + '|' + hs + '-' + as;
+    const prev = seen[m.id];
+    if (prev === sig) continue;
+    const home = (m.homeTeam && m.homeTeam.name) || 'Home', away = (m.awayTeam && m.awayTeam.name) || 'Away';
+    const stage = wcStage(m.stage, m.group);
+    const line = `${home} ${hs}–${as} ${away}`;
+    let msg = null;
+    if (fin) msg = `🏁 FULL-TIME — ${stage}\n${line}`;
+    else if (!prev) msg = `⚽ Kick-off — ${stage}\n${home} vs ${away}`;
+    else { const prevScore = prev.slice(2); if (prevScore !== (hs + '-' + as)) msg = `⚽ GOAL — ${stage}\n${line}`; }
+    if (msg) { try { await tg(token, chat, msg); sent++; } catch (e) {} }
+    seen[m.id] = sig; changed = true;
+  }
+  if (changed) { try { await putItem(project, uid, idToken, '_wcstate', '_wcstate', { m: seen, updated: Date.now() }); } catch (e) {} }
+  return sent;
+}
+
 /* ---- date helpers (interpret the app's naive local times in the user's tz) ---- */
 function naiveToUTC(s, offMin) {
   const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
@@ -243,7 +284,7 @@ async function travelMins(loc, destLat, destLng, now, offMin) {
   return null;
 }
 
-async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
+async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
   const email = (u.email || '').trim().toLowerCase();
   const items = await listItems(project, uid, idToken);
@@ -380,6 +421,12 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest) {
     }
   }
 
+  // FIFA World Cup live-score push (only if a key is configured and the user hasn't opted out)
+  if (wcMatches && wcMatches.length && settings.worldcupAlerts !== false && token && chat) {
+    const stateItem = items.find(i => i.id === '_wcstate');
+    sent += await pushWorldCup(wcMatches, stateItem, project, uid, idToken, token, chat);
+  }
+
   return { uid, sent };
 }
 
@@ -397,10 +444,14 @@ module.exports = async (req, res) => {
   const now = Date.now();
   const debug = (req.query && req.query.debug) === '1';
   const tgtest = (req.query && req.query.tgtest) === '1';
+  // fetch World Cup matches ONCE per tick (shared across all users) if a key is configured
+  let wcMatches = null;
+  const footballKey = process.env.FOOTBALL_API_KEY;
+  if (footballKey && !tgtest) { try { wcMatches = await fetchWcMatches(footballKey); } catch (e) {} }
   const results = [];
   for (const u of users) {
-    try { results.push({ email: u.email, ...(await processUser(u, apiKey, project, offMin, now, debug, tgtest)) }); }
+    try { results.push({ email: u.email, ...(await processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches)) }); }
     catch (e) { results.push({ email: u.email, error: String((e && e.message) || e) }); }
   }
-  res.status(200).json({ ok: true, ranAt: new Date(now).toISOString(), results });
+  res.status(200).json({ ok: true, ranAt: new Date(now).toISOString(), wcMatches: wcMatches ? wcMatches.length : 0, results });
 };
