@@ -195,7 +195,10 @@ async function pushWorldCup(matches, stateItem, project, uid, idToken, token, ch
     const stage = wcStage(m.stage, m.group);
     const line = `${home} ${hs}–${as} ${away}`;
     let msg = null;
-    if (fin) msg = `🏁 FULL-TIME — ${stage}\n${line}`;
+    // Only message for matches we're actually tracking live. A finished match we never
+    // saw live (e.g. it ended before tracking started, or on the very first run) is just
+    // recorded silently — this prevents a blast of full-time messages for old results.
+    if (fin) { if (prev && prev[0] === 'L') msg = `🏁 FULL-TIME — ${stage}\n${line}`; }
     else if (!prev) msg = `⚽ Kick-off — ${stage}\n${home} vs ${away}`;
     else { const prevScore = prev.slice(2); if (prevScore !== (hs + '-' + as)) msg = `⚽ GOAL — ${stage}\n${line}`; }
     if (msg) { try { await tg(token, chat, msg); sent++; } catch (e) {} }
@@ -284,7 +287,7 @@ async function travelMins(loc, destLat, destLng, now, offMin) {
   return null;
 }
 
-async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches) {
+async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches, wctest) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
   const email = (u.email || '').trim().toLowerCase();
   const items = await listItems(project, uid, idToken);
@@ -296,6 +299,16 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
     if (!token || !chat) return { uid, tgtest: 'no Telegram token/chat in Settings' };
     try { await tg(token, chat, '✅ Scheduler test — closed-app reminders can reach this chat.'); return { uid, tgtest: 'SENT OK' }; }
     catch (e) { return { uid, tgtest: 'FAILED', error: String((e && e.message) || e) }; }
+  }
+  if (wctest) {
+    if (!token || !chat) return { uid, wctest: 'no Telegram token/chat in Settings' };
+    const fin = (wcMatches || []).filter(m => m.status === 'FINISHED').sort((a, b) => (b.utcDate || '').localeCompare(a.utcDate || ''))[0];
+    if (!fin) return { uid, wctest: 'no finished World Cup match found' };
+    const f = (fin.score && fin.score.fullTime) || {};
+    const home = (fin.homeTeam && fin.homeTeam.name) || 'Home', away = (fin.awayTeam && fin.awayTeam.name) || 'Away';
+    const sample = `🏁 FULL-TIME — ${wcStage(fin.stage, fin.group)}\n${home} ${f.home == null ? 0 : f.home}–${f.away == null ? 0 : f.away} ${away}\n\n(test message — World Cup score alerts are working ✅)`;
+    try { await tg(token, chat, sample); return { uid, wctest: 'SENT OK' }; }
+    catch (e) { return { uid, wctest: 'FAILED', error: String((e && e.message) || e) }; }
   }
   const userOff = (typeof settings.tzOffset === 'number') ? settings.tzOffset : offMin;
   const todoLeadDays = Math.max(0, settings.todoLeadDays || 0);
@@ -444,13 +457,14 @@ module.exports = async (req, res) => {
   const now = Date.now();
   const debug = (req.query && req.query.debug) === '1';
   const tgtest = (req.query && req.query.tgtest) === '1';
+  const wctest = (req.query && req.query.wctest) === '1';
   // fetch World Cup matches ONCE per tick (shared across all users) if a key is configured
   let wcMatches = null;
   const footballKey = process.env.FOOTBALL_API_KEY;
   if (footballKey && !tgtest) { try { wcMatches = await fetchWcMatches(footballKey); } catch (e) {} }
   const results = [];
   for (const u of users) {
-    try { results.push({ email: u.email, ...(await processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches)) }); }
+    try { results.push({ email: u.email, ...(await processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches, wctest)) }); }
     catch (e) { results.push({ email: u.email, error: String((e && e.message) || e) }); }
   }
   res.status(200).json({ ok: true, ranAt: new Date(now).toISOString(), wcMatches: wcMatches ? wcMatches.length : 0, results });

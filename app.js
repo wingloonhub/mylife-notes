@@ -2560,8 +2560,8 @@ function wcMatchesView(matches) {
   const upcoming = matches.filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED').sort((a, b) => (a.utcDate || '').localeCompare(b.utcDate || ''));
   const recent = matches.filter(m => m.status === 'FINISHED').sort((a, b) => (b.utcDate || '').localeCompare(a.utcDate || ''));
   if (live.length) { wrap.appendChild(h('div', { class: 'wc-h live' }, 'Live now')); live.forEach(m => wrap.appendChild(wcMatchRow(m))); }
-  if (upcoming.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Upcoming')); upcoming.slice(0, 40).forEach(m => wrap.appendChild(wcMatchRow(m))); }
-  if (recent.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Results')); recent.slice(0, 40).forEach(m => wrap.appendChild(wcMatchRow(m))); }
+  if (upcoming.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Upcoming')); upcoming.forEach(m => wrap.appendChild(wcMatchRow(m))); }
+  if (recent.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Results (' + recent.length + ')')); recent.forEach(m => wrap.appendChild(wcMatchRow(m))); }
   return wrap;
 }
 function wcGroupsView(standings) {
