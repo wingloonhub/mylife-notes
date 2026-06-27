@@ -287,6 +287,47 @@ async function travelMins(loc, destLat, destLng, now, offMin) {
   return null;
 }
 
+/* ---- Trip Planner reminders (warm, female-bot style; timed off departure / return flight) ---- */
+const TRIP_DEP = [
+  { id: 'dep_1w', off: 7 * 24 * 60 },
+  { id: 'dep_3d', off: 3 * 24 * 60 },
+  { id: 'dep_1d', off: 1 * 24 * 60 },
+  { id: 'dep_10h', off: 10 * 60 },
+  { id: 'dep_1h', off: 1 * 60 }
+];
+const TRIP_RET = [
+  { id: 'ret_1d', off: 1 * 24 * 60 },
+  { id: 'ret_10h', off: 10 * 60 },
+  { id: 'ret_1h', off: 1 * 60 }
+];
+function tripCtx(d) {
+  const depBase = d.outWhen || (d.startDate ? d.startDate + 'T09:00' : '');
+  const retBase = d.retWhen || (d.endDate ? d.endDate + 'T09:00' : '');
+  const fmtD = s => { const p = (s || '').split('T')[0]; return p ? fmtDateOnly(p) : ''; };
+  const fmtT = s => { const p = (s || '').split('T')[1]; return p ? fmtHM12(p.slice(0, 5)) : ''; };
+  return {
+    depBase, retBase,
+    dest: d.title || 'your trip',
+    depDate: fmtD(depBase), depTime: fmtT(depBase),
+    retDate: fmtD(retBase), retTime: fmtT(retBase),
+    retFrom: d.retFrom || d.title || 'there',
+    retTo: d.retTo || 'home'
+  };
+}
+function tripReminderMsg(id, c) {
+  switch (id) {
+    case 'dep_1w': return `Hi, just a gentle reminder — your ${c.dest} trip is coming up in 1 week.\nYour departure is on ${c.depDate} at ${c.depTime}. This is a good time to check your itinerary, bookings, passport, travel documents, and things you may need to prepare early.`;
+    case 'dep_3d': return `Hi, your ${c.dest} trip is only 3 days away.\nYou'll be departing on ${c.depDate} at ${c.depTime}. You may want to start packing, check the weather, confirm your transport, and make sure your important documents are ready.`;
+    case 'dep_1d': return `Hi, your ${c.dest} trip is tomorrow.\nYour departure is on ${c.depDate} at ${c.depTime}. Please remember to charge your devices, pack your essentials, prepare your travel documents, and set your alarm so everything is ready.`;
+    case 'dep_10h': return `Hi, just a reminder — your ${c.dest} trip departure is in 10 hours.\nYou'll be leaving on ${c.depDate} at ${c.depTime}. Please do a final check on your luggage, tickets, passport, wallet, chargers, and transport arrangement.`;
+    case 'dep_1h': return `Hi, it's almost time. Your ${c.dest} trip departure is in 1 hour.\nDeparture time is ${c.depDate} at ${c.depTime}. Please make sure you have your phone, wallet, travel documents, keys, and luggage with you before leaving.`;
+    case 'ret_1d': return `Hi, just a gentle reminder — your flight back to ${c.retTo} is tomorrow.\nPlease start packing your luggage, check your passport and travel documents, and make sure nothing important is left behind in ${c.retFrom}.`;
+    case 'ret_10h': return `Hi, your return flight to ${c.retTo} is in 10 hours.\nPlease do a final check on your luggage, passport, wallet, phone, chargers, and airport transfer arrangement. Hope your ${c.dest} trip has been a wonderful one.`;
+    case 'ret_1h': return `Hi, it's almost time to fly back to ${c.retTo}. Your departure is in 1 hour.\nPlease make sure you have your passport, boarding pass, phone, wallet, luggage, and all your important belongings with you.`;
+  }
+  return '';
+}
+
 async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches, wctest) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
   const email = (u.email || '').trim().toLowerCase();
@@ -428,6 +469,37 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
         changed = true; sent++;
       }
     }
+    if (changed) {
+      if (it._shared) await putShared(project, idToken, it.id, { data: d });
+      else await patchData(project, uid, idToken, it.id, d);
+    }
+  }
+
+  // trip planner: warm departure / return-flight reminders (each toggle timed off its base datetime)
+  const GRACE = 6 * 3600000; // fire if the target passed within the last 6h (covers cron gaps / late setup)
+  if (token && chat) for (const it of items.filter(i => i.cat === 'trips')) {
+    const d = it.data || {};
+    const rem = d.reminders || {};
+    if (Object.keys(rem).length === 0) continue;
+    const c = tripCtx(d);
+    if (!d._tripNotif || typeof d._tripNotif !== 'object') d._tripNotif = {};
+    let changed = false;
+    const runSet = async (defs, base) => {
+      if (!base) return;
+      const baseMs = naiveToUTC(base, userOff);
+      if (isNaN(baseMs)) return;
+      for (const def of defs) {
+        if (!rem[def.id]) continue;
+        const target = baseMs - def.off * 60000;
+        if (now >= target && now < baseMs && now <= target + GRACE && d._tripNotif[def.id] !== base) {
+          const msg = tripReminderMsg(def.id, c);
+          if (msg) { try { await tg(token, chat, msg); } catch (e) {} }
+          d._tripNotif[def.id] = base; changed = true; sent++;
+        }
+      }
+    };
+    await runSet(TRIP_DEP, c.depBase);
+    await runSet(TRIP_RET, c.retBase);
     if (changed) {
       if (it._shared) await putShared(project, idToken, it.id, { data: d });
       else await patchData(project, uid, idToken, it.id, d);

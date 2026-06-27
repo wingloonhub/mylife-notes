@@ -167,6 +167,7 @@ body {
   border-radius: 12px; touch-action: pan-y; }
 .cancelled-row { opacity: .65; }
 .cancelled-row .title { text-decoration: line-through; }
+.qtytag { color: var(--accent); font-weight: 700; font-size: .92em; }
 
 /* ---- FIFA World Cup ---- */
 .wc-h { font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);

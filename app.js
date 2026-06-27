@@ -627,7 +627,23 @@ function buildEditor(cat, data, amOwner) {
     }
     case 'trips': {
       a(field('Trip name', data, 'title', { placeholder: 'e.g. Japan' }));
+      if (data.tripType == null) data.tripType = 'local';
+      a(selectField('Trip type', data, 'tripType',
+        [{ value: 'local', label: 'Local Trip' }, { value: 'international', label: 'International Trip' }],
+        () => rerenderEditor('trips', data)));
       a(tripDates(data));
+      if (data.tripType === 'international') {
+        a(h('div', { class: 'section-title' }, 'Flights'));
+        a(flightLeg(data, 'out', '✈️ Outbound'));
+        a(flightLeg(data, 'ret', '🛬 Return'));
+        a(h('div', { class: 'section-title' }, "Who's going"));
+        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add each traveller and attach their ticket / boarding pass so the QR is handy at the airport.'));
+        a(travellersEditor(data));
+      }
+      a(h('div', { class: 'section-title' }, '🏨 Hotel'));
+      a(hotelSection(data));
+      a(h('div', { class: 'section-title' }, '🔔 Trip reminders'));
+      a(tripRemindersEditor(data, data.tripType === 'international'));
       a(field('Notes', data, 'notes', { placeholder: 'e.g. flight & hotel details' }));
       if (amOwner) {
         a(h('div', { class: 'section-title' }, 'Share this trip with (live)'));
@@ -639,7 +655,7 @@ function buildEditor(cat, data, amOwner) {
       a(h('div', { class: 'section-title' }, 'Which areas? (beach, city, camping…)'));
       a(tripCategoryPicker(data));
       a(h('div', { class: 'section-title' }, 'Packing list (tick when packed in the trip view)'));
-      a(checklistEditor(data, 'items', 'Item to bring'));
+      a(checklistEditor(data, 'items', 'Item to bring', true));
       break;
     }
     case 'tripcat': {
@@ -775,6 +791,87 @@ function tripDates(data) {
       h('div', { class: 'field' }, h('label', null, 'From'), start),
       h('div', { class: 'field' }, h('label', null, 'To'), end)),
     dur);
+}
+
+/* one flight leg (outbound or return): date/time + departing-from + arriving-at. prefix = 'out' | 'ret' */
+function flightLeg(data, p, label) {
+  return h('div', { class: 'sub-item' },
+    h('div', { class: 'section-title', style: { marginTop: 0 } }, label),
+    h('div', { class: 'field' }, h('label', null, 'Date & time'),
+      h('input', { type: 'datetime-local', value: data[p + 'When'] || '', oninput: e => data[p + 'When'] = e.target.value })),
+    h('div', { class: 'row2' },
+      h('div', { class: 'field' }, h('label', null, 'Departing from'),
+        h('input', { value: data[p + 'From'] || '', placeholder: 'e.g. Kuala Lumpur (KUL)', oninput: e => data[p + 'From'] = e.target.value })),
+      h('div', { class: 'field' }, h('label', null, 'Arriving at'),
+        h('input', { value: data[p + 'To'] || '', placeholder: 'e.g. Tokyo (NRT)', oninput: e => data[p + 'To'] = e.target.value }))));
+}
+
+/* travellers list: name + details + an attached ticket/boarding-pass image (so the QR is to hand) */
+function travellersEditor(data) {
+  if (!Array.isArray(data.travellers)) data.travellers = [];
+  const wrap = h('div');
+  function draw() {
+    wrap.innerHTML = '';
+    data.travellers.forEach((t, i) => {
+      if (!Array.isArray(t.ticket)) t.ticket = [];
+      wrap.appendChild(h('div', { class: 'sub-item' },
+        h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' } },
+          h('input', { value: t.name || '', placeholder: 'Traveller name', style: { flex: 1 }, oninput: e => t.name = e.target.value }),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this traveller?')) return; data.travellers.splice(i, 1); draw(); } }, '✕')),
+        h('div', { class: 'field' }, h('label', null, 'Details (passport no., seat, notes…)'),
+          h('textarea', { placeholder: 'e.g. Passport A1234567 · seat 32A', oninput: e => t.details = e.target.value }, t.details || '')),
+        h('div', { class: 'section-title', style: { fontSize: '13px', marginTop: '4px' } }, '🎫 Ticket / boarding pass (tap to enlarge & scan)'),
+        imageMulti(t, 'ticket', true)));
+    });
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.travellers.push({ name: '', details: '', ticket: [] }); draw(); } }, '+ Add traveller'));
+  }
+  draw();
+  return wrap;
+}
+
+/* hotel block: name + GPS map field (resolves coordinates) + check-in / check-out date & time */
+function hotelSection(data) {
+  if (!data.hotel || typeof data.hotel !== 'object') data.hotel = {};
+  const ho = data.hotel;
+  const dateTime = (dateKey, timeKey, dateLabel) => h('div', { class: 'row2' },
+    h('div', { class: 'field' }, h('label', null, dateLabel),
+      h('input', { type: 'date', value: ho[dateKey] || '', oninput: e => ho[dateKey] = e.target.value })),
+    h('div', { class: 'field' }, h('label', null, 'Time'),
+      h('input', { type: 'time', value: ho[timeKey] || '', oninput: e => ho[timeKey] = e.target.value })));
+  return h('div', null,
+    field('Hotel name', ho, 'name', { placeholder: 'e.g. Hilton Tokyo' }),
+    mapFieldBlock(ho),
+    dateTime('checkInDate', 'checkInTime', 'Check-in date'),
+    dateTime('checkOutDate', 'checkOutTime', 'Check-out date'));
+}
+
+/* trip reminder toggles — each can be enabled/disabled. Delivery happens via the Telegram
+   scheduler, timed off the departure (out flight / trip start) and return (ret flight / trip end). */
+function tripRemindersEditor(data, includeReturn) {
+  if (!data.reminders || typeof data.reminders !== 'object') data.reminders = {};
+  const rem = data.reminders;
+  const toggle = (id, label) => {
+    const txt = () => (rem[id] ? '✓ ' : '') + label;
+    const b = h('button', { class: 'btn small ' + (rem[id] ? '' : 'secondary'), type: 'button',
+      style: { display: 'block', width: '100%', textAlign: 'left', marginBottom: '6px' } }, txt());
+    b.onclick = () => { rem[id] = !rem[id]; b.className = 'btn small ' + (rem[id] ? '' : 'secondary'); b.textContent = txt(); };
+    return b;
+  };
+  const out = h('div', null,
+    h('div', { class: 'section-title' }, 'Departure Reminder'),
+    h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Timed off your departure (outbound flight time, or trip start date). Sent to your Telegram.'),
+    toggle('dep_1w', '1 week before trip'),
+    toggle('dep_3d', '3 days before trip'),
+    toggle('dep_1d', '1 day before trip'),
+    toggle('dep_10h', '10 hours before departure'),
+    toggle('dep_1h', '1 hour before departure'));
+  if (includeReturn) out.append(
+    h('div', { class: 'section-title' }, 'Return Flight Reminder'),
+    h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Timed off your return flight departure time.'),
+    toggle('ret_1d', '1 day before return flight'),
+    toggle('ret_10h', '10 hours before departure'),
+    toggle('ret_1h', '1 hour before departure'));
+  return out;
 }
 
 function tripCategoryPicker(data) {
@@ -966,7 +1063,7 @@ function todoItemsEditor(data) {
 }
 
 /* generic checklist editor (name only; checked toggled in detail view) */
-function checklistEditor(data, key, placeholder) {
+function checklistEditor(data, key, placeholder, withQty) {
   if (!Array.isArray(data[key])) data[key] = [];
   const wrap = h('div');
   function draw() {
@@ -974,7 +1071,10 @@ function checklistEditor(data, key, placeholder) {
     data[key].forEach((it, i) => {
       wrap.appendChild(h('div', { class: 'field', style: { marginBottom: '8px' } },
         h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
-          h('input', { value: it.name || '', placeholder, oninput: e => it.name = e.target.value }),
+          h('input', { value: it.name || '', placeholder, style: { flex: 1 }, oninput: e => it.name = e.target.value }),
+          withQty ? h('input', { type: 'number', inputmode: 'numeric', min: '1', placeholder: 'Qty', title: 'Quantity',
+            value: it.qty != null ? it.qty : '', style: { width: '62px', flex: 'none' },
+            oninput: e => { const v = parseInt(e.target.value, 10); it.qty = (isNaN(v) || v < 1) ? '' : v; } }) : null,
           h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this item?')) return; data[key].splice(i, 1); draw(); } }, '✕'))));
     });
     wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data[key].push({ name: '', checked: false }); draw(); } }, '+ Add item'));
@@ -1423,8 +1523,36 @@ async function renderDetail(cat, item) {
         const nights = Math.round((new Date(data.endDate) - new Date(data.startDate)) / 86400000);
         dates = fmtDate(data.startDate) + ' → ' + fmtDate(data.endDate) + (nights >= 0 ? ('  (' + (nights + 1) + ' days, ' + nights + ' night' + (nights === 1 ? '' : 's') + ')') : '');
       }
+      const intl = data.tripType === 'international';
       a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Trip'),
+        kv('Type', intl ? '✈️ International' : 'Local'),
         dates ? kv('Dates', dates) : null, kv('Notes', data.notes)));
+      if (intl) {
+        const leg = (p, label) => {
+          if (!data[p + 'When'] && !data[p + 'From'] && !data[p + 'To']) return null;
+          const route = [data[p + 'From'], data[p + 'To']].filter(Boolean).join('  →  ');
+          return h('div', { class: 'detail-card' }, h('div', { class: 'section-title', style: { marginTop: 0 } }, label),
+            kv('When', data[p + 'When'] ? fmtDT(data[p + 'When']) : null), kv('Route', route || null));
+        };
+        const ob = leg('out', '✈️ Outbound'), rb = leg('ret', '🛬 Return');
+        if (ob) a(ob);
+        if (rb) a(rb);
+        for (const t of (data.travellers || [])) {
+          const card = h('div', { class: 'detail-card' }, h('h3', null, '👤 ' + (t.name || 'Traveller')),
+            t.details ? kv('Details', t.details) : null);
+          const tix = await imgs(t.ticket);
+          if (tix.length) { card.appendChild(h('div', { class: 'section-title', style: { fontSize: '13px' } }, '🎫 Ticket (tap to scan QR)')); for (const im of tix) card.appendChild(im); }
+          a(card);
+        }
+      }
+      const ho = data.hotel;
+      if (ho && (ho.name || ho.map || ho.location || ho.checkInDate)) {
+        const stamp = (dk, tk) => ho[dk] ? (fmtDate(ho[dk]) + (ho[tk] ? ' · ' + fmtHM(ho[tk]) : '')) : null;
+        a(h('div', { class: 'detail-card' }, h('h3', null, '🏨 ' + (ho.name || 'Hotel')),
+          kv('Check-in', stamp('checkInDate', 'checkInTime')),
+          kv('Check-out', stamp('checkOutDate', 'checkOutTime'))));
+        if (ho.map || ho.location || typeof ho.lat === 'number') a(hotelMapCard(ho));
+      }
       a(checklistView(item, 'items', cat, 'Packing list'));
       break;
     }
@@ -1505,7 +1633,8 @@ function checklistView(item, key, cat, title) {
     const cb = h('div', { class: 'cb' + (it.checked ? ' on' : '') });
     const row = h('div', { class: 'check-row' + (it.checked ? ' done' : '') },
       cb,
-      h('div', { class: 'ttl' }, it.name || '', it.eta ? h('div', { class: 'px' }, 'Due ' + fmtDate(it.eta)) : null));
+      h('div', { class: 'ttl' }, it.name || '', (it.qty ? h('span', { class: 'qtytag' }, ' ×' + it.qty) : null),
+        it.eta ? h('div', { class: 'px' }, 'Due ' + fmtDate(it.eta)) : null));
     cb.onclick = async () => {
       it.checked = !it.checked;
       row.classList.toggle('done', it.checked);
@@ -1762,6 +1891,42 @@ function mapCard(item) {
     h('a', { class: 'btn small secondary', href: openHref, target: '_blank' }, '📍 Open in Google Maps'),
     h('a', { class: 'btn small', href: dirHref, target: '_blank' }, '🧭 Directions')));
   computeDistance(item, info);
+  return card;
+}
+
+/* map card for the hotel sub-object — like mapCard but never writes back to the trip */
+function hotelMapCard(ho) {
+  const q = (ho.map || ho.location || '').trim();
+  const enc = encodeURIComponent(q);
+  const isUrl = /^https?:\/\//i.test(q);
+  const openHref = isUrl ? q : 'https://www.google.com/maps/search/?api=1&query=' + enc;
+  const dirHref = 'https://www.google.com/maps/dir/?api=1&destination=' + enc;
+  const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Getting to the hotel'));
+  if (typeof ho.lat === 'number') card.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Coordinates'), h('span', { class: 'v' }, ho.lat.toFixed(5) + ', ' + ho.lng.toFixed(5))));
+  const info = h('div');
+  card.appendChild(info);
+  card.appendChild(h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' } },
+    h('a', { class: 'btn small secondary', href: openHref, target: '_blank' }, '📍 Open in Google Maps'),
+    h('a', { class: 'btn small', href: dirHref, target: '_blank' }, '🧭 Directions')));
+  const calc = async () => {
+    info.innerHTML = '';
+    info.appendChild(h('div', { class: 'hint' }, 'Calculating distance from you…'));
+    try {
+      const pos = await currentPosition();
+      if (!pos) throw new Error('geo');
+      const dest = (typeof ho.lat === 'number') ? [ho.lat, ho.lng] : await resolveCoords(q);
+      if (!dest) throw new Error('place');
+      const { km, mins } = await drivingMetrics(pos, dest);
+      info.innerHTML = '';
+      info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Distance'), h('span', { class: 'v' }, km.toFixed(1) + ' km')));
+      info.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Drive time'), h('span', { class: 'v' }, '~' + mins + ' min')));
+    } catch (e) {
+      info.innerHTML = '';
+      info.appendChild(h('button', { class: 'btn small secondary', type: 'button', onclick: calc }, '📏 Show distance & time from me'));
+      info.appendChild(h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Allow location access, then tap to retry.'));
+    }
+  };
+  calc();
   return card;
 }
 
