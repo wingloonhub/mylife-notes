@@ -642,8 +642,7 @@ function buildEditor(cat, data, amOwner) {
       }
       a(h('div', { class: 'section-title' }, '🏨 Hotel'));
       a(hotelSection(data));
-      a(h('div', { class: 'section-title' }, '🔔 Trip reminders'));
-      a(tripRemindersEditor(data, data.tripType === 'international'));
+      a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, '🔔 Trip & hotel reminders are set in ⚙ Settings → Trip Reminders (they apply to every trip).'));
       a(field('Notes', data, 'notes', { placeholder: 'e.g. flight & hotel details' }));
       if (amOwner) {
         a(h('div', { class: 'section-title' }, 'Share this trip with (live)'));
@@ -845,11 +844,9 @@ function hotelSection(data) {
     dateTime('checkOutDate', 'checkOutTime', 'Check-out date'));
 }
 
-/* trip reminder toggles — each can be enabled/disabled. Delivery happens via the Telegram
-   scheduler, timed off the departure (out flight / trip start) and return (ret flight / trip end). */
-function tripRemindersEditor(data, includeReturn) {
-  if (!data.reminders || typeof data.reminders !== 'object') data.reminders = {};
-  const rem = data.reminders;
+/* trip reminder toggles (live in Settings → Trip Reminders). They apply to every trip and are
+   timed off each trip's departure, return flight, and hotel check-in/out. `rem` = settings.tripReminders. */
+function tripRemindersEditor(rem) {
   const toggle = (id, label) => {
     const txt = () => (rem[id] ? '✓ ' : '') + label;
     const b = h('button', { class: 'btn small ' + (rem[id] ? '' : 'secondary'), type: 'button',
@@ -857,21 +854,23 @@ function tripRemindersEditor(data, includeReturn) {
     b.onclick = () => { rem[id] = !rem[id]; b.className = 'btn small ' + (rem[id] ? '' : 'secondary'); b.textContent = txt(); };
     return b;
   };
-  const out = h('div', null,
+  return h('div', null,
     h('div', { class: 'section-title' }, 'Departure Reminder'),
-    h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Timed off your departure (outbound flight time, or trip start date). Sent to your Telegram.'),
+    h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Timed off each trip\'s departure (outbound flight time, or trip start date).'),
     toggle('dep_1w', '1 week before trip'),
     toggle('dep_3d', '3 days before trip'),
     toggle('dep_1d', '1 day before trip'),
     toggle('dep_10h', '10 hours before departure'),
-    toggle('dep_1h', '1 hour before departure'));
-  if (includeReturn) out.append(
+    toggle('dep_1h', '1 hour before departure'),
     h('div', { class: 'section-title' }, 'Return Flight Reminder'),
-    h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Timed off your return flight departure time.'),
+    h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Timed off the return flight departure time (international trips).'),
     toggle('ret_1d', '1 day before return flight'),
     toggle('ret_10h', '10 hours before departure'),
-    toggle('ret_1h', '1 hour before departure'));
-  return out;
+    toggle('ret_1h', '1 hour before departure'),
+    h('div', { class: 'section-title' }, 'Hotel Reminder'),
+    h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Timed off the hotel check-in / check-out time you set on the trip.'),
+    toggle('hotel_checkin', '1 hour before check-in'),
+    toggle('hotel_checkout', '1 hour before check-out'));
 }
 
 function tripCategoryPicker(data) {
@@ -3155,7 +3154,7 @@ function telegramSection(form) {
 /* ----- SETTINGS ----- */
 async function settingsScreen() {
   const s = await DB.getSettings();
-  const form = { telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0), wcAlerts: s.worldcupAlerts !== false };
+  const form = { telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0), wcAlerts: s.worldcupAlerts !== false, tripReminders: Object.assign({}, s.tripReminders || {}) };
   const gShareObj = { sharedWith: (s.groceryShare || []).slice() }; // grocery sharing list lives in settings
   const wcToggle = (() => {
     const lbl = () => (form.wcAlerts ? '✓ World Cup score alerts on' : 'World Cup score alerts off');
@@ -3164,8 +3163,8 @@ async function settingsScreen() {
     return b;
   })();
 
-  const body = h('div', null,
-    h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Reminder timing for events and weekly schedules is now set on each card.'),
+  const generalTab = () => h('div', null,
+    h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Reminder timing for events and weekly schedules is set on each card.'),
     h('div', { class: 'section-title' }, 'To-do reminders'),
     h('div', { class: 'field' }, h('label', null, 'Start reminding me before the due date'),
       h('div', { class: 'row2' },
@@ -3178,17 +3177,33 @@ async function settingsScreen() {
     h('div', { class: 'section-title' }, 'FIFA World Cup 2026'),
     h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Get live goal & full-time score updates pushed to your Telegram during matches.'),
     h('div', { class: 'field' }, wcToggle),
-    telegramSection(form),
-    h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
-      const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
-      await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, worldcupAlerts: form.wcAlerts, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
-      toast('Settings saved');
-      startReminders();
-      navigate('#/');
-    } }, 'Save settings'));
+    telegramSection(form));
+
+  const tripsTab = () => h('div', null,
+    h('div', { class: 'hint', style: { margin: '2px 2px 12px' } }, 'Choose which trip reminders you want. They apply to every trip and are sent to your Telegram, timed off that trip\'s departure, return flight, and hotel check-in/out.'),
+    tripRemindersEditor(form.tripReminders));
+
+  let tab = 'general';
+  const tabsEl = h('div', { class: 'tabs' });
+  const content = h('div');
+  const drawTabs = () => {
+    tabsEl.innerHTML = '';
+    [['general', 'General'], ['trips', 'Trip Reminders']].forEach(([k, l]) =>
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, l)));
+  };
+  const render = () => { drawTabs(); content.innerHTML = ''; content.appendChild(tab === 'general' ? generalTab() : tripsTab()); };
+  render();
+
+  const saveBtn = h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
+    const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
+    await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, worldcupAlerts: form.wcAlerts, tripReminders: form.tripReminders, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
+    toast('Settings saved');
+    startReminders();
+    navigate('#/');
+  } }, 'Save settings');
 
   const bar = appbar('Settings', null, { back: () => goBack() });
-  mount(screen(bar, body));
+  mount(screen(bar, h('div', null, tabsEl, content, saveBtn)));
 }
 
 /* ---------- in-app reminder engine ---------- */

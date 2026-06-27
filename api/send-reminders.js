@@ -301,17 +301,23 @@ const TRIP_RET = [
   { id: 'ret_1h', off: 1 * 60 }
 ];
 function tripCtx(d) {
+  const ho = d.hotel || {};
   const depBase = d.outWhen || (d.startDate ? d.startDate + 'T09:00' : '');
   const retBase = d.retWhen || (d.endDate ? d.endDate + 'T09:00' : '');
+  // hotel reminders need a precise time — only set a base when both date AND time are present
+  const ciBase = (ho.checkInDate && ho.checkInTime) ? ho.checkInDate + 'T' + ho.checkInTime : '';
+  const coBase = (ho.checkOutDate && ho.checkOutTime) ? ho.checkOutDate + 'T' + ho.checkOutTime : '';
   const fmtD = s => { const p = (s || '').split('T')[0]; return p ? fmtDateOnly(p) : ''; };
   const fmtT = s => { const p = (s || '').split('T')[1]; return p ? fmtHM12(p.slice(0, 5)) : ''; };
   return {
-    depBase, retBase,
+    depBase, retBase, ciBase, coBase,
     dest: d.title || 'your trip',
     depDate: fmtD(depBase), depTime: fmtT(depBase),
     retDate: fmtD(retBase), retTime: fmtT(retBase),
     retFrom: d.retFrom || d.title || 'there',
-    retTo: d.retTo || 'home'
+    retTo: d.retTo || 'home',
+    hotelName: ho.name || 'your hotel',
+    ciTime: fmtT(ciBase), coTime: fmtT(coBase)
   };
 }
 function tripReminderMsg(id, c) {
@@ -324,6 +330,8 @@ function tripReminderMsg(id, c) {
     case 'ret_1d': return `Hi, just a gentle reminder — your flight back to ${c.retTo} is tomorrow.\nPlease start packing your luggage, check your passport and travel documents, and make sure nothing important is left behind in ${c.retFrom}.`;
     case 'ret_10h': return `Hi, your return flight to ${c.retTo} is in 10 hours.\nPlease do a final check on your luggage, passport, wallet, phone, chargers, and airport transfer arrangement. Hope your ${c.dest} trip has been a wonderful one.`;
     case 'ret_1h': return `Hi, it's almost time to fly back to ${c.retTo}. Your departure is in 1 hour.\nPlease make sure you have your passport, boarding pass, phone, wallet, luggage, and all your important belongings with you.`;
+    case 'hotel_checkin': return `Hi, your check-in at ${c.hotelName} is in 1 hour, at ${c.ciTime}. Please get your booking confirmation, passport, and payment method ready.`;
+    case 'hotel_checkout': return `Hi, checkout from ${c.hotelName} is in 1 hour, at ${c.coTime}. Please do a final room check and make sure nothing is left behind.`;
   }
   return '';
 }
@@ -475,12 +483,12 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
     }
   }
 
-  // trip planner: warm departure / return-flight reminders (each toggle timed off its base datetime)
+  // trip planner: warm departure / return-flight / hotel reminders.
+  // which reminders are ON is a GLOBAL choice (Settings → Trip Reminders); timing is per-trip.
+  const tripRem = settings.tripReminders || {};
   const GRACE = 6 * 3600000; // fire if the target passed within the last 6h (covers cron gaps / late setup)
-  if (token && chat) for (const it of items.filter(i => i.cat === 'trips')) {
+  if (token && chat && Object.keys(tripRem).some(k => tripRem[k])) for (const it of items.filter(i => i.cat === 'trips')) {
     const d = it.data || {};
-    const rem = d.reminders || {};
-    if (Object.keys(rem).length === 0) continue;
     const c = tripCtx(d);
     if (!d._tripNotif || typeof d._tripNotif !== 'object') d._tripNotif = {};
     let changed = false;
@@ -489,7 +497,7 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
       const baseMs = naiveToUTC(base, userOff);
       if (isNaN(baseMs)) return;
       for (const def of defs) {
-        if (!rem[def.id]) continue;
+        if (!tripRem[def.id]) continue;
         const target = baseMs - def.off * 60000;
         if (now >= target && now < baseMs && now <= target + GRACE && d._tripNotif[def.id] !== base) {
           const msg = tripReminderMsg(def.id, c);
@@ -500,6 +508,8 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
     };
     await runSet(TRIP_DEP, c.depBase);
     await runSet(TRIP_RET, c.retBase);
+    await runSet([{ id: 'hotel_checkin', off: 60 }], c.ciBase);
+    await runSet([{ id: 'hotel_checkout', off: 60 }], c.coBase);
     if (changed) {
       if (it._shared) await putShared(project, idToken, it.id, { data: d });
       else await patchData(project, uid, idToken, it.id, d);
