@@ -2537,8 +2537,12 @@ function wcStageLabel(stage, group) {
     || (stage ? stage.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()) : ''));
 }
 function wcFmtTime(utc) {
-  try { return new Date(utc).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
-  catch (e) { return ''; }
+  try {
+    const d = new Date(utc);
+    if (isNaN(d.getTime())) return '';
+    // always show Malaysia time + date, regardless of the phone's timezone
+    return d.toLocaleString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }) + ' MYT';
+  } catch (e) { return ''; }
 }
 function wcMatchRow(m) {
   const [hs, as] = wcScore(m);
@@ -2587,6 +2591,9 @@ function wcKnockoutView(matches) {
   const ko = matches.filter(m => m.stage && m.stage !== 'GROUP_STAGE' && m.stage !== 'LEAGUE_STAGE');
   if (!ko.length) return h('div', { class: 'empty' }, h('div', { class: 'big' }, '🏆'), h('div', null, 'Knockout fixtures appear after the group stage.'));
   const wrap = h('div', null);
+  const tbd = ko.filter(m => !(m.homeTeam && m.homeTeam.name) || !(m.awayTeam && m.awayTeam.name)).length;
+  if (tbd) wrap.appendChild(h('div', { class: 'hint', style: { margin: '12px 2px 2px' } },
+    '“TBD” slots fill in as the data feed confirms each qualifier — a team can be through (see Groups) before its bracket spot updates here.'));
   const known = new Set(order);
   order.forEach(stage => {
     const ms = ko.filter(m => m.stage === stage).sort((a, b) => (a.utcDate || '').localeCompare(b.utcDate || ''));
