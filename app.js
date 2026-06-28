@@ -3288,48 +3288,10 @@ async function checkReminders() {
       });
       if (changed) await DB.saveItem(td);
     }
-    // weekly schedule → reminders come from the Upcoming activities (so a cancelled day stays silent)
+    // weekly schedule reminders are sent ONLY by the server (api/send-reminders), never from the
+    // app — otherwise the app + the 5-min cron can both send the same one and you get duplicates.
+    // We still materialise the activities so the Upcoming screen is up to date.
     await generateActivities();
-    const acts = await DB.listItems('activity');
-    for (const act of acts) {
-      const d = act.data || {};
-      if (d.cancelled || !d.date || !d.start) continue;
-      const title = d.title || 'your activity';
-      let changed = false;
-      // "ending soon" reminder — user-set minutes before the end time (e.g. for pick-up)
-      if (d.endReminder && d.end) {
-        const endLead = (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20);
-        const endT = new Date(d.date + 'T' + d.end).getTime();
-        if (!isNaN(endT) && now >= endT - endLead * 60000 && now < endT && d._notifiedEnd !== d.date) {
-          const em = Math.max(1, Math.round((endT - now) / 60000));
-          let endMsg = `${title} will end at ${fmtHM(d.end)} — about ${em} minute${em === 1 ? '' : 's'} from now.`;
-          const tm = await travelMinsFor(d);
-          if (tm != null) endMsg += `\n\nYou're around ${tm} minute${tm === 1 ? '' : 's'} away, so you still have some time. Maybe start wrapping up and head over soon.`;
-          fire(endMsg);
-          d._notifiedEnd = d.date; changed = true;
-        }
-      }
-      // start-based reminders (main + optional 2nd) — each session carries its own lead times
-      const t = new Date(d.date + 'T' + d.start).getTime();
-      if (!isNaN(t) && now < t) {
-        const mins = Math.round((t - now) / 60000);
-        const at = fmtHM(d.start);
-        const lead1 = (parseInt(d.startRemindMin, 10) > 0 ? parseInt(d.startRemindMin, 10) : 60) * 60000;
-        const lead2 = (parseInt(d.startRemind2Min, 10) > 0 ? parseInt(d.startRemind2Min, 10) : 15) * 60000;
-        if (d.startReminder !== false && now >= t - lead1 && d._notifiedFor !== d.date) {
-          const msg = mins > 0
-            ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
-            : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
-          fire(msg + (await travelFor(d)));
-          d._notifiedFor = d.date; changed = true;
-        }
-        if (d.startReminder2 === true && now >= t - lead2 && d._notifiedHalf !== d.date) {
-          fire(`Hey, are you on your way to ${title}? It's at ${at}.` + (await travelFor(d)));
-          d._notifiedHalf = d.date; changed = true;
-        }
-      }
-      if (changed) await DB.saveItem(act);
-    }
   } catch (e) { /* ignore */ }
 }
 function localDateStr(d) {
