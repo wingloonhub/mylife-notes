@@ -336,12 +336,14 @@ function tripReminderMsg(id, c) {
   return '';
 }
 
-async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches, wctest) {
+async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches, wctest, triptest) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
   const email = (u.email || '').trim().toLowerCase();
   const items = await listItems(project, uid, idToken);
-  // include live-shared items (shared schedules/activities others shared with me, or mine)
-  try { const sh = await listShared(project, idToken, email); for (const si of sh) items.push(si); } catch (e) {}
+  // include live-shared items (trips, parties, grocery, events, etc.). NOTE: schedule sharing was
+  // removed — but old shared schedule/activity docs can linger in the `shared` collection and would
+  // otherwise create duplicate (and un-cancellable) reminders, so we skip those here.
+  try { const sh = await listShared(project, idToken, email); for (const si of sh) { if (si.cat === 'schedule' || si.cat === 'activity') continue; items.push(si); } } catch (e) {}
   const settings = (items.find(i => i.cat === '_settings') || {}).data || {};
   const token = settings.telegramToken, chat = settings.telegramChatId;
   if (tgtest) {
@@ -358,6 +360,17 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
     const sample = `🏁 FULL-TIME — ${wcStage(fin.stage, fin.group)}\n${home} ${f.home == null ? 0 : f.home}–${f.away == null ? 0 : f.away} ${away}\n\n(test message — World Cup score alerts are working ✅)`;
     try { await tg(token, chat, sample); return { uid, wctest: 'SENT OK' }; }
     catch (e) { return { uid, wctest: 'FAILED', error: String((e && e.message) || e) }; }
+  }
+  if (triptest) {
+    if (!token || !chat) return { uid, triptest: 'no Telegram token/chat in Settings' };
+    const sampleTrip = { title: 'Japan', outWhen: '2026-11-20T09:00', retWhen: '2026-11-28T18:30', retFrom: 'Japan', retTo: 'Malaysia',
+      hotel: { name: 'Tokyo Hotel', checkInDate: '2026-11-20', checkInTime: '15:00', checkOutDate: '2026-11-28', checkOutTime: '11:00' } };
+    const c = tripCtx(sampleTrip);
+    try {
+      await tg(token, chat, '🧳 Trip Planner reminder preview — here\'s how your reminders will sound (sample trip: Japan):');
+      for (const id of ['dep_1d', 'ret_1d', 'hotel_checkin', 'hotel_checkout']) await tg(token, chat, tripReminderMsg(id, c));
+      return { uid, triptest: 'SENT OK' };
+    } catch (e) { return { uid, triptest: 'FAILED', error: String((e && e.message) || e) }; }
   }
   const userOff = (typeof settings.tzOffset === 'number') ? settings.tzOffset : offMin;
   const todoLeadDays = Math.max(0, settings.todoLeadDays || 0);
@@ -540,13 +553,14 @@ module.exports = async (req, res) => {
   const debug = (req.query && req.query.debug) === '1';
   const tgtest = (req.query && req.query.tgtest) === '1';
   const wctest = (req.query && req.query.wctest) === '1';
+  const triptest = (req.query && req.query.triptest) === '1';
   // fetch World Cup matches ONCE per tick (shared across all users) if a key is configured
   let wcMatches = null;
   const footballKey = process.env.FOOTBALL_API_KEY;
-  if (footballKey && !tgtest) { try { wcMatches = await fetchWcMatches(footballKey); } catch (e) {} }
+  if (footballKey && !tgtest && !triptest) { try { wcMatches = await fetchWcMatches(footballKey); } catch (e) {} }
   const results = [];
   for (const u of users) {
-    try { results.push({ email: u.email, ...(await processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches, wctest)) }); }
+    try { results.push({ email: u.email, ...(await processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches, wctest, triptest)) }); }
     catch (e) { results.push({ email: u.email, error: String((e && e.message) || e) }); }
   }
   res.status(200).json({ ok: true, ranAt: new Date(now).toISOString(), wcMatches: wcMatches ? wcMatches.length : 0, results });
