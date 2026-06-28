@@ -1767,7 +1767,7 @@ async function generateActivities() {
   catch (e) { return; }
   const today = localDateStr(new Date());
   const have = new Set(existing.map(a => a.id));
-  for (const a of existing) { if (((a.data && a.data.date) || '') < today) { try { await DB.deleteItem('activity', a.id); } catch (e) {} } }
+  const valid = new Set();
   const jobs = [];
   for (let off = 0; off < 7; off++) {
     const dt = new Date(); dt.setHours(0, 0, 0, 0); dt.setDate(dt.getDate() + off);
@@ -1778,11 +1778,18 @@ async function generateActivities() {
         if (Number(slot.day) !== dow) return;
         if (d.repeatMode === 'until' && d.until && dateStr > d.until) return; // schedule has ended
         const id = sc.id + '__' + dateStr + '__' + idx;
-        if (have.has(id)) return; // already exists (incl. a shared one someone else created) — leave its cancel state alone
+        valid.add(id);
+        if (have.has(id)) return; // already exists — leave its cancel state alone
         have.add(id);
         jobs.push(DB.saveItem({ id, cat: 'activity', data: { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', startReminder: d.startReminder !== false, startRemindMin: (parseInt(d.startRemindMin, 10) > 0 ? parseInt(d.startRemindMin, 10) : 60), startReminder2: !!d.startReminder2, startRemind2Min: (parseInt(d.startRemind2Min, 10) > 0 ? parseInt(d.startRemind2Min, 10) : 15), endReminder: !!d.endReminder, endRemindMin: (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20), cancelled: false } }));
       });
     }
+  }
+  // drop activities that no longer belong: past days, or future days now orphaned
+  // (schedule expired, schedule deleted, or that time slot removed).
+  for (const a of existing) {
+    const date = (a.data && a.data.date) || '';
+    if (date < today || !valid.has(a.id)) { try { await DB.deleteItem('activity', a.id); } catch (e) {} }
   }
   await Promise.all(jobs);
 }

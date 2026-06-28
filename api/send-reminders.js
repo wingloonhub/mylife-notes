@@ -119,9 +119,8 @@ async function ensureActivities(project, uid, email, idToken, items, now, offMin
   const today = dateStrInTz(now, offMin);
   let acts = items.filter(i => i.cat === 'activity');
   const have = new Set(acts.map(a => a.id));
+  const valid = new Set();
   const jobs = [];
-  for (const a of acts) { if (((a.data && a.data.date) || '') < today) jobs.push(a._shared ? deleteShared(project, idToken, a.id) : deleteItem(project, uid, idToken, a.id)); }
-  acts = acts.filter(a => ((a.data && a.data.date) || '') >= today);
   const schedules = items.filter(i => i.cat === 'schedule');
   for (let off = 0; off < 7; off++) {
     const dayMs = now + off * 86400000;
@@ -133,26 +132,25 @@ async function ensureActivities(project, uid, email, idToken, items, now, offMin
         if (Number(slot.day) !== dow) return;
         if (d.repeatMode === 'until' && d.until && dateStr > d.until) return;
         const id = sc.id + '__' + dateStr + '__' + idx;
+        valid.add(id);
         if (have.has(id)) return;
         have.add(id);
         const data = { scheduleId: sc.id, title: d.title || 'Activity', location: d.location || '', lat: d.lat, lng: d.lng, date: dateStr, start: slot.start || '', end: slot.end || '', startReminder: d.startReminder !== false, startRemindMin: (parseInt(d.startRemindMin, 10) > 0 ? parseInt(d.startRemindMin, 10) : 60), startReminder2: !!d.startReminder2, startRemind2Min: (parseInt(d.startRemind2Min, 10) > 0 ? parseInt(d.startRemind2Min, 10) : 15), endReminder: !!d.endReminder, endRemindMin: (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20), cancelled: false };
-        const sw = Array.isArray(d.sharedWith) ? d.sharedWith.map(e => String(e).trim().toLowerCase()).filter(Boolean) : [];
-        if (sw.length) {
-          const ownerEmail = sc.ownerEmail || email;
-          const ownerUid = sc.ownerUid || uid;
-          data.sharedWith = sw;
-          const participants = Array.from(new Set([ownerEmail, ...sw]));
-          jobs.push(putShared(project, idToken, id, { cat: 'activity', data, ownerUid, ownerEmail, participants }));
-          acts.push({ id, cat: 'activity', data, _shared: true, ownerUid, ownerEmail });
-        } else {
-          jobs.push(putItem(project, uid, idToken, id, 'activity', data));
-          acts.push({ id, cat: 'activity', data });
-        }
+        jobs.push(putItem(project, uid, idToken, id, 'activity', data));
+        acts.push({ id, cat: 'activity', data });
       });
     }
   }
+  // keep only activities that still belong: drop past days AND future days now orphaned
+  // (schedule expired, schedule deleted, or that time slot removed).
+  const survivors = [];
+  for (const a of acts) {
+    const date = (a.data && a.data.date) || '';
+    if (date < today || !valid.has(a.id)) jobs.push(a._shared ? deleteShared(project, idToken, a.id) : deleteItem(project, uid, idToken, a.id));
+    else survivors.push(a);
+  }
   await Promise.all(jobs);
-  return acts;
+  return survivors;
 }
 async function tg(token, chatId, text) {
   const r = await fetch('https://api.telegram.org/bot' + String(token).trim() + '/sendMessage', {
