@@ -620,8 +620,15 @@ function buildEditor(cat, data, amOwner) {
       } else {
         a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, '👥 Shared with you — you can edit the items; only the owner can change who it\'s shared with.'));
       }
+      a(h('div', { class: 'section-title' }, 'Reminder'));
+      a(h('div', { class: 'field' }, h('label', null, 'Start reminding before each due date'),
+        h('div', { class: 'row2' },
+          h('input', { type: 'number', inputmode: 'numeric', min: '0',
+            value: data.leadDays != null ? data.leadDays : 0,
+            oninput: e => { const v = parseInt(e.target.value, 10); data.leadDays = (isNaN(v) || v < 0) ? 0 : v; } }),
+          h('div', { class: 'total-box' }, 'days before')),
+        h('div', { class: 'hint' }, '0 = only on the due date. Sent to your Telegram, once a day until everything in the list is ticked off.')));
       a(h('div', { class: 'section-title' }, 'To-do items (each can have its own due date)'));
-      a(h('div', { class: 'hint', style: { margin: '2px 2px 10px' } }, 'Set a reminder cadence in ⚙ Settings.'));
       a(todoItemsEditor(data));
       break;
     }
@@ -3161,7 +3168,7 @@ function telegramSection(form) {
 /* ----- SETTINGS ----- */
 async function settingsScreen() {
   const s = await DB.getSettings();
-  const form = { telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', todoDays: String(s.todoLeadDays != null ? s.todoLeadDays : 0), wcAlerts: s.worldcupAlerts !== false, tripReminders: Object.assign({}, s.tripReminders || {}) };
+  const form = { telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', wcAlerts: s.worldcupAlerts !== false, tripReminders: Object.assign({}, s.tripReminders || {}) };
   const gShareObj = { sharedWith: (s.groceryShare || []).slice() }; // grocery sharing list lives in settings
   const wcToggle = (() => {
     const lbl = () => (form.wcAlerts ? '✓ World Cup score alerts on' : 'World Cup score alerts off');
@@ -3171,13 +3178,7 @@ async function settingsScreen() {
   })();
 
   const generalTab = () => h('div', null,
-    h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Reminder timing for events and weekly schedules is set on each card.'),
-    h('div', { class: 'section-title' }, 'To-do reminders'),
-    h('div', { class: 'field' }, h('label', null, 'Start reminding me before the due date'),
-      h('div', { class: 'row2' },
-        h('input', { type: 'number', inputmode: 'numeric', min: '0', value: form.todoDays, oninput: e => form.todoDays = e.target.value }),
-        h('div', { class: 'total-box' }, 'days before')),
-      h('div', { class: 'hint' }, 'Set 0 to remind only on the due date. It nudges once a day until the list is done.')),
+    h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'All reminders are sent to your Telegram. Reminder timing for events, weekly schedules and to-do lists is set on each card.'),
     h('div', { class: 'section-title' }, 'Grocery list sharing'),
     h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone in your household. You\'ll all share ONE grocery list — whoever adds an item, everyone sees it. Stays on until you remove them here.'),
     shareWithEditor(gShareObj),
@@ -3202,8 +3203,7 @@ async function settingsScreen() {
   render();
 
   const saveBtn = h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
-    const todoLeadDays = Math.max(0, parseInt(form.todoDays) || 0);
-    await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), todoLeadDays, worldcupAlerts: form.wcAlerts, tripReminders: form.tripReminders, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
+    await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), worldcupAlerts: form.wcAlerts, tripReminders: form.tripReminders, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
     toast('Settings saved');
     startReminders();
     navigate('#/');
@@ -3273,17 +3273,17 @@ async function checkReminders() {
       }
       if (changed) await DB.saveItem(ev);
     }
-    // to-do due dates: nudge once a day from (eta - todoLeadDays) through the due date
-    const todoLeadDays = Math.max(0, s.todoLeadDays || 0);
+    // to-do due dates: nudge once a day from (eta - list's leadDays) through the due date
     const todayStr = localDateStr(new Date());
     const todayMid = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
     const todos = await DB.listItems('todo');
     for (const td of todos) {
       const items = (td.data || {}).items || [];
+      const leadDays = Math.max(0, parseInt((td.data || {}).leadDays, 10) || 0);
       let changed = false;
       items.forEach((it, idx) => {
         if (!it.eta || it.checked) return;
-        const startStr = etaMinusDays(it.eta, todoLeadDays);
+        const startStr = etaMinusDays(it.eta, leadDays);
         if (todayStr >= startStr && todayStr <= it.eta && it._notified !== todayStr) {
           const [y, m, dd] = it.eta.split('-').map(Number);
           const daysLeft = Math.round((new Date(y, m - 1, dd) - todayMid) / 86400000);

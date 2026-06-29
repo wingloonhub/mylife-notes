@@ -371,7 +371,6 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
     } catch (e) { return { uid, triptest: 'FAILED', error: String((e && e.message) || e) }; }
   }
   const userOff = (typeof settings.tzOffset === 'number') ? settings.tzOffset : offMin;
-  const todoLeadDays = Math.max(0, settings.todoLeadDays || 0);
   // per-card lead time (minutes before start) → ms, with sensible fallback
   const leadMsOf = (d) => (parseInt(d.startRemindMin, 10) > 0 ? parseInt(d.startRemindMin, 10) : 60) * 60000;
   // materialise the next 7 days of activities from the weekly schedule, then drive reminders from those
@@ -424,10 +423,11 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
   for (const it of items.filter(i => i.cat === 'todo')) {
     const d = it.data || {};
     const arr = d.items || [];
+    const leadDays = Math.max(0, parseInt(d.leadDays, 10) || 0);
     const toSend = [];
     arr.forEach(task => {
       if (!task.eta || task.checked) return;
-      const startStr = dateMinusDays(task.eta, todoLeadDays);
+      const startStr = dateMinusDays(task.eta, leadDays);
       if (todayStr >= startStr && todayStr <= task.eta && task._notified !== todayStr) {
         const daysLeft = Math.round((Date.parse(task.eta + 'T00:00:00Z') - Date.parse(todayStr + 'T00:00:00Z')) / 86400000);
         toSend.push({ task, due: daysLeft > 0 ? ('due in ' + daysLeft + ' day' + (daysLeft > 1 ? 's' : '')) : 'due today' });
