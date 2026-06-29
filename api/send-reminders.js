@@ -420,10 +420,14 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
 
   // to-dos (per-item due dates)
   const todayStr = dateStrInTz(now, userOff);
+  const localNow = new Date(now + userOff * 60000);
+  const nowHM = String(localNow.getUTCHours()).padStart(2, '0') + ':' + String(localNow.getUTCMinutes()).padStart(2, '0');
   for (const it of items.filter(i => i.cat === 'todo')) {
     const d = it.data || {};
     const arr = d.items || [];
     const leadDays = Math.max(0, parseInt(d.leadDays, 10) || 0);
+    const remindTime = d.remindTime || ''; // HH:MM in user's tz; empty = any time
+    if (remindTime && nowHM < remindTime) continue; // not yet the chosen time today
     const toSend = [];
     arr.forEach(task => {
       if (!task.eta || task.checked) return;

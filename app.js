@@ -621,13 +621,17 @@ function buildEditor(cat, data, amOwner) {
         a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, '👥 Shared with you — you can edit the items; only the owner can change who it\'s shared with.'));
       }
       a(h('div', { class: 'section-title' }, 'Reminder'));
+      if (data.remindTime == null) data.remindTime = '09:00';
+      a(h('div', { class: 'field' }, h('label', null, 'Remind me at'),
+        h('input', { type: 'time', value: data.remindTime || '09:00', oninput: e => data.remindTime = e.target.value }),
+        h('div', { class: 'hint' }, 'What time of day the reminder is sent (on the due date).')));
       a(h('div', { class: 'field' }, h('label', null, 'Start reminding before each due date'),
         h('div', { class: 'row2' },
           h('input', { type: 'number', inputmode: 'numeric', min: '0',
             value: data.leadDays != null ? data.leadDays : 0,
             oninput: e => { const v = parseInt(e.target.value, 10); data.leadDays = (isNaN(v) || v < 0) ? 0 : v; } }),
           h('div', { class: 'total-box' }, 'days before')),
-        h('div', { class: 'hint' }, '0 = only on the due date. Sent to your Telegram, once a day until everything in the list is ticked off.')));
+        h('div', { class: 'hint' }, '0 = only on the due date. Otherwise it also nudges on the days leading up, at the time above.')));
       a(h('div', { class: 'section-title' }, 'To-do items (each can have its own due date)'));
       a(todoItemsEditor(data));
       break;
@@ -3276,10 +3280,14 @@ async function checkReminders() {
     // to-do due dates: nudge once a day from (eta - list's leadDays) through the due date
     const todayStr = localDateStr(new Date());
     const todayMid = new Date(new Date().getFullYear(), new Date().getMonth(), new Date().getDate());
+    const nowD = new Date();
+    const nowHM = String(nowD.getHours()).padStart(2, '0') + ':' + String(nowD.getMinutes()).padStart(2, '0');
     const todos = await DB.listItems('todo');
     for (const td of todos) {
       const items = (td.data || {}).items || [];
       const leadDays = Math.max(0, parseInt((td.data || {}).leadDays, 10) || 0);
+      const remindTime = (td.data || {}).remindTime || ''; // HH:MM; empty = any time
+      if (remindTime && nowHM < remindTime) continue; // not yet time today
       let changed = false;
       items.forEach((it, idx) => {
         if (!it.eta || it.checked) return;
