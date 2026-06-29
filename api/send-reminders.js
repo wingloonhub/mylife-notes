@@ -425,16 +425,13 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
   for (const it of items.filter(i => i.cat === 'todo')) {
     const d = it.data || {};
     const arr = d.items || [];
-    const leadDays = Math.max(0, parseInt(d.leadDays, 10) || 0);
     const remindTime = d.remindTime || ''; // HH:MM in user's tz; empty = any time
     if (remindTime && nowHM < remindTime) continue; // not yet the chosen time today
     const toSend = [];
     arr.forEach(task => {
       if (!task.eta || task.checked) return;
-      const startStr = dateMinusDays(task.eta, leadDays);
-      if (todayStr >= startStr && todayStr <= task.eta && task._notified !== todayStr) {
-        const daysLeft = Math.round((Date.parse(task.eta + 'T00:00:00Z') - Date.parse(todayStr + 'T00:00:00Z')) / 86400000);
-        toSend.push({ task, due: daysLeft > 0 ? ('due in ' + daysLeft + ' day' + (daysLeft > 1 ? 's' : '')) : 'due today' });
+      if (todayStr === task.eta && task._notified !== todayStr) { // remind on the due date only
+        toSend.push({ task, due: 'due today' });
       }
     });
     for (const s of toSend) {

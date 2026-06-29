@@ -66,6 +66,8 @@ let CURRENT = null;       // {uid, email}
 let _lastLocalWrite = 0;  // timestamp of my last save — used to skip live re-render on my own changes
 let _suppressScroll = false; // when true, mount() won't reset scroll to top (used during live re-renders)
 const imgCache = new Map();
+let FRIENDS = [];            // [{name,email}] from Settings → Friends; used to offer a dropdown in share boxes
+async function loadFriends() { try { const s = await DB.getSettings(); FRIENDS = Array.isArray(s.friends) ? s.friends : []; } catch (e) { FRIENDS = []; } }
 
 async function initStorage() {
   // On localhost we always use local mode (with auto-login) for easy testing —
@@ -433,21 +435,34 @@ function stringList(obj, key, placeholder) {
   return wrap;
 }
 
-/* "Share with" editor: a list of people's login emails. onChange (optional) fires after each change. */
+/* "Share with" editor: people's login emails. Offers a dropdown of saved Friends (Settings →
+   Friends) so you don't have to type; still allows typing an email manually. onChange optional. */
 function shareWithEditor(obj, onChange) {
   if (!Array.isArray(obj.sharedWith)) obj.sharedWith = [];
   const wrap = h('div');
   const changed = () => { if (onChange) onChange(); };
+  const friendName = (em) => { const f = FRIENDS.find(x => (x.email || '').toLowerCase() === (em || '').toLowerCase()); return f ? f.name : ''; };
   function draw() {
     wrap.innerHTML = '';
     obj.sharedWith.forEach((em, i) => {
+      const nm = friendName(em);
       wrap.appendChild(h('div', { class: 'field', style: { marginBottom: '8px' } },
         h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center' } },
           h('input', { class: 'grow', type: 'email', autocapitalize: 'none', inputmode: 'email', placeholder: 'their login email (e.g. name@gmail.com)',
             value: em, oninput: e => { obj.sharedWith[i] = e.target.value.trim().toLowerCase(); changed(); } }),
-          h('button', { class: 'del-x', type: 'button', onclick: () => { obj.sharedWith.splice(i, 1); draw(); changed(); } }, '✕'))));
+          h('button', { class: 'del-x', type: 'button', onclick: () => { obj.sharedWith.splice(i, 1); draw(); changed(); } }, '✕')),
+        nm ? h('div', { class: 'hint', style: { marginTop: '2px' } }, '👤 ' + nm) : null));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { obj.sharedWith.push(''); draw(); changed(); } }, '+ Add person'));
+    const taken = obj.sharedWith.map(e => (e || '').toLowerCase());
+    const avail = FRIENDS.filter(f => f.email && !taken.includes(f.email.toLowerCase()));
+    if (avail.length) {
+      const sel = h('select', { onchange: e => { if (e.target.value) { obj.sharedWith.push(e.target.value); draw(); changed(); } } },
+        h('option', { value: '' }, '+ Add from your friends…'),
+        ...avail.map(f => h('option', { value: f.email }, (f.name || f.email) + ' — ' + f.email)));
+      wrap.appendChild(h('div', { class: 'field' }, sel));
+    }
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { obj.sharedWith.push(''); draw(); changed(); } }, FRIENDS.length ? '+ Add someone else' : '+ Add person'));
+    if (!FRIENDS.length) wrap.appendChild(h('div', { class: 'hint', style: { marginTop: '4px' } }, 'Tip: save people in ⚙ Settings → Friends to pick them from a dropdown here.'));
   }
   draw();
   return wrap;
@@ -624,14 +639,7 @@ function buildEditor(cat, data, amOwner) {
       if (data.remindTime == null) data.remindTime = '09:00';
       a(h('div', { class: 'field' }, h('label', null, 'Remind me at'),
         h('input', { type: 'time', value: data.remindTime || '09:00', oninput: e => data.remindTime = e.target.value }),
-        h('div', { class: 'hint' }, 'What time of day the reminder is sent (on the due date).')));
-      a(h('div', { class: 'field' }, h('label', null, 'Start reminding before each due date'),
-        h('div', { class: 'row2' },
-          h('input', { type: 'number', inputmode: 'numeric', min: '0',
-            value: data.leadDays != null ? data.leadDays : 0,
-            oninput: e => { const v = parseInt(e.target.value, 10); data.leadDays = (isNaN(v) || v < 0) ? 0 : v; } }),
-          h('div', { class: 'total-box' }, 'days before')),
-        h('div', { class: 'hint' }, '0 = only on the due date. Otherwise it also nudges on the days leading up, at the time above.')));
+        h('div', { class: 'hint' }, 'Sent to your Telegram on each item\'s due date, at this time.')));
       a(h('div', { class: 'section-title' }, 'To-do items (each can have its own due date)'));
       a(todoItemsEditor(data));
       break;
@@ -2845,6 +2853,7 @@ async function enrichRowDistance(it, row, posP) {
 
 /* ----- EDITOR ----- */
 async function editScreen(cat, id) {
+  await loadFriends(); // so share boxes can offer the saved-friends dropdown
   let item = id ? await DB.getItem(cat, id) : null;
   if (id && !item) { redirectReplace('#/cat/' + cat); return; } // editing a deleted item — skip it for Back
   let currentId = id;
@@ -3172,8 +3181,26 @@ function telegramSection(form) {
 /* ----- SETTINGS ----- */
 async function settingsScreen() {
   const s = await DB.getSettings();
+  FRIENDS = Array.isArray(s.friends) ? s.friends : []; // so the grocery share box here can use the dropdown
   const form = { telegramChatId: s.telegramChatId || '', telegramToken: s.telegramToken || '', wcAlerts: s.worldcupAlerts !== false, tripReminders: Object.assign({}, s.tripReminders || {}) };
   const gShareObj = { sharedWith: (s.groceryShare || []).slice() }; // grocery sharing list lives in settings
+  const friendsObj = { list: (s.friends || []).map(f => ({ name: f.name || '', email: f.email || '' })) };
+  const friendsEditor = () => {
+    const wrap = h('div');
+    const draw = () => {
+      wrap.innerHTML = '';
+      friendsObj.list.forEach((f, i) => {
+        wrap.appendChild(h('div', { class: 'sub-item' },
+          h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' } },
+            h('input', { class: 'grow', placeholder: 'Name (e.g. Mum)', value: f.name, oninput: e => f.name = e.target.value }),
+            h('button', { class: 'del-x', type: 'button', onclick: () => { friendsObj.list.splice(i, 1); draw(); } }, '✕')),
+          h('input', { type: 'email', autocapitalize: 'none', inputmode: 'email', placeholder: 'their login email', value: f.email, oninput: e => f.email = e.target.value.trim().toLowerCase() })));
+      });
+      wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { friendsObj.list.push({ name: '', email: '' }); draw(); } }, '+ Add friend'));
+    };
+    draw();
+    return wrap;
+  };
   const wcToggle = (() => {
     const lbl = () => (form.wcAlerts ? '✓ World Cup score alerts on' : 'World Cup score alerts off');
     const b = h('button', { class: 'btn small ' + (form.wcAlerts ? '' : 'secondary'), type: 'button' }, lbl());
@@ -3195,19 +3222,26 @@ async function settingsScreen() {
     h('div', { class: 'hint', style: { margin: '2px 2px 12px' } }, 'Choose which trip reminders you want. They apply to every trip and are sent to your Telegram, timed off that trip\'s departure, return flight, and hotel check-in/out.'),
     tripRemindersEditor(form.tripReminders));
 
+  const friendsTab = () => h('div', null,
+    h('div', { class: 'hint', style: { margin: '2px 2px 12px' } }, 'Save people once with their name + login email. Then anywhere you share (trips, parties, lists, grocery…) you can just pick them from a dropdown — no need to type the email each time.'),
+    h('div', { class: 'section-title' }, 'Friends'),
+    friendsEditor());
+
   let tab = 'general';
   const tabsEl = h('div', { class: 'tabs' });
   const content = h('div');
   const drawTabs = () => {
     tabsEl.innerHTML = '';
-    [['general', 'General'], ['trips', 'Trip Reminders']].forEach(([k, l]) =>
+    [['general', 'General'], ['friends', 'Friends'], ['trips', 'Trip Reminders']].forEach(([k, l]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, l)));
   };
-  const render = () => { drawTabs(); content.innerHTML = ''; content.appendChild(tab === 'general' ? generalTab() : tripsTab()); };
+  const render = () => { drawTabs(); content.innerHTML = ''; content.appendChild(tab === 'general' ? generalTab() : tab === 'friends' ? friendsTab() : tripsTab()); };
   render();
 
   const saveBtn = h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
-    await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), worldcupAlerts: form.wcAlerts, tripReminders: form.tripReminders, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
+    const friends = friendsObj.list.map(f => ({ name: (f.name || '').trim(), email: (f.email || '').trim().toLowerCase() })).filter(f => f.email);
+    await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), worldcupAlerts: form.wcAlerts, tripReminders: form.tripReminders, friends, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
+    FRIENDS = friends;
     toast('Settings saved');
     startReminders();
     navigate('#/');
@@ -3285,14 +3319,12 @@ async function checkReminders() {
     const todos = await DB.listItems('todo');
     for (const td of todos) {
       const items = (td.data || {}).items || [];
-      const leadDays = Math.max(0, parseInt((td.data || {}).leadDays, 10) || 0);
       const remindTime = (td.data || {}).remindTime || ''; // HH:MM; empty = any time
       if (remindTime && nowHM < remindTime) continue; // not yet time today
       let changed = false;
       items.forEach((it, idx) => {
         if (!it.eta || it.checked) return;
-        const startStr = etaMinusDays(it.eta, leadDays);
-        if (todayStr >= startStr && todayStr <= it.eta && it._notified !== todayStr) {
+        if (todayStr === it.eta && it._notified !== todayStr) { // remind on the due date only
           const [y, m, dd] = it.eta.split('-').map(Number);
           const daysLeft = Math.round((new Date(y, m - 1, dd) - todayMid) / 86400000);
           const due = daysLeft > 0 ? ('due in ' + daysLeft + ' day' + (daysLeft > 1 ? 's' : '')) : 'due today';
