@@ -1897,7 +1897,7 @@ function activityActive(d) {
    Firing itself happens server-side (api/send-reminders); the app
    just shows Upcoming + the setup list and lets you turn one off.
    ============================================================ */
-const REM_WINDOW = 12 * 3600000; // stop nagging 12h after an occurrence starts (safety cap)
+const REM_WINDOW = 24 * 3600000; // stop nagging 24h after an occurrence starts (safety cap)
 /* schedule kind, with back-compat for the old type/recurMode model */
 function remSched(d) {
   if (d.schedule) return d.schedule;

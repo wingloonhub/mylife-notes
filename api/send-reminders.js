@@ -335,7 +335,7 @@ function tripReminderMsg(id, c) {
 }
 
 /* ---- Reminder category (one-time / recurring; nag every 30m/1h until turned off) ---- */
-const REM_WINDOW = 12 * 3600000; // stop nagging 12h after an occurrence starts (safety cap)
+const REM_WINDOW = 24 * 3600000; // stop nagging 24h after an occurrence starts (safety cap)
 function remSched(d) { if (d.schedule) return d.schedule; if (d.type === 'recurring') return d.recurMode || 'weekly'; return 'once'; }
 function remCurrent(d, now, offMin) { // the occurrence that should currently be nagging, or null
   const sched = remSched(d); const time = d.time || '00:00'; const p = n => String(n).padStart(2, '0');
