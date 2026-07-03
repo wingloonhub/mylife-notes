@@ -580,7 +580,7 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
     if (!cur) continue;
     if (d._ackKey === cur.key) continue;             // user turned this occurrence off
     if (now > cur.startMs + REM_WINDOW) continue;    // window closed (safety cap)
-    const interval = d.freq === '1h' ? 3600000 : (d.freq === '30m' ? 1800000 : 0);
+    const interval = { '30m': 1800000, '1h': 3600000, '2h': 7200000, '4h': 14400000 }[d.freq] || 0;
     let fireNow = false, first = false;
     if (!interval) { if (d._firedKey !== cur.key) { fireNow = true; first = true; } }
     else if (d._lastNagKey !== cur.key) { fireNow = true; first = true; }          // first nag this occurrence

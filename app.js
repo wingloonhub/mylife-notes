@@ -777,13 +777,22 @@ function buildEditor(cat, data, amOwner) {
         a(field('Starting from', data, 'startDate', { type: 'date', hint: 'It repeats every 2 weeks from this date (same weekday).' }));
         a(field('At', data, 'time', { type: 'time' }));
       } else {
-        if (data.monthDay == null) data.monthDay = 1;
-        a(field('Day of the month', data, 'monthDay', { type: 'number', inputmode: 'numeric', hint: '1–31. Shorter months use their last day.' }));
+        // pick a date on the calendar; it repeats on that day-of-month each month
+        a((() => {
+          const inp = h('input', { type: 'date', value: data.startDate || '',
+            oninput: e => { data.startDate = e.target.value; data.monthDay = e.target.value ? Number(e.target.value.split('-')[2]) : null; } });
+          return h('div', { class: 'field' }, h('label', null, 'Pick a date'), inp,
+            h('div', { class: 'hint' }, 'It repeats on this day each month. Shorter months use their last day.'));
+        })());
         a(field('At', data, 'time', { type: 'time' }));
       }
       if (data.freq == null) data.freq = 'once';
       a(selectField('How often to remind', data, 'freq',
-        [{ value: 'once', label: 'Just once' }, { value: '30m', label: 'Every 30 min until I turn it off' }, { value: '1h', label: 'Every 1 hour until I turn it off' }]));
+        [{ value: 'once', label: 'Just once' },
+         { value: '30m', label: 'Every 30 min until I turn it off' },
+         { value: '1h', label: 'Every 1 hour until I turn it off' },
+         { value: '2h', label: 'Every 2 hours until I turn it off' },
+         { value: '4h', label: 'Every 4 hours until I turn it off' }]));
       a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Sent to your Telegram. When it\'s repeating, tap “Turn off” on the card to stop it.'));
       break;
     }
@@ -1939,7 +1948,7 @@ function fmtMs(ms) {
   try { return new Date(ms).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
   catch (e) { return ''; }
 }
-const remFreqTxt = f => (f === '30m' ? 'every 30 min until off' : (f === '1h' ? 'every hour until off' : 'once'));
+const remFreqTxt = f => ({ '30m': 'every 30 min until off', '1h': 'every hour until off', '2h': 'every 2 hours until off', '4h': 'every 4 hours until off' }[f] || 'once');
 function remSummary(d) {
   const sched = remSched(d);
   if (sched === 'once') return 'Once' + (d.when ? ' · ' + fmtDT(d.when) : '');
