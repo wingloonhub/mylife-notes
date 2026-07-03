@@ -769,21 +769,27 @@ function buildEditor(cat, data, amOwner) {
         () => rerenderEditor('reminder', data)));
       if (data.schedule === 'once') {
         a(field('Remind me on', data, 'when', { type: 'datetime-local' }));
-      } else if (data.schedule === 'weekly') {
-        if (data.weekday == null) data.weekday = '1';
-        a(selectField('Day of the week', data, 'weekday', DOW.map((n, i) => ({ value: String(i), label: n }))));
-        a(field('At', data, 'time', { type: 'time' }));
-      } else if (data.schedule === 'fortnightly') {
-        a(field('Starting from', data, 'startDate', { type: 'date', hint: 'It repeats every 2 weeks from this date (same weekday).' }));
+      } else if (data.schedule === 'weekly' || data.schedule === 'fortnightly') {
+        if (data.weekday == null) data.weekday = '1'; // Monday
+        const wdOpts = [1, 2, 3, 4, 5, 6, 0].map(i => ({ value: String(i), label: DOW[i] })); // Monday → Sunday
+        if (data.schedule === 'fortnightly') {
+          // keep a hidden anchor date in sync with the chosen weekday (the next such weekday)
+          const wd = Number(data.weekday);
+          if (!data.startDate || new Date(data.startDate + 'T00:00').getDay() !== wd) {
+            const t = new Date(); t.setHours(0, 0, 0, 0);
+            t.setDate(t.getDate() + ((((wd - t.getDay()) + 7) % 7) || 7)); // next such weekday (not today)
+            data.startDate = localDateStr(t);
+          }
+          a(selectField('Day of the week', data, 'weekday', wdOpts, () => { data.startDate = ''; rerenderEditor('reminder', data); }));
+          a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Repeats every 2 weeks on this day, starting the next one.'));
+        } else {
+          a(selectField('Day of the week', data, 'weekday', wdOpts));
+        }
         a(field('At', data, 'time', { type: 'time' }));
       } else {
-        // pick a date on the calendar; it repeats on that day-of-month each month
-        a((() => {
-          const inp = h('input', { type: 'date', value: data.startDate || '',
-            oninput: e => { data.startDate = e.target.value; data.monthDay = e.target.value ? Number(e.target.value.split('-')[2]) : null; } });
-          return h('div', { class: 'field' }, h('label', null, 'Pick a date'), inp,
-            h('div', { class: 'hint' }, 'It repeats on this day each month. Shorter months use their last day.'));
-        })());
+        if (data.monthDay == null) data.monthDay = 1;
+        a(field('Day of the month', data, 'monthDay', { type: 'number', inputmode: 'numeric',
+          hint: '1–31. If the month is shorter, it uses the last day (e.g. 31 → 30 or 28).' }));
         a(field('At', data, 'time', { type: 'time' }));
       }
       if (data.freq == null) data.freq = 'once';
@@ -1953,7 +1959,7 @@ function remSummary(d) {
   const sched = remSched(d);
   if (sched === 'once') return 'Once' + (d.when ? ' · ' + fmtDT(d.when) : '');
   if (sched === 'weekly') { const wd = d.weekday != null ? Number(d.weekday) : null; return 'Weekly' + (wd != null && !isNaN(wd) ? ' · ' + DOW[wd] : '') + (d.time ? ' · ' + fmtHM(d.time) : ''); }
-  if (sched === 'fortnightly') return 'Every 2 weeks' + (d.time ? ' · ' + fmtHM(d.time) : '');
+  if (sched === 'fortnightly') { const wd = d.weekday != null ? Number(d.weekday) : (d.startDate ? new Date(d.startDate + 'T00:00').getDay() : NaN); return 'Every 2 weeks' + (!isNaN(wd) ? ' · ' + DOW[wd] : '') + (d.time ? ' · ' + fmtHM(d.time) : ''); }
   return 'Monthly' + (d.monthDay != null ? ' · day ' + d.monthDay : '') + (d.time ? ' · ' + fmtHM(d.time) : '');
 }
 
