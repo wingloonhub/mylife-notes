@@ -1970,10 +1970,11 @@ async function renderReminderScreen(listEl, items) {
     if (nagging) {
       const off = h('button', { class: 'btn small danger', type: 'button', onclick: async (e) => {
         e.stopPropagation();
-        d._ackKey = remOccur(d, Date.now()).cur.key;
-        if (d.type === 'once') d.active = false;
+        const cur = remOccur(d, Date.now()).cur;
+        if (cur) d._ackKey = cur.key;
+        if (remSched(d) === 'once') d.active = false; // one-time: done for good
         try { await DB.saveItem(it); } catch (x) {}
-        toast('Turned off'); refresh();
+        toast('Turned off until next time'); refresh();
       } }, '⏹ Turn off');
       actions.appendChild(off);
     }
@@ -2000,7 +2001,7 @@ async function renderReminderScreen(listEl, items) {
 
   function draw() {
     tabsEl.innerHTML = '';
-    [['upcoming', 'Upcoming'], ['setup', 'Reminder setup']].forEach(([k, label]) =>
+    [['upcoming', 'Due'], ['setup', 'Reminder setup']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; draw(); } }, label)));
     body.innerHTML = '';
     if (tab === 'setup') {
@@ -2008,13 +2009,11 @@ async function renderReminderScreen(listEl, items) {
       items.slice().sort((a, b) => (a.data.title || '').localeCompare(b.data.title || '')).forEach(it => body.appendChild(reminderCard(it, true)));
     } else {
       const now = Date.now();
-      const live = items.filter(it => (it.data.active !== false) && (remNagging(it.data, now) || remOccur(it.data, now).next));
-      if (!live.length) { body.appendChild(emptyState('reminder', 'Nothing coming up. Tap + to add a reminder.')); return; }
-      live.sort((a, b) => {
-        const na = remNagging(a.data, now), nb = remNagging(b.data, now);
-        if (na !== nb) return na ? -1 : 1; // nagging first
-        return (remOccur(a.data, now).next || Infinity) - (remOccur(b.data, now).next || Infinity);
-      }).forEach(it => body.appendChild(reminderCard(it, false)));
+      // a reminder only appears here once it's due (going off); turn it off to stop until next round
+      const live = items.filter(it => remNagging(it.data, now));
+      if (!live.length) { body.appendChild(emptyState('reminder', 'Nothing going off right now.')); return; }
+      live.sort((a, b) => (remOccur(a.data, now).cur.startMs) - (remOccur(b.data, now).cur.startMs))
+        .forEach(it => body.appendChild(reminderCard(it, false)));
     }
   }
   draw();
