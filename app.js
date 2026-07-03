@@ -505,6 +505,33 @@ function imageMulti(obj, key, multiple = true, opts = {}) {
   return box;
 }
 
+/* convert a Quick Note's rich-text HTML into WhatsApp's own formatting so it looks the same
+   when pasted/sent: *bold*, _italic_, ~strike~, "• " bullets. (WhatsApp has no underline/highlight.) */
+function htmlToWhatsApp(html) {
+  if (!html) return '';
+  let s = html;
+  s = s.replace(/<\s*br\s*\/?>/gi, '\n');
+  s = s.replace(/<\/(p|div|h[1-6])\s*>/gi, '\n');
+  s = s.replace(/<\s*(p|div|h[1-6])[^>]*>/gi, '');
+  s = s.replace(/<\s*li[^>]*>/gi, '• ').replace(/<\/li\s*>/gi, '\n');
+  s = s.replace(/<\/?(ul|ol)[^>]*>/gi, '');
+  s = s.replace(/<\s*(b|strong)[^>]*>/gi, '*').replace(/<\/(b|strong)\s*>/gi, '*');
+  s = s.replace(/<\s*(i|em)[^>]*>/gi, '_').replace(/<\/(i|em)\s*>/gi, '_');
+  s = s.replace(/<\s*(s|strike|del)[^>]*>/gi, '~').replace(/<\/(s|strike|del)\s*>/gi, '~');
+  s = s.replace(/<\/?(u|mark|span)[^>]*>/gi, ''); // no WhatsApp equivalent — keep the text only
+  s = s.replace(/<[^>]+>/g, '');                  // strip anything else
+  const ta = document.createElement('textarea'); ta.innerHTML = s; s = ta.value; // decode entities
+  return s.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+function shareNoteToWhatsApp(data) {
+  const title = (data.title || '').trim();
+  const body = htmlToWhatsApp(data.bodyHtml || data.body || '');
+  if (!body && data.strokes && data.strokes.length) { toast('Handwritten notes can’t be shared as text.'); return; }
+  const text = [title ? '*' + title + '*' : '', body].filter(Boolean).join('\n\n');
+  if (!text) { toast('Nothing to share yet.'); return; }
+  window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank');
+}
+
 /* ---------------- per-category EDITORS ----------------
    each returns a DOM fragment; inputs mutate `data` directly */
 function buildEditor(cat, data, amOwner) {
@@ -717,6 +744,11 @@ function buildEditor(cat, data, amOwner) {
       tType.onclick = () => setMode('text');
       tDraw.onclick = () => setMode('draw');
       a(h('div', { class: 'mode-toggle' }, tType, tDraw));
+      a((() => {
+        const b = h('button', { class: 'btn small secondary', type: 'button', style: { marginBottom: '10px' } }, '📲 Share to WhatsApp');
+        b.onclick = () => shareNoteToWhatsApp(data);
+        return h('div', null, b);
+      })());
       a(textWrap);
       a(drawWrap);
       // open in whichever mode the note already uses
