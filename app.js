@@ -350,6 +350,7 @@ const CATS = [
   { key: 'todo', name: 'To-Do List', emoji: '✅' },
   { key: 'events', name: 'Events', singular: 'Event', emoji: '📅' },
   { key: 'appointments', name: 'Appointments', singular: 'Appointment', emoji: '🗓️' },
+  { key: 'reminder', name: 'Reminder', singular: 'Reminder', emoji: '⏰' },
   { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
@@ -753,6 +754,37 @@ function buildEditor(cat, data, amOwner) {
       a(drawWrap);
       // open in whichever mode the note already uses
       setMode((data.strokes && data.strokes.length && !((data.bodyHtml || '').replace(/<[^>]+>/g, '').trim())) ? 'draw' : 'text');
+      break;
+    }
+    case 'reminder': {
+      if (data.active == null) data.active = true;
+      a(field('What to remind me', data, 'title', { placeholder: 'e.g. Take medicine' }));
+      a(field('Description (optional)', data, 'description', { type: 'textarea', placeholder: 'e.g. the blue pills after breakfast' }));
+      if (data.schedule == null) data.schedule = remSched(data); // back-compat for old type/recurMode
+      a(selectField('When', data, 'schedule',
+        [{ value: 'once', label: 'Once — a specific date' },
+         { value: 'weekly', label: 'Weekly — a day of the week' },
+         { value: 'fortnightly', label: 'Once every 2 weeks' },
+         { value: 'monthly', label: 'Monthly — a date each month' }],
+        () => rerenderEditor('reminder', data)));
+      if (data.schedule === 'once') {
+        a(field('Remind me on', data, 'when', { type: 'datetime-local' }));
+      } else if (data.schedule === 'weekly') {
+        if (data.weekday == null) data.weekday = '1';
+        a(selectField('Day of the week', data, 'weekday', DOW.map((n, i) => ({ value: String(i), label: n }))));
+        a(field('At', data, 'time', { type: 'time' }));
+      } else if (data.schedule === 'fortnightly') {
+        a(field('Starting from', data, 'startDate', { type: 'date', hint: 'It repeats every 2 weeks from this date (same weekday).' }));
+        a(field('At', data, 'time', { type: 'time' }));
+      } else {
+        if (data.monthDay == null) data.monthDay = 1;
+        a(field('Day of the month', data, 'monthDay', { type: 'number', inputmode: 'numeric', hint: '1–31. Shorter months use their last day.' }));
+        a(field('At', data, 'time', { type: 'time' }));
+      }
+      if (data.freq == null) data.freq = 'once';
+      a(selectField('How often to remind', data, 'freq',
+        [{ value: 'once', label: 'Just once' }, { value: '30m', label: 'Every 30 min until I turn it off' }, { value: '1h', label: 'Every 1 hour until I turn it off' }]));
+      a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Sent to your Telegram. When it\'s repeating, tap “Turn off” on the card to stop it.'));
       break;
     }
     case 'events':
@@ -1851,6 +1883,143 @@ function activityActive(d) {
   return isNaN(end) ? true : (Date.now() < end + 3600000);
 }
 
+/* ============================================================
+   REMINDER category — one-time / recurring, with nag-until-off.
+   Firing itself happens server-side (api/send-reminders); the app
+   just shows Upcoming + the setup list and lets you turn one off.
+   ============================================================ */
+const REM_WINDOW = 12 * 3600000; // stop nagging 12h after an occurrence starts (safety cap)
+/* schedule kind, with back-compat for the old type/recurMode model */
+function remSched(d) {
+  if (d.schedule) return d.schedule;
+  if (d.type === 'recurring') return d.recurMode || 'weekly';
+  return 'once';
+}
+/* current occurrence (latest start <= now) + next occurrence (> now), relative to `now` */
+function remOccur(d, now) {
+  const keyOf = ms => localDateStr(new Date(ms));
+  const sched = remSched(d);
+  const time = d.time || '00:00';
+  const [hh, mm] = time.split(':').map(Number);
+  if (sched === 'once') {
+    const w = new Date(d.when || '').getTime(); if (isNaN(w)) return { cur: null, next: null };
+    return { cur: now >= w ? { startMs: w, key: 'once' } : null, next: now < w ? w : null };
+  }
+  if (sched === 'weekly') {
+    let wd = d.weekday != null ? Number(d.weekday) : (d.startDate ? new Date(d.startDate + 'T00:00').getDay() : NaN);
+    if (isNaN(wd)) return { cur: null, next: null };
+    const nd = new Date(now); const back = (nd.getDay() - wd + 7) % 7;
+    const cand = new Date(nd.getFullYear(), nd.getMonth(), nd.getDate() - back, hh, mm).getTime();
+    const cur = cand <= now ? cand : cand - 7 * 86400000;
+    return { cur: { startMs: cur, key: keyOf(cur) }, next: cur + 7 * 86400000 };
+  }
+  if (sched === 'fortnightly') {
+    const base = d.startDate ? new Date(d.startDate + 'T' + time).getTime() : NaN;
+    if (isNaN(base)) return { cur: null, next: null };
+    if (now < base) return { cur: null, next: base };
+    const cur = base + Math.floor((now - base) / (14 * 86400000)) * 14 * 86400000;
+    return { cur: { startMs: cur, key: keyOf(cur) }, next: cur + 14 * 86400000 };
+  }
+  // monthly — a fixed day-of-month
+  let md = d.monthDay != null ? parseInt(d.monthDay, 10) : (d.startDate ? new Date(d.startDate + 'T00:00').getDate() : NaN);
+  if (isNaN(md)) return { cur: null, next: null };
+  const occ = (y, m) => { const dim = new Date(y, m + 1, 0).getDate(); return new Date(y, m, Math.min(md, dim), hh, mm).getTime(); };
+  const nd = new Date(now); const y = nd.getFullYear(), m = nd.getMonth();
+  const thisM = occ(y, m);
+  if (now >= thisM) return { cur: { startMs: thisM, key: keyOf(thisM) }, next: occ(m === 11 ? y + 1 : y, (m + 1) % 12) };
+  const prevM = occ(m === 0 ? y - 1 : y, m === 0 ? 11 : m - 1);
+  return { cur: { startMs: prevM, key: keyOf(prevM) }, next: thisM };
+}
+function remNagging(d, now) {
+  if (d.active === false) return false;
+  const { cur } = remOccur(d, now);
+  return !!(cur && now <= cur.startMs + REM_WINDOW && d._ackKey !== cur.key);
+}
+function fmtMs(ms) {
+  try { return new Date(ms).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }); }
+  catch (e) { return ''; }
+}
+const remFreqTxt = f => (f === '30m' ? 'every 30 min until off' : (f === '1h' ? 'every hour until off' : 'once'));
+function remSummary(d) {
+  const sched = remSched(d);
+  if (sched === 'once') return 'Once' + (d.when ? ' · ' + fmtDT(d.when) : '');
+  if (sched === 'weekly') { const wd = d.weekday != null ? Number(d.weekday) : null; return 'Weekly' + (wd != null && !isNaN(wd) ? ' · ' + DOW[wd] : '') + (d.time ? ' · ' + fmtHM(d.time) : ''); }
+  if (sched === 'fortnightly') return 'Every 2 weeks' + (d.time ? ' · ' + fmtHM(d.time) : '');
+  return 'Monthly' + (d.monthDay != null ? ' · day ' + d.monthDay : '') + (d.time ? ' · ' + fmtHM(d.time) : '');
+}
+
+async function renderReminderScreen(listEl, items) {
+  let tab = 'upcoming';
+  const tabsEl = h('div', { class: 'tabs' });
+  const body = h('div', { class: 'list' });
+  listEl.innerHTML = '';
+  listEl.appendChild(tabsEl);
+  listEl.appendChild(body);
+  const refresh = async () => { try { items = await DB.listItems('reminder'); } catch (e) {} draw(); };
+
+  function reminderCard(it, inSetup) {
+    const d = it.data || {};
+    const now = Date.now();
+    const nagging = remNagging(d, now);
+    const { next } = remOccur(d, now);
+    const meta = h('div', { class: 'meta' },
+      nagging ? '🔔 Reminding now — ' + remFreqTxt(d.freq)
+        : (d.active === false ? '🔕 Off'
+          : (next ? ('Next: ' + fmtMs(next) + (d.freq !== 'once' ? ' · ' + remFreqTxt(d.freq) : '')) : remSummary(d))));
+    const actions = h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' } });
+    if (nagging) {
+      const off = h('button', { class: 'btn small danger', type: 'button', onclick: async (e) => {
+        e.stopPropagation();
+        d._ackKey = remOccur(d, Date.now()).cur.key;
+        if (d.type === 'once') d.active = false;
+        try { await DB.saveItem(it); } catch (x) {}
+        toast('Turned off'); refresh();
+      } }, '⏹ Turn off');
+      actions.appendChild(off);
+    }
+    if (inSetup) {
+      const toggle = h('button', { class: 'btn small ' + (d.active === false ? 'secondary' : ''), type: 'button', onclick: async (e) => {
+        e.stopPropagation();
+        d.active = d.active === false ? true : false;
+        if (d.active) delete d._ackKey; // re-enabling clears any prior stop
+        try { await DB.saveItem(it); } catch (x) {}
+        refresh();
+      } }, d.active === false ? '🔕 Off — tap to enable' : '🔔 On');
+      const edit = h('button', { class: 'btn small secondary', type: 'button', onclick: (e) => { e.stopPropagation(); navigate('#/edit/reminder/' + it.id); } }, '✎ Edit');
+      const del = h('button', { class: 'btn small secondary', type: 'button', onclick: async (e) => {
+        e.stopPropagation();
+        if (!confirmDel('Delete this reminder?')) return;
+        try { await DB.deleteItem('reminder', it.id); } catch (x) {} toast('Deleted'); refresh();
+      } }, '🗑');
+      actions.appendChild(toggle); actions.appendChild(edit); actions.appendChild(del);
+    }
+    const row = h('div', { class: 'row' + (nagging ? ' is-live' : ''), onclick: () => navigate('#/edit/reminder/' + it.id) },
+      h('div', { class: 'main' }, h('div', { class: 'title' }, d.title || 'Reminder'), meta, actions));
+    return row;
+  }
+
+  function draw() {
+    tabsEl.innerHTML = '';
+    [['upcoming', 'Upcoming'], ['setup', 'Reminder setup']].forEach(([k, label]) =>
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; draw(); } }, label)));
+    body.innerHTML = '';
+    if (tab === 'setup') {
+      if (!items.length) { body.appendChild(emptyState('reminder', 'No reminders yet.')); return; }
+      items.slice().sort((a, b) => (a.data.title || '').localeCompare(b.data.title || '')).forEach(it => body.appendChild(reminderCard(it, true)));
+    } else {
+      const now = Date.now();
+      const live = items.filter(it => (it.data.active !== false) && (remNagging(it.data, now) || remOccur(it.data, now).next));
+      if (!live.length) { body.appendChild(emptyState('reminder', 'Nothing coming up. Tap + to add a reminder.')); return; }
+      live.sort((a, b) => {
+        const na = remNagging(a.data, now), nb = remNagging(b.data, now);
+        if (na !== nb) return na ? -1 : 1; // nagging first
+        return (remOccur(a.data, now).next || Infinity) - (remOccur(b.data, now).next || Infinity);
+      }).forEach(it => body.appendChild(reminderCard(it, false)));
+    }
+  }
+  draw();
+}
+
 async function renderScheduleScreen(listEl, definitions, fab, initialTab) {
   await generateActivities();
   const today = localDateStr(new Date());
@@ -2387,6 +2556,7 @@ function homeCount(cat, items) {
     case 'todo': return plural(items.filter(it => (d(it).items || []).some(t => !t.checked)).length, 'list');
     case 'events': return plural(items.filter(it => !eventIsArchived(it)).length, 'upcoming event');
     case 'appointments': return plural(items.filter(it => !eventIsArchived(it)).length, 'upcoming appointment');
+    case 'reminder': return plural(items.filter(it => (it.data || {}).active !== false).length, 'active reminder');
     case 'schedule': return plural(items.filter(it => !scheduleIsCompleted(it)).length, 'activity', 'activities');
     case 'records': return plural(items.length, 'record');
     case 'memberships': return plural(items.length, 'membership');
@@ -2443,6 +2613,7 @@ async function listScreen(cat, sub) {
   const items = await DB.listItems(cat);
   listEl.innerHTML = '';
 
+  if (cat === 'reminder') { renderReminderScreen(listEl, items); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past' }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'appointments') { renderArchiveList(listEl, 'appointments', items, eventIsArchived, { distance: true, archiveLabel: 'Past', duplicateAll: true }); startLive(() => listScreen(cat, sub)); return; }

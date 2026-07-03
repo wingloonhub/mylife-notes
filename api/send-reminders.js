@@ -334,6 +334,50 @@ function tripReminderMsg(id, c) {
   return '';
 }
 
+/* ---- Reminder category (one-time / recurring; nag every 30m/1h until turned off) ---- */
+const REM_WINDOW = 12 * 3600000; // stop nagging 12h after an occurrence starts (safety cap)
+function remSched(d) { if (d.schedule) return d.schedule; if (d.type === 'recurring') return d.recurMode || 'weekly'; return 'once'; }
+function remCurrent(d, now, offMin) { // the occurrence that should currently be nagging, or null
+  const sched = remSched(d); const time = d.time || '00:00'; const p = n => String(n).padStart(2, '0');
+  const [hh, mm] = time.split(':').map(Number);
+  if (sched === 'once') { const w = naiveToUTC(d.when || '', offMin); if (isNaN(w)) return null; return now >= w ? { startMs: w, key: 'once' } : null; }
+  if (sched === 'weekly') {
+    let wd = d.weekday != null ? Number(d.weekday) : (d.startDate ? new Date(naiveToUTC(d.startDate + 'T00:00', offMin) + offMin * 60000).getUTCDay() : NaN);
+    if (isNaN(wd)) return null;
+    const nl = new Date(now + offMin * 60000); const back = (nl.getUTCDay() - wd + 7) % 7;
+    const cd = new Date(Date.UTC(nl.getUTCFullYear(), nl.getUTCMonth(), nl.getUTCDate() - back));
+    const cand = naiveToUTC(`${cd.getUTCFullYear()}-${p(cd.getUTCMonth() + 1)}-${p(cd.getUTCDate())}T${p(hh)}:${p(mm)}`, offMin);
+    const cur = cand <= now ? cand : cand - 7 * 86400000;
+    return { startMs: cur, key: dateStrInTz(cur, offMin) };
+  }
+  if (sched === 'fortnightly') {
+    const base = d.startDate ? naiveToUTC(d.startDate + 'T' + time, offMin) : NaN;
+    if (isNaN(base) || now < base) return null;
+    const cur = base + Math.floor((now - base) / (14 * 86400000)) * 14 * 86400000;
+    return { startMs: cur, key: dateStrInTz(cur, offMin) };
+  }
+  // monthly — a fixed day-of-month
+  let md = d.monthDay != null ? parseInt(d.monthDay, 10) : (d.startDate ? new Date(naiveToUTC(d.startDate + 'T00:00', offMin) + offMin * 60000).getUTCDate() : NaN);
+  if (isNaN(md)) return null;
+  const occ = (y, m) => { const dim = new Date(Date.UTC(y, m + 1, 0)).getUTCDate(); return naiveToUTC(`${y}-${p(m + 1)}-${p(Math.min(md, dim))}T${p(hh)}:${p(mm)}`, offMin); };
+  const nl = new Date(now + offMin * 60000); const y = nl.getUTCFullYear(), m = nl.getUTCMonth();
+  const thisM = occ(y, m);
+  if (now >= thisM) return { startMs: thisM, key: dateStrInTz(thisM, offMin) };
+  const prevM = occ(m === 0 ? y - 1 : y, m === 0 ? 11 : m - 1);
+  return { startMs: prevM, key: dateStrInTz(prevM, offMin) };
+}
+function remMessage(d, first) {
+  const title = d.title || 'that thing';
+  const desc = (d.description || '').trim();
+  if (first) {
+    let m = `Hey love, remember ${title}?`;
+    if (desc) m += `\n\n${desc}`;
+    m += `\n\nJust wanted to remind you before the day gets busy.`;
+    return m;
+  }
+  return `Love, this is still not done yet — ${title}.\n\nNo pressure, I'll just keep reminding you until you switch this off.`;
+}
+
 async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches, wctest, triptest) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
   const email = (u.email || '').trim().toLowerCase();
@@ -526,6 +570,26 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
       if (it._shared) await putShared(project, idToken, it.id, { data: d });
       else await patchData(project, uid, idToken, it.id, d);
     }
+  }
+
+  // Reminder category: one-time / recurring, nagging every 30m/1h until the user turns it off
+  if (token && chat) for (const it of items.filter(i => i.cat === 'reminder')) {
+    const d = it.data || {};
+    if (d.active === false) continue;
+    const cur = remCurrent(d, now, userOff);
+    if (!cur) continue;
+    if (d._ackKey === cur.key) continue;             // user turned this occurrence off
+    if (now > cur.startMs + REM_WINDOW) continue;    // window closed (safety cap)
+    const interval = d.freq === '1h' ? 3600000 : (d.freq === '30m' ? 1800000 : 0);
+    let fireNow = false, first = false;
+    if (!interval) { if (d._firedKey !== cur.key) { fireNow = true; first = true; } }
+    else if (d._lastNagKey !== cur.key) { fireNow = true; first = true; }          // first nag this occurrence
+    else if (now - (d._lastNag || 0) >= interval) { fireNow = true; first = false; } // repeated nag
+    if (!fireNow) continue;
+    try { await tg(token, chat, remMessage(d, first)); sent++; } catch (e) {}
+    if (!interval) { d._firedKey = cur.key; if (d.type === 'once') d.active = false; }
+    else { d._lastNag = now; d._lastNagKey = cur.key; }
+    await patchData(project, uid, idToken, it.id, d);
   }
 
   // FIFA World Cup live-score push (only if a key is configured and the user hasn't opted out)
