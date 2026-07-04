@@ -168,6 +168,14 @@ body {
 .cancelled-row { opacity: .65; }
 .cancelled-row .title { text-decoration: line-through; }
 .qtytag { color: var(--accent); font-weight: 700; font-size: .92em; }
+/* location search suggestions */
+.sug-box { border: 1px solid var(--line); border-radius: 12px; margin-top: 6px; overflow: hidden; background: var(--card); }
+.sug { padding: 10px 12px; cursor: pointer; border-top: 1px solid var(--line); }
+.sug:first-child { border-top: none; }
+.sug:active { background: rgba(109,99,255,.18); }
+.sug-name { font-size: 15px; font-weight: 600; }
+.sug-sub { font-size: 12px; color: var(--muted); margin-top: 1px; }
+.sug-load { padding: 10px 12px; font-size: 13px; color: var(--muted); }
 
 /* ---- FIFA World Cup ---- */
 .wc-h { font-size: 13px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted);

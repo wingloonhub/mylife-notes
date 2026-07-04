@@ -847,25 +847,48 @@ function buildEditor(cat, data, amOwner) {
 }
 
 /* Google Maps field with live coordinate lookup (shared by Events + Weekly Schedule) */
+/* Location search: type a place name → live suggestions → pick one → coordinates auto-filled.
+   Uses a free OpenStreetMap-based geocoder (Photon). Also accepts pasted coordinates / a Maps link. */
 function mapFieldBlock(data) {
   const frag = h('div');
-  const mapStatus = h('div', { class: 'hint', style: { margin: '4px 2px 12px' } },
-    (typeof data.lat === 'number') ? ('📍 Coordinates: ' + data.lat.toFixed(5) + ', ' + data.lng.toFixed(5)) : '');
-  const mapInput = h('input', { type: 'url', inputmode: 'url', autocapitalize: 'none',
-    placeholder: 'Paste Google Maps link / address / 3.05,101.69', value: data.map || '' });
-  let mapTimer = null;
-  const resolveMap = async () => {
-    const q = (mapInput.value || '').trim();
-    data.map = q;
-    if (!q) { mapStatus.textContent = ''; delete data.lat; delete data.lng; delete data._coordSrc; return; }
-    mapStatus.textContent = '📍 Looking up coordinates…';
-    const c = await resolveCoords(q);
-    if (c) { data.lat = c[0]; data.lng = c[1]; data._coordSrc = q; mapStatus.innerHTML = '📍 Coordinates: <b>' + c[0].toFixed(5) + ', ' + c[1].toFixed(5) + '</b>'; }
-    else { delete data.lat; delete data.lng; delete data._coordSrc; mapStatus.textContent = "Couldn't read this. Try the full Google Maps URL, an address, or coordinates."; }
+  const status = h('div', { class: 'hint', style: { margin: '4px 2px 12px' } },
+    (typeof data.lat === 'number') ? ('📍 ' + (data.location || data.map || 'Pinned') + ' — ' + data.lat.toFixed(5) + ', ' + data.lng.toFixed(5)) : '');
+  const input = h('input', { type: 'text', autocapitalize: 'words', autocomplete: 'off',
+    placeholder: 'Search a place — e.g. KLCC, Sunway Pyramid', value: data.map || data.location || '' });
+  const sug = h('div', { class: 'sug-box', style: { display: 'none' } });
+  let timer = null;
+  const setStatus = (label, lat, lng) => { status.innerHTML = '📍 ' + (label ? label + ' — ' : '') + '<b>' + lat.toFixed(5) + ', ' + lng.toFixed(5) + '</b>'; };
+  const pick = (label, lat, lng) => {
+    data.map = label; data.location = label; data.lat = lat; data.lng = lng; data._coordSrc = label;
+    input.value = label; setStatus(label, lat, lng);
+    sug.style.display = 'none'; sug.innerHTML = '';
   };
-  mapInput.addEventListener('input', () => { data.map = mapInput.value; clearTimeout(mapTimer); mapTimer = setTimeout(resolveMap, 700); });
-  if (data.map && data.lat == null) setTimeout(resolveMap, 150);
-  add(frag, [h('div', { class: 'field' }, h('label', null, 'Google Maps (link, address, or coordinates)'), mapInput), mapStatus]);
+  async function search(q) {
+    sug.innerHTML = '<div class="sug-load">Searching…</div>'; sug.style.display = '';
+    try {
+      const r = await fetch('https://photon.komoot.io/api/?limit=6&lang=en&q=' + encodeURIComponent(q)).then(x => x.json());
+      const feats = (r && r.features) || [];
+      sug.innerHTML = '';
+      if (!feats.length) { sug.innerHTML = '<div class="sug-load">No matches — try a different name.</div>'; return; }
+      feats.forEach(f => {
+        const p = f.properties || {}, c = (f.geometry || {}).coordinates || [];
+        if (typeof c[1] !== 'number') return;
+        const label = [p.name, p.street, p.city || p.county || p.district, p.state, p.country].filter(Boolean).join(', ');
+        sug.appendChild(h('div', { class: 'sug', onclick: () => pick(label, c[1], c[0]) },
+          h('div', { class: 'sug-name' }, p.name || label),
+          h('div', { class: 'sug-sub' }, [p.city || p.county, p.state, p.country].filter(Boolean).join(', '))));
+      });
+    } catch (e) { sug.innerHTML = '<div class="sug-load">Search unavailable — check your connection.</div>'; }
+  }
+  input.addEventListener('input', () => {
+    data.map = input.value; const q = input.value.trim();
+    clearTimeout(timer);
+    const coords = parseLatLng(q); // still accept pasted "lat,lng"
+    if (coords) { data.lat = coords[0]; data.lng = coords[1]; data._coordSrc = q; setStatus('', coords[0], coords[1]); sug.style.display = 'none'; return; }
+    if (q.length < 2) { sug.style.display = 'none'; return; }
+    timer = setTimeout(() => search(q), 350);
+  });
+  add(frag, [h('div', { class: 'field' }, h('label', null, 'Location'), input, sug), status]);
   return frag;
 }
 

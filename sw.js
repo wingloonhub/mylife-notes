@@ -1,5 +1,5 @@
 // MyLife Hub — service worker (offline shell)
-const CACHE = 'mylife-notes-v121';
+const CACHE = 'mylife-notes-v122';
 const ASSETS = [
   './',
   './index.html',
@@ -50,7 +50,7 @@ self.addEventListener('fetch', (e) => {
   // Never cache live data / map-routing / Telegram traffic — always go to the network.
   if (url.hostname.includes('googleapis.com') || url.hostname.includes('firebase') || url.hostname.includes('gstatic.com') ||
       url.hostname.includes('openstreetmap.org') || url.hostname.includes('project-osrm.org') || url.hostname.includes('google.com') ||
-      url.hostname.includes('telegram.org')) {
+      url.hostname.includes('komoot.io') || url.hostname.includes('telegram.org')) {
     return;
   }
   if (url.pathname.startsWith('/api')) return; // never cache serverless API calls
