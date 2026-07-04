@@ -434,7 +434,7 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
   // events & appointments — each card carries its own reminder lead times
   for (const it of items.filter(i => i.cat === 'events' || i.cat === 'appointments')) {
     const d = it.data || {};
-    if (!d.when) continue;
+    if (!d.when || d.done) continue; // user turned reminders off (they're at the place)
     const t = naiveToUTC(d.when, userOff);
     if (isNaN(t) || now >= t) continue;
     const lead1 = leadMsOf(d);
@@ -492,7 +492,7 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
   // weekly schedule → reminders from the Upcoming activities (a cancelled day stays silent)
   for (const it of activities) {
     const d = it.data || {};
-    if (d.cancelled || !d.date || !d.start) continue;
+    if (d.cancelled || d.done || !d.date || !d.start) continue; // done = user turned reminders off
     const title = d.title || 'your activity';
     const loc2 = (typeof d.lat === 'number') ? await travelLine(loc, d.lat, d.lng, now, userOff) : '';
     let changed = false;

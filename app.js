@@ -656,13 +656,6 @@ function buildEditor(cat, data, amOwner) {
     }
     case 'todo': {
       a(field('List title', data, 'title', { placeholder: 'e.g. Today' }));
-      if (amOwner) {
-        a(h('div', { class: 'section-title' }, 'Share this list with (live)'));
-        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone you want to see & edit this list in real time. Leave empty to keep it private.'));
-        a(shareWithEditor(data));
-      } else {
-        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, '👥 Shared with you — you can edit the items; only the owner can change who it\'s shared with.'));
-      }
       a(h('div', { class: 'section-title' }, 'Reminder'));
       if (data.remindTime == null) data.remindTime = '09:00';
       a(h('div', { class: 'field' }, h('label', null, 'Remind me at'),
@@ -804,19 +797,11 @@ function buildEditor(cat, data, amOwner) {
     }
     case 'events':
     case 'appointments': {
-      const noun = cat === 'appointments' ? 'appointment' : 'event';
       a(field('Title', data, 'title', { placeholder: cat === 'appointments' ? 'e.g. Dentist — scaling' : 'e.g. School concert' }));
       a(field('Date & time', data, 'when', { type: 'datetime-local', hint: 'Moves to the Past tab the day after.' }));
       a(field('Location name', data, 'location', { placeholder: 'e.g. Sunway Lagoon' }));
       a(mapFieldBlock(data));
       a(field('Notes', data, 'notes', { type: 'textarea' }));
-      if (amOwner) {
-        a(h('div', { class: 'section-title' }, 'Share this ' + noun + ' with (live)'));
-        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone you want to see & edit this ' + noun + ' in real time. Leave empty to keep it private.'));
-        a(shareWithEditor(data));
-      } else {
-        a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, '👥 Shared with you — you can edit the details; only the owner can change who it\'s shared with.'));
-      }
       a(h('div', { class: 'section-title' }, 'Reminders'));
       a(h('div', { class: 'hint', style: { margin: '-4px 2px 6px' } }, 'Sent to your Telegram.'));
       a(remindRow(data, 'startReminder', 'startRemindMin', 'Reminder before it starts', null, 60, true));
@@ -2108,18 +2093,26 @@ function buildActivityRow(act, rerender) {
   const dt = new Date(d.date + 'T00:00:00');
   const dayLabel = (isNaN(dt) ? d.date : (DOW_SHORT[dt.getDay()] + ', ' + fmtDate(d.date)));
   const timeLabel = d.start ? (fmtHM(d.start) + (d.end ? '–' + fmtHM(d.end) : '')) : '';
-  return h('div', { class: 'row' + (d.cancelled ? ' cancelled-row' : ''),
+  const offBtn = h('button', { class: 'btn small ' + (d.done ? '' : 'secondary'), type: 'button', onclick: async (e) => {
+    e.stopPropagation();
+    d.done = !d.done;
+    await DB.saveItem(act);
+    rerender();
+  } }, d.done ? '🔔 Turn on' : '🔕 Turn off');
+  const cancelBtn = h('button', { class: 'btn small ' + (d.cancelled ? '' : 'secondary'), type: 'button', onclick: async (e) => {
+    e.stopPropagation();
+    d.cancelled = !d.cancelled;
+    await DB.saveItem(act);
+    rerender();
+  } }, d.cancelled ? 'Restore' : 'Cancel');
+  return h('div', { class: 'row' + (d.cancelled || d.done ? ' cancelled-row' : ''),
     onclick: () => { if (d.scheduleId) navigate('#/view/schedule/' + d.scheduleId); } },
     h('div', { class: 'main' },
       h('div', { class: 'title' }, d.title || 'Activity'),
       h('div', { class: 'meta' }, [dayLabel, timeLabel, d.location].filter(Boolean).join(' · ')),
-      d.cancelled ? h('div', { class: 'meta', style: { color: 'var(--amber)' } }, 'Cancelled for this day') : null),
-    h('button', { class: 'btn small ' + (d.cancelled ? '' : 'secondary'), type: 'button', onclick: async (e) => {
-      e.stopPropagation();
-      d.cancelled = !d.cancelled;
-      await DB.saveItem(act);
-      rerender();
-    } }, d.cancelled ? 'Restore' : 'Cancel'));
+      d.cancelled ? h('div', { class: 'meta', style: { color: 'var(--amber)' } }, 'Cancelled for this day')
+        : (d.done ? h('div', { class: 'meta', style: { color: 'var(--muted)' } }, 'Reminders off') : null)),
+    h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' } }, offBtn, cancelBtn));
 }
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -2656,9 +2649,10 @@ async function listScreen(cat, sub) {
   listEl.innerHTML = '';
 
   if (cat === 'reminder') { renderReminderScreen(listEl, items, sub); return; }
+  if (cat === 'memberships') { renderMembershipList(listEl, items); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
-  if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past' }); startLive(() => listScreen(cat, sub)); return; }
-  if (cat === 'appointments') { renderArchiveList(listEl, 'appointments', items, eventIsArchived, { distance: true, archiveLabel: 'Past', duplicateAll: true }); startLive(() => listScreen(cat, sub)); return; }
+  if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past', reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
+  if (cat === 'appointments') { renderArchiveList(listEl, 'appointments', items, eventIsArchived, { distance: true, archiveLabel: 'Past', duplicateAll: true, reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'schedule') { renderScheduleScreen(listEl, items, fab, sub === 'def' ? 'schedule' : 'upcoming'); return; }
   if (cat === 'tax') { renderTaxList(listEl, items); return; }
   if (cat === 'trips') { renderTripScreen(listEl, items, fab, sub === 'cats' ? 'cats' : 'trips'); startLive(() => listScreen(cat, sub)); return; }
@@ -2855,7 +2849,6 @@ function buildTodoRow(item) {
     meta.textContent = [(next && ('next due ' + fmtDate(next))), done + '/' + its.length + ' done'].filter(Boolean).join(' · ');
   }
   const isOwner = !item._shared || item._amOwner === true;
-  const shareBtn = h('button', { class: 'iconbtn small', title: 'Share', onclick: (e) => { e.stopPropagation(); navigate('#/edit/todo/' + item.id); } }, '👤');
   const editBtn = h('button', { class: 'iconbtn small', title: 'Edit', onclick: (e) => { e.stopPropagation(); navigate('#/edit/todo/' + item.id); } }, '✎');
   const delBtn = isOwner ? h('button', { class: 'iconbtn small', title: 'Delete', onclick: async (e) => {
     e.stopPropagation();
@@ -2867,7 +2860,7 @@ function buildTodoRow(item) {
     : null;
   const head = h('div', { class: 'todo-head' },
     h('div', { class: 'title' }, d.title || 'To-Do'),
-    h('div', { class: 'todo-actions' }, isOwner ? shareBtn : null, editBtn, delBtn));
+    h('div', { class: 'todo-actions' }, editBtn, delBtn));
   const ul = h('ul', { class: 'row-items tappable' });
   its.forEach((t) => {
     const li = h('li', { class: t.checked ? 'done' : '' },
@@ -2942,17 +2935,53 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
     const list = tab === 'upcoming' ? upcoming : archived;
     if (!list.length) { body.appendChild(emptyState(cat, tab === 'upcoming' ? ('Nothing in ' + upLabel.toLowerCase() + '.') : ('Nothing in ' + arLabel.toLowerCase() + ' yet.'))); return; }
     for (const it of list) {
+      const btns = [];
+      if (tab === 'upcoming' && opts.reminderOff) {
+        const done = it.data && it.data.done;
+        btns.push(h('button', { class: 'btn small ' + (done ? '' : 'secondary'), type: 'button', onclick: async (e) => {
+          e.stopPropagation();
+          it.data.done = !it.data.done;
+          try { await DB.saveItem(it); } catch (x) {}
+          toast(it.data.done ? 'Reminders turned off' : 'Reminders back on');
+          render();
+        } }, done ? '🔔 Turn on' : '🔕 Turn off'));
+      }
       const canDup = opts.duplicateAll || (tab === 'archive' && opts.duplicate);
-      const dup = canDup
-        ? h('button', { class: 'btn small secondary', onclick: async (e) => { e.stopPropagation(); await duplicateItem(cat, it); toast('Duplicated to Upcoming'); navigate('#/cat/' + cat); } }, 'Duplicate')
-        : null;
-      const row = buildRow(cat, it, { action: dup });
+      if (canDup) btns.push(h('button', { class: 'btn small secondary', type: 'button', onclick: async (e) => { e.stopPropagation(); await duplicateItem(cat, it); toast('Duplicated to Upcoming'); navigate('#/cat/' + cat); } }, 'Duplicate'));
+      const action = btns.length ? h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...btns) : null;
+      const row = buildRow(cat, it, { action });
+      if (it.data && it.data.done) row.classList.add('cancelled-row');
       body.appendChild(row);
       if (posP) enrichRowDistance(it, row, posP);
     }
   }
   listEl.appendChild(tabsEl);
   listEl.appendChild(body);
+  render();
+}
+
+/* Memberships — manual ranking with ↑/↓ (sorted by data.sortIndex; you choose what's on top) */
+function renderMembershipList(listEl, items) {
+  const ord = it => (it.data && it.data.sortIndex != null) ? it.data.sortIndex : 1e9;
+  async function move(i, j) {
+    if (j < 0 || j >= items.length) return;
+    items.forEach((it, idx) => { if (it.data.sortIndex == null) it.data.sortIndex = idx; }); // persist current order first
+    const a = items[i], b = items[j];
+    const t = a.data.sortIndex; a.data.sortIndex = b.data.sortIndex; b.data.sortIndex = t;
+    try { await DB.saveItem(a); await DB.saveItem(b); } catch (e) {}
+    render();
+  }
+  function render() {
+    items.sort((a, b) => ord(a) - ord(b));
+    listEl.innerHTML = '';
+    if (!items.length) { listEl.appendChild(emptyState('memberships')); return; }
+    items.forEach((it, i) => {
+      const up = h('button', { class: 'iconbtn small', type: 'button', title: 'Move up', style: { opacity: i === 0 ? '.3' : '1' }, onclick: (e) => { e.stopPropagation(); move(i, i - 1); } }, '↑');
+      const down = h('button', { class: 'iconbtn small', type: 'button', title: 'Move down', style: { opacity: i === items.length - 1 ? '.3' : '1' }, onclick: (e) => { e.stopPropagation(); move(i, i + 1); } }, '↓');
+      const actions = h('div', { style: { display: 'flex', gap: '4px' } }, up, down);
+      listEl.appendChild(buildRow('memberships', it, { action: actions }));
+    });
+  }
   render();
 }
 
@@ -3534,7 +3563,7 @@ async function checkReminders() {
     const events = [...await DB.listItems('events'), ...await DB.listItems('appointments')];
     for (const ev of events) {
       const d = ev.data || {};
-      if (!d.when) continue;
+      if (!d.when || d.done) continue;
       const t = new Date(d.when).getTime();
       if (isNaN(t) || now >= t) continue;
       const mins = Math.round((t - now) / 60000);
