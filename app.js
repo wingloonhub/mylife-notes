@@ -1963,8 +1963,8 @@ function remSummary(d) {
   return 'Monthly' + (d.monthDay != null ? ' · day ' + d.monthDay : '') + (d.time ? ' · ' + fmtHM(d.time) : '');
 }
 
-async function renderReminderScreen(listEl, items) {
-  let tab = 'upcoming';
+async function renderReminderScreen(listEl, items, sub) {
+  let tab = sub === 'setup' ? 'setup' : 'upcoming';
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
   listEl.innerHTML = '';
@@ -2017,7 +2017,12 @@ async function renderReminderScreen(listEl, items) {
   function draw() {
     tabsEl.innerHTML = '';
     [['upcoming', 'Due'], ['setup', 'Reminder setup']].forEach(([k, label]) =>
-      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; draw(); } }, label)));
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => {
+        tab = k;
+        // keep the URL in sync so Back/Save from an editor returns to this tab
+        try { history.replaceState(null, '', k === 'setup' ? '#/cat/reminder/setup' : '#/cat/reminder'); } catch (e) {}
+        draw();
+      } }, label)));
     body.innerHTML = '';
     if (tab === 'setup') {
       if (!items.length) { body.appendChild(emptyState('reminder', 'No reminders yet.')); return; }
@@ -2627,7 +2632,7 @@ async function listScreen(cat, sub) {
   const items = await DB.listItems(cat);
   listEl.innerHTML = '';
 
-  if (cat === 'reminder') { renderReminderScreen(listEl, items); return; }
+  if (cat === 'reminder') { renderReminderScreen(listEl, items, sub); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past' }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'appointments') { renderArchiveList(listEl, 'appointments', items, eventIsArchived, { distance: true, archiveLabel: 'Past', duplicateAll: true }); startLive(() => listScreen(cat, sub)); return; }
