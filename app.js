@@ -94,6 +94,7 @@ let CURRENT = null;       // {uid, email}
 let _lastLocalWrite = 0;  // timestamp of my last save — used to skip live re-render on my own changes
 let _suppressScroll = false; // when true, mount() won't reset scroll to top (used during live re-renders)
 const imgCache = new Map();
+let vaultUnlocked = false;   // Access Vault re-auth gate; reset on sign-out and whenever you return to the home menu
 let FRIENDS = [];            // [{name,email}] from Settings → Friends; used to offer a dropdown in share boxes
 async function loadFriends() { try { const s = await DB.getSettings(); FRIENDS = Array.isArray(s.friends) ? s.friends : []; } catch (e) { FRIENDS = []; } }
 
@@ -186,6 +187,17 @@ const Auth = {
     if (MODE === 'firebase') { await fb.a.signOut(fb.auth); }
     else { localStorage.removeItem('mln_session'); CURRENT = null; routeChanged(); }
     imgCache.clear();
+    vaultUnlocked = false;
+  },
+  // Re-verify the signed-in user's own password — used to unlock the Access Vault.
+  async verifyPassword(pass) {
+    const email = ((CURRENT && CURRENT.email) || '').trim().toLowerCase();
+    if (!email || !pass) return false;
+    if (MODE === 'firebase') {
+      try { await fb.a.signInWithEmailAndPassword(fb.auth, email, pass); return true; } catch (e) { return false; }
+    }
+    const u = LS.get('mln_users', {})[email];
+    return !!(u && u.hash === await sha256(email + '::' + pass));
   }
 };
 
@@ -382,6 +394,7 @@ const CATS = [
   { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒' },
   { key: 'workout', name: 'Workout Schedule', singular: 'Workout Day', emoji: '💪' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
+  { key: 'vault', name: 'Access Vault', singular: 'Login', emoji: '🔑' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
   { key: 'tax', name: 'Tax Receipts', emoji: '💵' },
   { key: 'party', name: 'Party Planner', emoji: '🎉' },
@@ -414,6 +427,16 @@ function field(label, obj, key, opts = {}) {
     label && h('label', null, label),
     input,
     opts.hint && h('div', { class: 'hint' }, opts.hint));
+}
+/* password entry with a show/hide toggle (used by the Access Vault editor) */
+function passwordField(label, obj, key) {
+  const input = h('input', { type: 'password', autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false',
+    placeholder: 'Password', value: obj[key] != null ? obj[key] : '', style: { flex: '1', minWidth: '0' },
+    oninput: e => obj[key] = e.target.value });
+  const toggle = h('button', { class: 'btn small secondary', type: 'button', style: { flex: 'none' },
+    onclick: () => { const show = input.type === 'password'; input.type = show ? 'text' : 'password'; toggle.textContent = show ? 'Hide' : 'Show'; } }, 'Show');
+  return h('div', { class: 'field' }, label && h('label', null, label),
+    h('div', { style: { display: 'flex', gap: '6px' } }, input, toggle));
 }
 function selectField(label, obj, key, options, onchange) {
   const sel = h('select', {
@@ -630,6 +653,13 @@ function buildEditor(cat, data, amOwner) {
         a(field('SWIFT / extra', data, 'swift', {}));
       }
       a(field('Notes', data, 'notes', { type: 'textarea' }));
+      break;
+    }
+    case 'vault': {
+      a(field('Platform name', data, 'platform', { placeholder: 'e.g. Gmail, Maybank2u, Netflix' }));
+      a(field('Username', data, 'username', { placeholder: 'e.g. email / login ID' }));
+      a(passwordField('Password', data, 'password'));
+      a(field('Notes (optional)', data, 'notes', { type: 'textarea' }));
       break;
     }
     case 'memberships': {
@@ -1887,6 +1917,7 @@ function summary(cat, data) {
       return { title: data.title || 'Recipe', meta: ingCount + ' ingredients · ' + (data.steps || []).length + ' steps', thumb, fav: data.fav };
     }
     case 'records': return { title: data.title || 'Record', meta: data.recType === 'address' ? (data.recipient || 'Address') : (data.bank || 'Bank account') };
+    case 'vault': return { title: data.platform || 'Login', meta: data.username || '' };
     case 'memberships': return { title: data.title || 'Membership', meta: data.member || data.number || '', thumb: (data.images || [])[0] };
     case 'warranty': return { title: data.title || 'Item', meta: [data.shop, data.expiry && ('exp ' + fmtDate(data.expiry))].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
     case 'tax': return { title: data.title || 'Receipt', meta: [data.taxCat, data.year, (data.amount != null && data.amount !== '') && fmtMYR(data.amount)].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
@@ -2699,6 +2730,7 @@ function homeCount(cat, items) {
     case 'schedule': return plural(items.filter(it => !scheduleIsCompleted(it)).length, 'activity', 'activities');
     case 'workout': return plural(items.length, 'workout day');
     case 'records': return plural(items.length, 'record');
+    case 'vault': return plural(items.length, 'saved login');
     case 'memberships': return plural(items.length, 'membership');
     case 'tax': { const y = String(new Date().getFullYear()); return plural(items.filter(it => String(d(it).year || '') === y).length, 'receipt') + ' (' + y + ')'; }
     case 'party': return plural(items.filter(it => !partyIsArchived(it)).length, 'upcoming party', 'upcoming parties');
@@ -2755,6 +2787,7 @@ async function listScreen(cat, sub) {
 
   if (cat === 'reminder') { renderReminderScreen(listEl, items, sub); return; }
   if (cat === 'workout') { renderWorkoutScreen(listEl, items, sub); return; }
+  if (cat === 'vault') { renderVaultScreen(listEl, items, fab); return; }
   if (cat === 'memberships') { renderMembershipList(listEl, items); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past', reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
@@ -3189,6 +3222,76 @@ async function renderWorkoutScreen(listEl, items, sub) {
   draw();
 }
 
+/* Access Vault — password store behind a re-auth gate. Locked by default each time you open it;
+   unlock by re-entering your own account password. Passwords are masked until you reveal them. */
+function renderVaultScreen(listEl, items, fab) {
+  // a labelled value row with a Copy button, and (for secrets) a reveal toggle
+  function fieldRow(label, value, secret) {
+    const val = h('span', { style: { fontFamily: secret ? 'ui-monospace, monospace' : 'inherit', letterSpacing: secret ? '1px' : '0', wordBreak: 'break-all' } }, secret ? '••••••••' : value);
+    let shown = false;
+    const actions = [];
+    if (secret) {
+      const eye = h('button', { class: 'btn small secondary', type: 'button' }, 'Show');
+      eye.onclick = () => { shown = !shown; val.textContent = shown ? value : '••••••••'; eye.textContent = shown ? 'Hide' : 'Show'; };
+      actions.push(eye);
+    }
+    actions.push(h('button', { class: 'btn small secondary', type: 'button', onclick: () => copyText(value) }, 'Copy'));
+    return h('div', { class: 'kv', style: { alignItems: 'flex-start', gap: '8px' } },
+      h('span', { class: 'k' }, label),
+      h('span', { style: { display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end', flex: '1' } }, val, ...actions));
+  }
+
+  function cardFor(it) {
+    const d = it.data || {};
+    const card = h('div', { class: 'detail-card' },
+      h('div', { style: { display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' } },
+        h('h3', { style: { margin: '0', flex: '1' } }, d.platform || 'Login'),
+        h('button', { class: 'iconbtn small', title: 'Edit', onclick: () => navigate('#/edit/vault/' + it.id) }, '✎')));
+    if (d.username) card.appendChild(fieldRow('Username', d.username, false));
+    if (d.password) card.appendChild(fieldRow('Password', d.password, true));
+    if (d.notes) card.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Notes'),
+      h('span', { class: 'v', style: { whiteSpace: 'pre-wrap' } }, d.notes)));
+    return card;
+  }
+
+  function gate() {
+    if (fab) fab.style.display = 'none';
+    listEl.innerHTML = '';
+    const pw = h('input', { type: 'password', autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', placeholder: 'Account password', style: { textAlign: 'center' } });
+    const err = h('div', { class: 'hint', style: { color: '#ff6b6b', minHeight: '16px', margin: '6px 0' } }, '');
+    const btn = h('button', { class: 'btn', type: 'button', style: { width: '100%' } }, 'Unlock');
+    const submit = async () => {
+      if (btn.disabled) return;
+      btn.disabled = true; btn.textContent = 'Checking…'; err.textContent = '';
+      const ok = await Auth.verifyPassword(pw.value);
+      if (ok) { vaultUnlocked = true; render(); }
+      else { btn.disabled = false; btn.textContent = 'Unlock'; err.textContent = 'Wrong password. Try again.'; pw.value = ''; pw.focus(); }
+    };
+    btn.onclick = submit;
+    pw.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    listEl.appendChild(h('div', { class: 'detail-card', style: { textAlign: 'center', maxWidth: '400px', margin: '24px auto' } },
+      h('div', { style: { fontSize: '46px' } }, '🔑'),
+      h('div', { class: 'section-title', style: { marginTop: '8px' } }, 'Access Vault'),
+      h('div', { style: { color: 'var(--muted)', fontSize: '14px', margin: '4px 0 16px', lineHeight: '1.5' } },
+        'Locked. Enter your account password' + (myEmail() ? ' (' + myEmail() + ')' : '') + ' to view your saved logins.'),
+      h('div', { class: 'field' }, pw), err, btn));
+    setTimeout(() => pw.focus(), 60);
+  }
+
+  function render() {
+    if (!vaultUnlocked) { gate(); return; }
+    if (fab) fab.style.display = '';
+    listEl.innerHTML = '';
+    listEl.appendChild(h('div', { style: { display: 'flex', justifyContent: 'flex-end', marginBottom: '6px' } },
+      h('button', { class: 'btn small secondary', type: 'button', onclick: () => { vaultUnlocked = false; render(); } }, '🔒 Lock')));
+    if (!items.length) { listEl.appendChild(emptyState('vault', 'No logins saved yet.')); return; }
+    items.slice().sort((a, b) => (a.data.platform || '').localeCompare(b.data.platform || ''))
+      .forEach(it => listEl.appendChild(cardFor(it)));
+  }
+
+  render();
+}
+
 /* Memberships — manual ranking with ↑/↓ (sorted by data.sortIndex; you choose what's on top) */
 function renderMembershipList(listEl, items) {
   const ord = it => (it.data && it.data.sortIndex != null) ? it.data.sortIndex : 1e9;
@@ -3373,6 +3476,7 @@ async function editScreen(cat, id) {
   const isQuick = cat === 'quick';
   const hasContent = () => {
     if (cat === 'records' || cat === 'workout') return true;
+    if (cat === 'vault') return !!(data.platform || data.username || data.password);
     if (isQuick) return !!(data.title || (data.bodyHtml || '').replace(/<[^>]+>/g, '').trim() || (data.strokes && data.strokes.length));
     return !!data.title;
   };
@@ -3631,7 +3735,16 @@ function routeChanged() {
   // remove any stray FAB from previous screen
   const stale = $app().querySelector('.fab'); if (stale) stale.remove();
 
+  // Access Vault: re-lock the moment we navigate anywhere outside it, so it always asks for the
+  // password again on the next visit (editing/viewing its own cards stays unlocked).
+  const inVault = (parts[0] === 'cat' || parts[0] === 'edit' || parts[0] === 'view') && parts[1] === 'vault';
+  if (!inVault) vaultUnlocked = false;
+
   if (parts.length === 0) return void homeScreen();
+  // Vault edit/detail routes are only reachable once the vault is unlocked.
+  if ((parts[0] === 'edit' || parts[0] === 'view') && parts[1] === 'vault' && !vaultUnlocked) {
+    return void navigate('#/cat/vault');
+  }
   if (parts[0] === 'import') return void importScreen(parts[1]);
   if (parts[0] === 'settings') return void settingsScreen();
   if (parts[0] === 'cat') return void listScreen(parts[1], parts[2]);
