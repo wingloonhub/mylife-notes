@@ -853,6 +853,7 @@ function buildEditor(cat, data, amOwner) {
     case 'workout': {
       if (data.weekday == null) data.weekday = '1';
       a(selectField('Day of the week', data, 'weekday', [1, 2, 3, 4, 5, 6, 0].map(i => ({ value: String(i), label: DOW[i] }))));
+      a(field('Video link (optional)', data, 'video', { type: 'url', placeholder: 'e.g. YouTube follow-along link', hint: 'Shows as ▶ Watch on the day in Upcoming, so you can follow along.' }));
       a(h('div', { class: 'section-title' }, 'Exercises'));
       a(workoutExercisesEditor(data));
       break;
@@ -3075,6 +3076,9 @@ async function renderWorkoutScreen(listEl, items, sub) {
   const refresh = async () => { try { items = await DB.listItems('workout'); } catch (e) {} draw(); };
   const wkOrder = w => ((Number(w) + 6) % 7); // Monday-first
   const dayLabel = (d, n) => 'Day ' + n + ' · ' + (DOW[Number(d.weekday)] || '');
+  const dateHeading = (dt, off) => off === 0 ? 'Today · ' + DOW[dt.getDay()]
+    : off === 1 ? 'Tomorrow · ' + DOW[dt.getDay()]
+    : DOW[dt.getDay()] + ' · ' + fmtDate(localDateStr(dt));
 
   function scheduleCard(it, n) {
     const d = it.data || {};
@@ -3086,37 +3090,48 @@ async function renderWorkoutScreen(listEl, items, sub) {
       h('div', { class: 'chev' }, '›'));
   }
 
-  function upcomingCard(it, n) {
+  function upcomingCard(it, n, occ) {
     const d = it.data || {};
+    const isToday = occ.off === 0;
     const exs = (d.exercises || []).filter(e => e.name && e.name.trim());
     const doneN = () => exs.filter(e => e.done).length;
-    const titleEl = h('div', { class: 'section-title' }, dayLabel(d, n) + '  (' + doneN() + '/' + exs.length + ')');
-    const card = h('div', { class: 'detail-card' }, titleEl);
+    const card = h('div', { class: 'detail-card' + (isToday ? '' : ' muted'), style: isToday ? null : { opacity: '.82' } },
+      h('div', { class: 'section-title', style: { marginTop: '0' } }, dateHeading(occ.date, occ.off)));
+    const dayLine = h('div', { style: { fontWeight: '700', marginBottom: '2px' } },
+      dayLabel(d, n) + (isToday && exs.length ? '  (' + doneN() + '/' + exs.length + ')' : ''));
+    card.appendChild(dayLine);
+    if (d.video && String(d.video).trim()) {
+      card.appendChild(h('a', { href: d.video, target: '_blank', rel: 'noopener',
+        style: { display: 'inline-block', margin: '4px 0 8px', color: 'var(--accent)', fontWeight: '700', fontSize: '14px', textDecoration: 'none' } }, '▶ Watch video'));
+    }
     if (!exs.length) { card.appendChild(h('div', { class: 'hint' }, 'No exercises yet.')); return card; }
     exs.forEach(ex => {
-      const cb = h('div', { class: 'cb' + (ex.done ? ' on' : '') });
       const detail = [ex.sets && (ex.sets + ' sets'), ex.reps && (ex.reps + ' ' + (ex.unit === 'secs' ? 'secs' : 'reps'))].filter(Boolean).join(' × ');
+      if (!isToday) { // future day → read-only preview
+        card.appendChild(h('div', { class: 'check-row' }, h('div', { class: 'cb', style: { opacity: '.4' } }),
+          h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null)));
+        return;
+      }
+      const cb = h('div', { class: 'cb' + (ex.done ? ' on' : '') });
       const row = h('div', { class: 'check-row' + (ex.done ? ' done' : '') }, cb,
         h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null));
       cb.onclick = async () => {
         ex.done = !ex.done;
         row.classList.toggle('done', ex.done); cb.classList.toggle('on', ex.done);
-        titleEl.textContent = dayLabel(d, n) + '  (' + doneN() + '/' + exs.length + ')';
+        dayLine.textContent = dayLabel(d, n) + '  (' + doneN() + '/' + exs.length + ')';
         try { await DB.saveItem(it); } catch (e) {}
       };
       card.appendChild(row);
     });
-    const btns = h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '10px' } },
+    if (isToday) card.appendChild(h('div', { style: { marginTop: '10px' } },
       h('button', { class: 'btn small', type: 'button', onclick: async () => {
         d.completions = Array.isArray(d.completions) ? d.completions : [];
-        const today = localDateStr(new Date());
-        if (!d.completions.includes(today)) d.completions.push(today);
+        if (!d.completions.includes(occ.ds)) d.completions.push(occ.ds);
         exs.forEach(e => e.done = false); // reset for next time
         try { await DB.saveItem(it); } catch (e) {}
         celebrateWorkout(dayLabel(d, n)); // pop-up + it drops off Upcoming
         refresh();
-      } }, '✓ Complete training'));
-    card.appendChild(btns);
+      } }, '✓ Complete training')));
     return card;
   }
 
@@ -3150,19 +3165,25 @@ async function renderWorkoutScreen(listEl, items, sub) {
     if (tab === 'progress') { body.appendChild(progressList(list, Object.fromEntries(list.map((it, i) => [it.id, i + 1])))); return; }
     if (!list.length) { body.appendChild(emptyState('workout', 'No workout days yet. Tap + to add one.')); return; }
     if (tab === 'setup') { list.forEach((it, i) => body.appendChild(scheduleCard(it, i + 1))); return; }
-    // Upcoming = only today's training that hasn't been completed yet.
-    // Complete it → it drops off (with a pop-up). Skip it → it rolls off tomorrow on its own.
-    const today = localDateStr(new Date());
-    const todayW = String(new Date().getDay());
+    // Upcoming = the next full 7 days. Each scheduled day shows on its date until it's completed.
+    // Only today's is interactive (tick + Complete → pop-up); future days are a read-only preview.
+    // Skip today's and it simply rolls off tomorrow as the window slides forward.
     const dayNumOf = Object.fromEntries(list.map((it, i) => [it.id, i + 1]));
-    const scheduledToday = list.filter(it => String(it.data.weekday) === todayW);
-    const due = scheduledToday.filter(it => !(it.data.completions || []).includes(today));
-    if (due.length) { due.forEach(it => body.appendChild(upcomingCard(it, dayNumOf[it.id]))); return; }
-    body.appendChild(h('div', { class: 'empty' },
-      h('div', { class: 'big' }, scheduledToday.length ? '✅' : '😌'),
-      h('div', null, scheduledToday.length
-        ? 'All done for today — great work. See you next session.'
-        : 'No training scheduled for today. Enjoy your rest day.')));
+    const base = new Date(); base.setHours(0, 0, 0, 0);
+    const occs = [];
+    for (let off = 0; off < 7; off++) {
+      const dt = new Date(base); dt.setDate(base.getDate() + off);
+      const w = String(dt.getDay());
+      const ds = localDateStr(dt);
+      list.filter(it => String(it.data.weekday) === w)
+        .forEach(it => { if (!(it.data.completions || []).includes(ds)) occs.push({ it, date: dt, ds, off }); });
+    }
+    if (!occs.length) {
+      body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '✅'),
+        h('div', null, 'You\'re all caught up for the next 7 days. Nice work.')));
+      return;
+    }
+    occs.forEach(o => body.appendChild(upcomingCard(o.it, dayNumOf[o.it.id], o)));
   }
   draw();
 }
