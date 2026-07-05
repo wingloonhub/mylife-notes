@@ -853,7 +853,6 @@ function buildEditor(cat, data, amOwner) {
     case 'workout': {
       if (data.weekday == null) data.weekday = '1';
       a(selectField('Day of the week', data, 'weekday', [1, 2, 3, 4, 5, 6, 0].map(i => ({ value: String(i), label: DOW[i] }))));
-      a(field('Video link (optional)', data, 'video', { type: 'url', placeholder: 'e.g. YouTube follow-along link', hint: 'Shows as ▶ Watch on the day in Upcoming, so you can follow along.' }));
       a(h('div', { class: 'section-title' }, 'Exercises'));
       a(workoutExercisesEditor(data));
       break;
@@ -1273,9 +1272,12 @@ function workoutExercisesEditor(data) {
               h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 12', style: { flex: '1', minWidth: '0' }, value: ex.reps != null ? ex.reps : '', oninput: e => ex.reps = e.target.value }),
               h('select', { style: { width: '80px', flex: 'none' }, onchange: e => ex.unit = e.target.value },
                 h('option', { value: 'reps', selected: ex.unit !== 'secs' ? 'selected' : null }, 'reps'),
-                h('option', { value: 'secs', selected: ex.unit === 'secs' ? 'selected' : null }, 'secs')))))));
+                h('option', { value: 'secs', selected: ex.unit === 'secs' ? 'selected' : null }, 'secs'))))),
+        h('div', { class: 'field', style: { marginTop: '8px' } },
+          h('label', null, 'Video link (optional)'),
+          h('input', { type: 'url', placeholder: 'e.g. YouTube demo of this exercise', value: ex.video || '', oninput: e => ex.video = e.target.value }))));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', sets: '', reps: '', unit: 'reps', done: false }); draw(); } }, '+ Add exercise'));
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', sets: '', reps: '', unit: 'reps', video: '', done: false }); draw(); } }, '+ Add exercise'));
   }
   draw();
   return wrap;
@@ -3100,21 +3102,21 @@ async function renderWorkoutScreen(listEl, items, sub) {
     const dayLine = h('div', { style: { fontWeight: '700', marginBottom: '2px' } },
       dayLabel(d, n) + (isToday && exs.length ? '  (' + doneN() + '/' + exs.length + ')' : ''));
     card.appendChild(dayLine);
-    if (d.video && String(d.video).trim()) {
-      card.appendChild(h('a', { href: d.video, target: '_blank', rel: 'noopener',
-        style: { display: 'inline-block', margin: '4px 0 8px', color: 'var(--accent)', fontWeight: '700', fontSize: '14px', textDecoration: 'none' } }, '▶ Watch video'));
-    }
     if (!exs.length) { card.appendChild(h('div', { class: 'hint' }, 'No exercises yet.')); return card; }
+    const videoLink = ex => (ex.video && String(ex.video).trim())
+      ? h('a', { href: ex.video, target: '_blank', rel: 'noopener', onclick: e => e.stopPropagation(),
+          style: { display: 'inline-block', marginTop: '3px', color: 'var(--accent)', fontWeight: '700', fontSize: '13px', textDecoration: 'none' } }, '▶ Watch video')
+      : null;
     exs.forEach(ex => {
       const detail = [ex.sets && (ex.sets + ' sets'), ex.reps && (ex.reps + ' ' + (ex.unit === 'secs' ? 'secs' : 'reps'))].filter(Boolean).join(' × ');
       if (!isToday) { // future day → read-only preview
         card.appendChild(h('div', { class: 'check-row' }, h('div', { class: 'cb', style: { opacity: '.4' } }),
-          h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null)));
+          h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null, videoLink(ex))));
         return;
       }
       const cb = h('div', { class: 'cb' + (ex.done ? ' on' : '') });
       const row = h('div', { class: 'check-row' + (ex.done ? ' done' : '') }, cb,
-        h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null));
+        h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null, videoLink(ex)));
       cb.onclick = async () => {
         ex.done = !ex.done;
         row.classList.toggle('done', ex.done); cb.classList.toggle('on', ex.done);
