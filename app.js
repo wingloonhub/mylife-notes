@@ -532,6 +532,32 @@ function shareNoteToWhatsApp(data) {
   if (!text) { toast('Nothing to share yet.'); return; }
   window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank');
 }
+/* format a recipe as WhatsApp text (bold headings, bullets, numbered steps) close to how it was entered */
+function shareRecipeToWhatsApp(data) {
+  const lines = ['🍳 *' + ((data.title || 'Recipe').trim()) + '*'];
+  const ings = (data.ingredients || []).map(x => typeof x === 'string' ? x : ((x && x.name) || '')).filter(s => s && s.trim());
+  if (ings.length) { lines.push('', '*Ingredients*'); ings.forEach(i => lines.push('• ' + i.trim())); }
+  const steps = data.steps || [];
+  if (steps.length) {
+    lines.push('', '*Steps*');
+    steps.forEach((st, i) => {
+      const header = (st.header || '').trim();
+      lines.push((i + 1) + '.' + (header ? ' *' + header + '*' : ''));
+      (Array.isArray(st.points) ? st.points : (st.text ? [st.text] : [])).filter(p => p && p.trim())
+        .forEach(p => lines.push('   – ' + p.trim()));
+    });
+  }
+  const buys = (data.buy || []).filter(b => b && (b.item || b.shop || b.contact || b.phone));
+  if (buys.length) {
+    lines.push('', '*Where to buy*');
+    buys.forEach(b => { const info = [b.shop, b.contact, b.phone].filter(Boolean).join(' · '); lines.push('• ' + [b.item, info].filter(Boolean).join(': ')); });
+  }
+  if (data.notes && data.notes.trim()) lines.push('', '*Notes*', data.notes.trim());
+  if (data.videoUrl) lines.push('', '🎥 Video: ' + data.videoUrl);
+  if (data.refUrl) lines.push('🔗 Reference: ' + data.refUrl);
+  const text = lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  window.open('https://wa.me/?text=' + encodeURIComponent(text), '_blank');
+}
 
 /* ---------------- per-category EDITORS ----------------
    each returns a DOM fragment; inputs mutate `data` directly */
@@ -1088,6 +1114,10 @@ function stepsEditor(data) {
         h('div', { class: 'sub-head' },
           h('span', { class: 'num' }, 'Step ' + (i + 1)),
           h('span', { class: 'grow' }),
+          h('button', { class: 'iconbtn small', type: 'button', title: 'Move up', style: { opacity: i === 0 ? '.3' : '1' },
+            onclick: () => { if (i === 0) return; const t = data.steps[i]; data.steps[i] = data.steps[i - 1]; data.steps[i - 1] = t; draw(); } }, '↑'),
+          h('button', { class: 'iconbtn small', type: 'button', title: 'Move down', style: { opacity: i === data.steps.length - 1 ? '.3' : '1' },
+            onclick: () => { if (i === data.steps.length - 1) return; const t = data.steps[i]; data.steps[i] = data.steps[i + 1]; data.steps[i + 1] = t; draw(); } }, '↓'),
           h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this step?')) return; data.steps.splice(i, 1); draw(); } }, '✕')),
         h('input', { class: 'step-header', placeholder: 'Step title (e.g. Make the broth)', value: st.header || '', oninput: e => st.header = e.target.value }),
         h('div', { style: { marginTop: '8px' } }, ptWrap),
@@ -1538,9 +1568,11 @@ async function renderDetail(cat, item) {
       if (data.notes) a(h('div', { class: 'detail-card' },
         h('div', { class: 'section-title' }, 'Notes'),
         h('div', { style: { whiteSpace: 'pre-wrap', lineHeight: '1.5' } }, data.notes)));
-      a(h('button', { class: 'btn secondary', style: { marginTop: '4px' }, onclick: async () => {
-        await duplicateItem('recipes', item); toast('Recipe duplicated'); navigate('#/cat/recipes');
-      } }, '⧉ Duplicate this recipe'));
+      a(h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '4px' } },
+        h('button', { class: 'btn secondary', onclick: () => shareRecipeToWhatsApp(data) }, '📲 Share to WhatsApp'),
+        h('button', { class: 'btn secondary', onclick: async () => {
+          await duplicateItem('recipes', item); toast('Recipe duplicated'); navigate('#/cat/recipes');
+        } }, '⧉ Duplicate this recipe')));
       break;
     }
     case 'records': {
