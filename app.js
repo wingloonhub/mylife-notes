@@ -34,6 +34,34 @@ function toast(msg) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, 2200);
 }
 
+// Celebratory pop-up shown when a workout day is completed.
+function celebrateWorkout(dayName) {
+  const lines = [
+    "You showed up and put in the work. That's how strength is built.",
+    "Another one in the bank. Your future self is grateful.",
+    "Consistency beats motivation — and you just proved it.",
+    "Stronger than yesterday. Keep the streak alive.",
+    "That's discipline in action. Rest up, you earned it.",
+    "No excuses, just reps. Respect.",
+    "Small days stack into big change. That's another one down.",
+    "The work nobody sees is the work that pays off. Well done."
+  ];
+  const msg = lines[Math.floor(Math.random() * lines.length)];
+  const overlay = h('div', { style: { position: 'fixed', inset: '0', background: 'rgba(0,0,0,.6)', backdropFilter: 'blur(2px)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: '10000', padding: '24px' },
+    onclick: (e) => { if (e.target === overlay) overlay.remove(); } });
+  const card = h('div', { style: { background: 'var(--card)', border: '1px solid var(--line)', color: 'var(--text)',
+    borderRadius: '20px', padding: '30px 24px', maxWidth: '340px', width: '100%', textAlign: 'center',
+    boxShadow: '0 24px 70px rgba(0,0,0,.5)' } },
+    h('div', { style: { fontSize: '52px', lineHeight: '1' } }, '🎉'),
+    h('div', { style: { fontSize: '19px', fontWeight: '800', margin: '12px 0 2px' } }, 'Training complete!'),
+    dayName ? h('div', { style: { color: 'var(--muted)', fontSize: '13px' } }, dayName) : null,
+    h('div', { style: { margin: '16px 0 20px', lineHeight: '1.55', fontSize: '15px' } }, msg),
+    h('button', { class: 'btn', type: 'button', style: { width: '100%' }, onclick: () => overlay.remove() }, "Let's go 💪"));
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+}
+
 /* ---------------- image compression ---------------- */
 function compressImage(file, maxDim = 1000, quality = 0.5) {
   return new Promise((resolve, reject) => {
@@ -1238,10 +1266,15 @@ function workoutExercisesEditor(data) {
           h('input', { class: 'grow', placeholder: 'Exercise (e.g. Push-ups)', value: ex.name || '', oninput: e => ex.name = e.target.value }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { data.exercises.splice(i, 1); draw(); } }, '✕')),
         h('div', { class: 'row2' },
-          h('div', { class: 'field' }, h('label', null, 'Reps'), h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 12', value: ex.reps != null ? ex.reps : '', oninput: e => ex.reps = e.target.value })),
-          h('div', { class: 'field' }, h('label', null, 'Sets'), h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 3', value: ex.sets != null ? ex.sets : '', oninput: e => ex.sets = e.target.value })))));
+          h('div', { class: 'field' }, h('label', null, 'Sets'), h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 3', value: ex.sets != null ? ex.sets : '', oninput: e => ex.sets = e.target.value })),
+          h('div', { class: 'field' }, h('label', null, 'Reps / time each set'),
+            h('div', { style: { display: 'flex', gap: '6px' } },
+              h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 12', style: { flex: '1', minWidth: '0' }, value: ex.reps != null ? ex.reps : '', oninput: e => ex.reps = e.target.value }),
+              h('select', { style: { width: '80px', flex: 'none' }, onchange: e => ex.unit = e.target.value },
+                h('option', { value: 'reps', selected: ex.unit !== 'secs' ? 'selected' : null }, 'reps'),
+                h('option', { value: 'secs', selected: ex.unit === 'secs' ? 'selected' : null }, 'secs')))))));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', reps: '', sets: '', done: false }); draw(); } }, '+ Add exercise'));
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', sets: '', reps: '', unit: 'reps', done: false }); draw(); } }, '+ Add exercise'));
   }
   draw();
   return wrap;
@@ -3033,7 +3066,7 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
 /* Workout Schedule — cards = a workout day (weekday + exercises). Two tabs:
    Schedule (set up the week) and Upcoming (tick off each exercise as done). */
 async function renderWorkoutScreen(listEl, items, sub) {
-  let tab = sub === 'schedule' ? 'schedule' : 'upcoming';
+  let tab = (sub === 'setup' || sub === 'progress') ? sub : 'upcoming';
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
   listEl.innerHTML = '';
@@ -3062,7 +3095,7 @@ async function renderWorkoutScreen(listEl, items, sub) {
     if (!exs.length) { card.appendChild(h('div', { class: 'hint' }, 'No exercises yet.')); return card; }
     exs.forEach(ex => {
       const cb = h('div', { class: 'cb' + (ex.done ? ' on' : '') });
-      const detail = [ex.sets && (ex.sets + ' sets'), ex.reps && (ex.reps + ' reps')].filter(Boolean).join(' × ');
+      const detail = [ex.sets && (ex.sets + ' sets'), ex.reps && (ex.reps + ' ' + (ex.unit === 'secs' ? 'secs' : 'reps'))].filter(Boolean).join(' × ');
       const row = h('div', { class: 'check-row' + (ex.done ? ' done' : '') }, cb,
         h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null));
       cb.onclick = async () => {
@@ -3073,24 +3106,63 @@ async function renderWorkoutScreen(listEl, items, sub) {
       };
       card.appendChild(row);
     });
-    if (doneN()) card.appendChild(h('button', { class: 'btn small secondary', type: 'button', style: { marginTop: '8px' },
-      onclick: async () => { exs.forEach(e => e.done = false); try { await DB.saveItem(it); } catch (e) {} refresh(); } }, '↺ Reset day'));
+    const btns = h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '10px' } },
+      h('button', { class: 'btn small', type: 'button', onclick: async () => {
+        d.completions = Array.isArray(d.completions) ? d.completions : [];
+        const today = localDateStr(new Date());
+        if (!d.completions.includes(today)) d.completions.push(today);
+        exs.forEach(e => e.done = false); // reset for next time
+        try { await DB.saveItem(it); } catch (e) {}
+        celebrateWorkout(dayLabel(d, n)); // pop-up + it drops off Upcoming
+        refresh();
+      } }, '✓ Complete training'));
+    card.appendChild(btns);
     return card;
+  }
+
+  function progressList(list, dayNumOf) {
+    const log = [];
+    list.forEach(it => (it.data.completions || []).forEach(ds => log.push({ ds, day: dayLabel(it.data, dayNumOf[it.id]) })));
+    log.sort((a, b) => b.ds.localeCompare(a.ds));
+    if (!log.length) return emptyState('workout', 'No completed workouts yet. Finish a day in the Upcoming tab and it shows up here.');
+    const wrap = h('div', null);
+    // per-day totals
+    const counts = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Sessions per day'));
+    list.forEach((it, i) => { const c = (it.data.completions || []).length; counts.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, dayLabel(it.data, i + 1)), h('span', { class: 'v' }, c + (c === 1 ? ' time' : ' times')))); });
+    wrap.appendChild(counts);
+    // chronological log
+    const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, log.length + ' completed session' + (log.length === 1 ? '' : 's')));
+    log.forEach(e => card.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, fmtDate(e.ds)), h('span', { class: 'v' }, '✅ ' + e.day))));
+    wrap.appendChild(card);
+    return wrap;
   }
 
   function draw() {
     tabsEl.innerHTML = '';
-    [['upcoming', 'Upcoming'], ['schedule', 'Schedule']].forEach(([k, label]) =>
+    [['upcoming', 'Upcoming'], ['setup', 'Setup'], ['progress', 'Progress']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => {
         tab = k;
-        try { history.replaceState(null, '', k === 'schedule' ? '#/cat/workout/schedule' : '#/cat/workout'); } catch (e) {}
+        try { history.replaceState(null, '', k === 'upcoming' ? '#/cat/workout' : '#/cat/workout/' + k); } catch (e) {}
         draw();
       } }, label)));
     body.innerHTML = '';
     const list = items.slice().sort((a, b) => wkOrder(a.data.weekday) - wkOrder(b.data.weekday));
+    if (tab === 'progress') { body.appendChild(progressList(list, Object.fromEntries(list.map((it, i) => [it.id, i + 1])))); return; }
     if (!list.length) { body.appendChild(emptyState('workout', 'No workout days yet. Tap + to add one.')); return; }
-    if (tab === 'schedule') list.forEach((it, i) => body.appendChild(scheduleCard(it, i + 1)));
-    else list.forEach((it, i) => body.appendChild(upcomingCard(it, i + 1)));
+    if (tab === 'setup') { list.forEach((it, i) => body.appendChild(scheduleCard(it, i + 1))); return; }
+    // Upcoming = only today's training that hasn't been completed yet.
+    // Complete it → it drops off (with a pop-up). Skip it → it rolls off tomorrow on its own.
+    const today = localDateStr(new Date());
+    const todayW = String(new Date().getDay());
+    const dayNumOf = Object.fromEntries(list.map((it, i) => [it.id, i + 1]));
+    const scheduledToday = list.filter(it => String(it.data.weekday) === todayW);
+    const due = scheduledToday.filter(it => !(it.data.completions || []).includes(today));
+    if (due.length) { due.forEach(it => body.appendChild(upcomingCard(it, dayNumOf[it.id]))); return; }
+    body.appendChild(h('div', { class: 'empty' },
+      h('div', { class: 'big' }, scheduledToday.length ? '✅' : '😌'),
+      h('div', null, scheduledToday.length
+        ? 'All done for today — great work. See you next session.'
+        : 'No training scheduled for today. Enjoy your rest day.')));
   }
   draw();
 }
