@@ -3115,14 +3115,13 @@ async function renderWorkoutScreen(listEl, items, sub) {
         return;
       }
       const cb = h('div', { class: 'cb' + (ex.done ? ' on' : '') });
-      const row = h('div', { class: 'check-row' + (ex.done ? ' done' : '') }, cb,
-        h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null, videoLink(ex)));
-      cb.onclick = async () => {
+      const row = h('div', { class: 'check-row' + (ex.done ? ' done' : ''), style: { cursor: 'pointer' }, onclick: async () => {
         ex.done = !ex.done;
         row.classList.toggle('done', ex.done); cb.classList.toggle('on', ex.done);
         dayLine.textContent = dayLabel(d, n) + '  (' + doneN() + '/' + exs.length + ')';
         try { await DB.saveItem(it); } catch (e) {}
-      };
+      } }, cb,
+        h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null, videoLink(ex)));
       card.appendChild(row);
     });
     if (isToday) card.appendChild(h('div', { style: { marginTop: '10px' } },
