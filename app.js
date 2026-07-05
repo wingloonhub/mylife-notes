@@ -1507,6 +1507,13 @@ async function renderDetail(cat, item) {
     for (const id of (ids || [])) { const s = await DB.getImage(id); if (s) out.push(h('img', { class: 'detail-img', src: s, onclick: () => openLightbox(s) })); }
     return out;
   }
+  /* small thumbnail strip — tap any to enlarge (used where big inline images aren't wanted, e.g. recipes) */
+  async function thumbs(ids) {
+    const box = h('div', { class: 'imgbox', style: { marginTop: '6px' } });
+    let any = false;
+    for (const id of (ids || [])) { const s = await DB.getImage(id); if (s) { any = true; box.appendChild(h('img', { src: s, onclick: () => openLightbox(s) })); } }
+    return any ? box : null;
+  }
 
   switch (cat) {
     case 'recipes': {
@@ -1514,7 +1521,7 @@ async function renderDetail(cat, item) {
         onclick: async () => { data.fav = !data.fav; await DB.saveItem(item); navigate('#/view/recipes/' + item.id); } }, data.fav ? '★' : '☆');
       const rcard = h('div', { class: 'detail-card' },
         h('div', { class: 'fav-head' }, favBtn, h('h3', { style: { margin: 0 } }, data.title || 'Recipe')));
-      for (const im of await imgs(data.images)) rcard.appendChild(im);
+      { const dish = await thumbs(data.images); if (dish) rcard.appendChild(dish); }
       const ingList = (data.ingredients || []).map(x => typeof x === 'string' ? { name: x, imgs: [] } : (x || {}))
         .filter(x => (x.name && x.name.trim()) || (x.imgs && x.imgs.length));
       if (ingList.length || (data.ingredientImgs || []).length) {
@@ -1545,7 +1552,7 @@ async function renderDetail(cat, item) {
             h('span', { class: 'step-num' }, String(si + 1)),
             h('span', { class: 'step-t' }, st.header || ('Step ' + (si + 1)))));
           if (pts.length) block.appendChild(h('ul', { class: 'bullets' }, pts.map(p => h('li', null, p))));
-          for (const im of await imgs(st.imgs)) block.appendChild(im);
+          { const sim = await thumbs(st.imgs); if (sim) block.appendChild(sim); }
           card.appendChild(block);
         }
         a(card);
