@@ -352,6 +352,7 @@ const CATS = [
   { key: 'appointments', name: 'Appointments', singular: 'Appointment', emoji: '🗓️' },
   { key: 'reminder', name: 'Reminder', singular: 'Reminder', emoji: '⏰' },
   { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒' },
+  { key: 'workout', name: 'Workout Schedule', singular: 'Workout Day', emoji: '💪' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
   { key: 'tax', name: 'Tax Receipts', emoji: '💵' },
@@ -821,6 +822,13 @@ function buildEditor(cat, data, amOwner) {
       a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Sent to your Telegram. When it\'s repeating, tap “Turn off” on the card to stop it.'));
       break;
     }
+    case 'workout': {
+      if (data.weekday == null) data.weekday = '1';
+      a(selectField('Day of the week', data, 'weekday', [1, 2, 3, 4, 5, 6, 0].map(i => ({ value: String(i), label: DOW[i] }))));
+      a(h('div', { class: 'section-title' }, 'Exercises'));
+      a(workoutExercisesEditor(data));
+      break;
+    }
     case 'events':
     case 'appointments': {
       a(field('Title', data, 'title', { placeholder: cat === 'appointments' ? 'e.g. Dentist — scaling' : 'e.g. School concert' }));
@@ -1213,6 +1221,27 @@ function checklistEditor(data, key, placeholder, withQty) {
           h('button', { class: 'del-x', type: 'button', onclick: () => { if (!confirmDel('Remove this item?')) return; data[key].splice(i, 1); draw(); } }, '✕'))));
     });
     wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data[key].push({ name: '', checked: false }); draw(); } }, '+ Add item'));
+  }
+  draw();
+  return wrap;
+}
+
+/* workout exercises: name + reps + sets each (ticked as done in the Upcoming tab) */
+function workoutExercisesEditor(data) {
+  if (!Array.isArray(data.exercises)) data.exercises = [];
+  const wrap = h('div');
+  function draw() {
+    wrap.innerHTML = '';
+    data.exercises.forEach((ex, i) => {
+      wrap.appendChild(h('div', { class: 'sub-item' },
+        h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' } },
+          h('input', { class: 'grow', placeholder: 'Exercise (e.g. Push-ups)', value: ex.name || '', oninput: e => ex.name = e.target.value }),
+          h('button', { class: 'del-x', type: 'button', onclick: () => { data.exercises.splice(i, 1); draw(); } }, '✕')),
+        h('div', { class: 'row2' },
+          h('div', { class: 'field' }, h('label', null, 'Reps'), h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 12', value: ex.reps != null ? ex.reps : '', oninput: e => ex.reps = e.target.value })),
+          h('div', { class: 'field' }, h('label', null, 'Sets'), h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 3', value: ex.sets != null ? ex.sets : '', oninput: e => ex.sets = e.target.value })))));
+    });
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', reps: '', sets: '', done: false }); draw(); } }, '+ Add exercise'));
   }
   draw();
   return wrap;
@@ -2632,6 +2661,7 @@ function homeCount(cat, items) {
     case 'appointments': return plural(items.filter(it => !eventIsArchived(it)).length, 'upcoming appointment');
     case 'reminder': return plural(items.filter(it => (it.data || {}).active !== false).length, 'active reminder');
     case 'schedule': return plural(items.filter(it => !scheduleIsCompleted(it)).length, 'activity', 'activities');
+    case 'workout': return plural(items.length, 'workout day');
     case 'records': return plural(items.length, 'record');
     case 'memberships': return plural(items.length, 'membership');
     case 'tax': { const y = String(new Date().getFullYear()); return plural(items.filter(it => String(d(it).year || '') === y).length, 'receipt') + ' (' + y + ')'; }
@@ -2688,6 +2718,7 @@ async function listScreen(cat, sub) {
   listEl.innerHTML = '';
 
   if (cat === 'reminder') { renderReminderScreen(listEl, items, sub); return; }
+  if (cat === 'workout') { renderWorkoutScreen(listEl, items, sub); return; }
   if (cat === 'memberships') { renderMembershipList(listEl, items); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past', reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
@@ -2999,6 +3030,71 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
   render();
 }
 
+/* Workout Schedule — cards = a workout day (weekday + exercises). Two tabs:
+   Schedule (set up the week) and Upcoming (tick off each exercise as done). */
+async function renderWorkoutScreen(listEl, items, sub) {
+  let tab = sub === 'schedule' ? 'schedule' : 'upcoming';
+  const tabsEl = h('div', { class: 'tabs' });
+  const body = h('div', { class: 'list' });
+  listEl.innerHTML = '';
+  listEl.appendChild(tabsEl);
+  listEl.appendChild(body);
+  const refresh = async () => { try { items = await DB.listItems('workout'); } catch (e) {} draw(); };
+  const wkOrder = w => ((Number(w) + 6) % 7); // Monday-first
+  const dayLabel = (d, n) => 'Day ' + n + ' · ' + (DOW[Number(d.weekday)] || '');
+
+  function scheduleCard(it, n) {
+    const d = it.data || {};
+    const exCount = (d.exercises || []).filter(e => e.name && e.name.trim()).length;
+    return h('div', { class: 'row', onclick: () => navigate('#/edit/workout/' + it.id) },
+      h('div', { class: 'main' },
+        h('div', { class: 'title' }, dayLabel(d, n)),
+        h('div', { class: 'meta' }, exCount + (exCount === 1 ? ' exercise' : ' exercises'))),
+      h('div', { class: 'chev' }, '›'));
+  }
+
+  function upcomingCard(it, n) {
+    const d = it.data || {};
+    const exs = (d.exercises || []).filter(e => e.name && e.name.trim());
+    const doneN = () => exs.filter(e => e.done).length;
+    const titleEl = h('div', { class: 'section-title' }, dayLabel(d, n) + '  (' + doneN() + '/' + exs.length + ')');
+    const card = h('div', { class: 'detail-card' }, titleEl);
+    if (!exs.length) { card.appendChild(h('div', { class: 'hint' }, 'No exercises yet.')); return card; }
+    exs.forEach(ex => {
+      const cb = h('div', { class: 'cb' + (ex.done ? ' on' : '') });
+      const detail = [ex.sets && (ex.sets + ' sets'), ex.reps && (ex.reps + ' reps')].filter(Boolean).join(' × ');
+      const row = h('div', { class: 'check-row' + (ex.done ? ' done' : '') }, cb,
+        h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null));
+      cb.onclick = async () => {
+        ex.done = !ex.done;
+        row.classList.toggle('done', ex.done); cb.classList.toggle('on', ex.done);
+        titleEl.textContent = dayLabel(d, n) + '  (' + doneN() + '/' + exs.length + ')';
+        try { await DB.saveItem(it); } catch (e) {}
+      };
+      card.appendChild(row);
+    });
+    if (doneN()) card.appendChild(h('button', { class: 'btn small secondary', type: 'button', style: { marginTop: '8px' },
+      onclick: async () => { exs.forEach(e => e.done = false); try { await DB.saveItem(it); } catch (e) {} refresh(); } }, '↺ Reset day'));
+    return card;
+  }
+
+  function draw() {
+    tabsEl.innerHTML = '';
+    [['upcoming', 'Upcoming'], ['schedule', 'Schedule']].forEach(([k, label]) =>
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => {
+        tab = k;
+        try { history.replaceState(null, '', k === 'schedule' ? '#/cat/workout/schedule' : '#/cat/workout'); } catch (e) {}
+        draw();
+      } }, label)));
+    body.innerHTML = '';
+    const list = items.slice().sort((a, b) => wkOrder(a.data.weekday) - wkOrder(b.data.weekday));
+    if (!list.length) { body.appendChild(emptyState('workout', 'No workout days yet. Tap + to add one.')); return; }
+    if (tab === 'schedule') list.forEach((it, i) => body.appendChild(scheduleCard(it, i + 1)));
+    else list.forEach((it, i) => body.appendChild(upcomingCard(it, i + 1)));
+  }
+  draw();
+}
+
 /* Memberships — manual ranking with ↑/↓ (sorted by data.sortIndex; you choose what's on top) */
 function renderMembershipList(listEl, items) {
   const ord = it => (it.data && it.data.sortIndex != null) ? it.data.sortIndex : 1e9;
@@ -3182,7 +3278,7 @@ async function editScreen(cat, id) {
 
   const isQuick = cat === 'quick';
   const hasContent = () => {
-    if (cat === 'records') return true;
+    if (cat === 'records' || cat === 'workout') return true;
     if (isQuick) return !!(data.title || (data.bodyHtml || '').replace(/<[^>]+>/g, '').trim() || (data.strokes && data.strokes.length));
     return !!data.title;
   };
