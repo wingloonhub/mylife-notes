@@ -411,6 +411,28 @@ const catName = k => (CATS.find(c => c.key === k) || {}).name || k;
 /* singular label for editor/detail titles — uses an explicit `singular` if set, else drops a trailing "s" */
 const catSingular = k => { const c = CATS.find(c => c.key === k) || {}; return c.singular || (c.name || k).replace(/s$/, ''); };
 
+/* plain-English guide shown in Settings → Categories: what each notebook is for and how its
+   reminders (if any) work. `reminders: null` = this category never sends anything. */
+const CAT_GUIDE = {
+  quick: { what: 'Freeform notes with rich text and a sketch pad — for quick jots, lists or a doodle.', unique: 'The only category with a built-in drawing pad — you can sketch, not just type.', reminders: null },
+  todo: { what: 'Checklists where each item can carry its own due date; tick things off as you go.', unique: 'Every item can have its own due date and reminder — not one deadline for the whole list.', reminders: 'You set one time per list ("Remind me at"). On each item\'s due date, a nudge is sent to your Telegram at that time.' },
+  events: { what: 'One-off events with a date, time and location (with a map link). An event moves to the Past tab the day after it happens.', unique: 'Reminders are location-aware — they tell you how far away you are and the drive time so you leave on time.', reminders: 'Up to two Telegram reminders before it starts. If you added a location, the reminder also tells you how far away you are and the drive time. In the list, tap "I\'m here" once you arrive to stop them.' },
+  appointments: { what: 'Same as Events, worded for appointments — date, time, location and map link, with a Past tab.', unique: 'Re-book in seconds: duplicate a past appointment to make the same one again.', reminders: 'Up to two Telegram reminders before it starts, including distance and drive time when a location is set. Tap "I\'m here" in the list to stop them once you arrive.' },
+  reminder: { what: 'Standalone recurring reminders. Choose Once, Weekly, Every 2 weeks or Monthly, and how often it should repeat once it goes off.', unique: 'It nags — keeps pinging every couple of hours until you actually turn it off, so nothing slips.', reminders: 'This is the whole point of the category: it fires to Telegram on the due date/time and keeps nudging (e.g. every 2 or 4 hours) until you tap "Turn off". A card only shows under the Due tab while it\'s actually going off.' },
+  schedule: { what: 'Recurring weekly sessions (e.g. Piano every Tue 4–5pm). The app auto-creates the upcoming dates for you.', unique: 'Set the weekly pattern once and it rolls out the actual dates itself — plus a "before it ends" reminder for pick-ups.', reminders: 'Up to two Telegram reminders before each session starts, plus an optional reminder before it ends — handy for pick-ups.' },
+  workout: { what: 'Plan workout days by weekday, each with exercises (sets × reps or seconds) and an optional video link. The Upcoming tab shows the next 7 days; tick exercises and tap Complete to log the day, tracked in Progress.', unique: 'A full training tracker: attach a demo video to each exercise and keep a completion history of every day you trained.', reminders: 'No Telegram reminders — it\'s an in-app tracker you open when you train.' },
+  records: { what: 'Store bank account details and addresses so they\'re easy to copy and share when needed.', unique: 'One tap copies the full bank/address details, ready to paste or WhatsApp — no retyping.', reminders: null },
+  vault: { what: 'A password store — platform, username, password — kept behind your account password, which it asks for every time you open it.', unique: 'The only category locked behind your password on every open, with passwords masked until you reveal them.', reminders: null },
+  memberships: { what: 'Keep membership cards and numbers with a photo of the card, and reorder them by priority.', unique: 'Snap the physical card and drag your most-used ones to the top.', reminders: null },
+  tax: { what: 'File receipts by year and category with a photo, ready for tax time.', unique: 'Auto-organises receipts by tax year and category, so filing season is just a scroll.', reminders: null },
+  party: { what: 'Plan a party — guests, budget, things to buy and games — and share it live with family by email.', unique: 'Live co-planning — everyone you invite edits the same party in real time.', reminders: null },
+  trips: { what: 'Plan local or overseas trips: flights, travellers and their tickets, hotel check-in/out and a packing list. Can be shared live with your group.', unique: 'Keeps each traveller\'s ticket / boarding-pass QR in one place so it\'s ready at the airport.', reminders: 'Switched on in Settings → Trip Reminders and applied to every trip — Telegram alerts timed off departure, the return flight, and hotel check-in/out.' },
+  shopping: { what: 'A shared grocery list for the household — whoever adds an item, everyone sees it. You can also save regular items with prices by shop.', unique: 'One list the whole household updates live, plus price-per-shop so you know where it\'s cheaper.', reminders: 'No timed reminders. It\'s a live shared list; set who it\'s shared with in Settings.' },
+  recipes: { what: 'Save recipes with ingredients, step-by-step method and photos; share any recipe to WhatsApp neatly formatted.', unique: 'Shares to WhatsApp as a clean, formatted recipe — not a wall of plain text.', reminders: null },
+  warranty: { what: 'Track what you bought, where, and when the warranty expires, with the receipt photo. Cards flag Active / Expiring soon / Expired.', unique: 'Works out the warranty status for you and flags anything expiring soon.', reminders: 'No Telegram push — it shows the expiry status visually in the app.' },
+  worldcup: { what: 'Live scores, group tables and the knockout bracket for the 2026 World Cup. Read-only.', unique: 'The only category that fills itself in — live tournament data pulled in automatically, nothing to enter.', reminders: 'Turn on "World Cup score alerts" in Settings for live goal and full-time updates pushed to Telegram.' }
+};
+
 /* ---------------- generic form widgets ---------------- */
 function field(label, obj, key, opts = {}) {
   const input = opts.type === 'textarea'
@@ -2754,8 +2776,11 @@ async function homeScreen() {
     h('div', { class: 'hello' }, h('h2', null, 'Hello 👋'), h('p', null, 'Pick a notebook to open.')),
     grid);
   mount(screen(bar, body));
+  // categories the user has hidden in Settings → Categories
+  let hidden = new Set();
+  try { const s = await DB.getSettings(); hidden = new Set(Array.isArray(s.hiddenCats) ? s.hiddenCats : []); } catch (e) {}
   // counts
-  for (const c of CATS.filter(c => !c.hidden)) {
+  for (const c of CATS.filter(c => !c.hidden && !hidden.has(c.key))) {
     const card = h('div', { class: 'cat-card', onclick: () => navigate('#/cat/' + c.key) },
       h('div', { class: 'emoji' }, c.emoji),
       h('div', null, h('div', { class: 'name' }, c.name), h('div', { class: 'count' }, '…')));
@@ -3843,20 +3868,51 @@ async function settingsScreen() {
     h('div', { class: 'section-title' }, 'Friends'),
     friendsEditor());
 
+  const hiddenObj = { set: new Set(Array.isArray(s.hiddenCats) ? s.hiddenCats : []) };
+  const categoriesTab = () => {
+    const wrap = h('div', null,
+      h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'Show or hide categories on your home menu, and see what each one does. Hiding a category only removes it from the menu — anything you saved in it stays and returns when you show it again.'));
+    CATS.filter(c => !c.hidden).forEach(c => {
+      const g = CAT_GUIDE[c.key] || {};
+      const toggle = h('button', { class: 'btn small', type: 'button', style: { flex: 'none' } });
+      const card = h('div', { class: 'detail-card' },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
+          h('div', { style: { fontSize: '26px' } }, c.emoji),
+          h('div', { style: { flex: '1', fontWeight: '700' } }, c.name),
+          toggle),
+        g.what ? h('div', { style: { color: 'var(--muted)', fontSize: '13px', lineHeight: '1.55', marginTop: '8px' } }, g.what) : null,
+        g.unique ? h('div', { style: { fontSize: '13px', lineHeight: '1.55', marginTop: '6px' } },
+          h('span', { style: { fontWeight: '700' } }, '✨ What makes it special: '), g.unique) : null,
+        h('div', { style: { fontSize: '13px', lineHeight: '1.55', marginTop: '6px' } },
+          h('span', { style: { fontWeight: '700' } }, '🔔 Reminders: '),
+          g.reminders || 'None — this category never sends alerts.'));
+      const paint = () => {
+        const shown = !hiddenObj.set.has(c.key);
+        toggle.textContent = shown ? '✓ Shown' : 'Hidden';
+        toggle.className = 'btn small ' + (shown ? '' : 'secondary');
+        card.style.opacity = shown ? '' : '.55';
+      };
+      toggle.onclick = () => { hiddenObj.set.has(c.key) ? hiddenObj.set.delete(c.key) : hiddenObj.set.add(c.key); paint(); };
+      paint();
+      wrap.appendChild(card);
+    });
+    return wrap;
+  };
+
   let tab = 'general';
   const tabsEl = h('div', { class: 'tabs' });
   const content = h('div');
   const drawTabs = () => {
     tabsEl.innerHTML = '';
-    [['general', 'General'], ['friends', 'Friends'], ['trips', 'Trip Reminders']].forEach(([k, l]) =>
+    [['general', 'General'], ['categories', 'Categories'], ['friends', 'Friends'], ['trips', 'Trip Reminders']].forEach(([k, l]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, l)));
   };
-  const render = () => { drawTabs(); content.innerHTML = ''; content.appendChild(tab === 'general' ? generalTab() : tab === 'friends' ? friendsTab() : tripsTab()); };
+  const render = () => { drawTabs(); content.innerHTML = ''; content.appendChild(tab === 'general' ? generalTab() : tab === 'categories' ? categoriesTab() : tab === 'friends' ? friendsTab() : tripsTab()); };
   render();
 
   const saveBtn = h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
     const friends = friendsObj.list.map(f => ({ name: (f.name || '').trim(), email: (f.email || '').trim().toLowerCase() })).filter(f => f.email);
-    await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), worldcupAlerts: form.wcAlerts, tripReminders: form.tripReminders, friends, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
+    await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), worldcupAlerts: form.wcAlerts, tripReminders: form.tripReminders, friends, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true, hiddenCats: [...hiddenObj.set] });
     FRIENDS = friends;
     toast('Settings saved');
     startReminders();
