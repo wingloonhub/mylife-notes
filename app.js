@@ -411,6 +411,28 @@ const catName = k => (CATS.find(c => c.key === k) || {}).name || k;
 /* singular label for editor/detail titles — uses an explicit `singular` if set, else drops a trailing "s" */
 const catSingular = k => { const c = CATS.find(c => c.key === k) || {}; return c.singular || (c.name || k).replace(/s$/, ''); };
 
+/* plain-English guide shown in Settings → Categories: what each notebook is for and how its
+   reminders (if any) work. `reminders: null` = this category never sends anything. */
+const CAT_GUIDE = {
+  quick: { what: 'Freeform notes with rich text and a sketch pad — for quick jots, lists or a doodle.', unique: 'The only category with a built-in drawing pad — you can sketch, not just type.', reminders: null },
+  todo: { what: 'Checklists where each item can carry its own due date; tick things off as you go.', unique: 'Every item can have its own due date and reminder — not one deadline for the whole list.', reminders: 'You set one time per list ("Remind me at"). On each item\'s due date, a nudge is sent to your Telegram at that time.' },
+  events: { what: 'One-off events with a date, time and location (with a map link). An event moves to the Past tab the day after it happens.', unique: 'Reminders are location-aware — they tell you how far away you are and the drive time so you leave on time.', reminders: 'Up to two Telegram reminders before it starts. If you added a location, the reminder also tells you how far away you are and the drive time. In the list, tap "I\'m here" once you arrive to stop them.' },
+  appointments: { what: 'Same as Events, worded for appointments — date, time, location and map link, with a Past tab.', unique: 'Re-book in seconds: duplicate a past appointment to make the same one again.', reminders: 'Up to two Telegram reminders before it starts, including distance and drive time when a location is set. Tap "I\'m here" in the list to stop them once you arrive.' },
+  reminder: { what: 'Standalone recurring reminders. Choose Once, Weekly, Every 2 weeks or Monthly, and how often it should repeat once it goes off.', unique: 'It nags — keeps pinging every couple of hours until you actually turn it off, so nothing slips.', reminders: 'This is the whole point of the category: it fires to Telegram on the due date/time and keeps nudging (e.g. every 2 or 4 hours) until you tap "Turn off". A card only shows under the Due tab while it\'s actually going off.' },
+  schedule: { what: 'Recurring weekly sessions (e.g. Piano every Tue 4–5pm). The app auto-creates the upcoming dates for you.', unique: 'Set the weekly pattern once and it rolls out the actual dates itself — plus a "before it ends" reminder for pick-ups.', reminders: 'Up to two Telegram reminders before each session starts, plus an optional reminder before it ends — handy for pick-ups.' },
+  workout: { what: 'Plan workout days by weekday, each with exercises (sets × reps or seconds) and an optional video link. The Upcoming tab shows the next 7 days; tick exercises and tap Complete to log the day, tracked in Progress.', unique: 'A full training tracker: attach a demo video to each exercise and keep a completion history of every day you trained.', reminders: 'No Telegram reminders — it\'s an in-app tracker you open when you train.' },
+  records: { what: 'Store bank account details and addresses so they\'re easy to copy and share when needed.', unique: 'One tap copies the full bank/address details, ready to paste or WhatsApp — no retyping.', reminders: null },
+  vault: { what: 'A password store — platform, username, password — kept behind your account password, which it asks for every time you open it.', unique: 'The only category locked behind your password on every open, with passwords masked until you reveal them.', reminders: null },
+  memberships: { what: 'Keep membership cards and numbers with a photo of the card, and reorder them by priority.', unique: 'Snap the physical card and drag your most-used ones to the top.', reminders: null },
+  tax: { what: 'File receipts by year and category with a photo, ready for tax time.', unique: 'Auto-organises receipts by tax year and category, so filing season is just a scroll.', reminders: null },
+  party: { what: 'Plan a party — guests, budget, things to buy and games — and share it live with family by email.', unique: 'Live co-planning — everyone you invite edits the same party in real time.', reminders: null },
+  trips: { what: 'Plan local or overseas trips: flights, travellers and their tickets, hotel check-in/out and a packing list. Can be shared live with your group.', unique: 'Keeps each traveller\'s ticket / boarding-pass QR in one place so it\'s ready at the airport.', reminders: 'Switched on in Settings → Trip Reminders and applied to every trip — Telegram alerts timed off departure, the return flight, and hotel check-in/out.' },
+  shopping: { what: 'A shared grocery list for the household — whoever adds an item, everyone sees it. You can also save regular items with prices by shop.', unique: 'One list the whole household updates live, plus price-per-shop so you know where it\'s cheaper.', reminders: 'No timed reminders. It\'s a live shared list; set who it\'s shared with in Settings.' },
+  recipes: { what: 'Save recipes with ingredients, step-by-step method and photos; share any recipe to WhatsApp neatly formatted.', unique: 'Shares to WhatsApp as a clean, formatted recipe — not a wall of plain text.', reminders: null },
+  warranty: { what: 'Track what you bought, where, and when the warranty expires, with the receipt photo. Cards flag Active / Expiring soon / Expired.', unique: 'Works out the warranty status for you and flags anything expiring soon.', reminders: 'No Telegram push — it shows the expiry status visually in the app.' },
+  worldcup: { what: 'Live scores, group tables and the knockout bracket for the 2026 World Cup. Read-only.', unique: 'The only category that fills itself in — live tournament data pulled in automatically, nothing to enter.', reminders: 'Turn on "World Cup score alerts" in Settings for live goal and full-time updates pushed to Telegram.' }
+};
+
 /* ---------------- generic form widgets ---------------- */
 function field(label, obj, key, opts = {}) {
   const input = opts.type === 'textarea'
@@ -1284,30 +1306,71 @@ function checklistEditor(data, key, placeholder, withQty) {
   return wrap;
 }
 
-/* workout exercises: name + reps + sets each (ticked as done in the Upcoming tab) */
+/* Migrate an exercise to the per-set shape: setList = [{ reps, unit }, …].
+   Old shape was a single { sets:'3', reps:'12', unit:'reps' } — expand it into that many rows. */
+function normalizeWorkoutExercise(ex) {
+  if (!ex || typeof ex !== 'object') return ex;
+  if (!Array.isArray(ex.setList)) {
+    const n = Math.max(1, parseInt(ex.sets, 10) || 1);
+    const reps = (ex.reps != null && ex.reps !== '') ? String(ex.reps) : '';
+    const unit = ex.unit === 'secs' ? 'secs' : 'reps';
+    ex.setList = Array.from({ length: n }, () => ({ reps, unit }));
+    delete ex.sets; delete ex.reps; delete ex.unit;
+  }
+  return ex;
+}
+/* Short human summary of an exercise's sets, e.g. "3 sets × 12 reps" or "3 sets · 12, 10, 8 reps". */
+function workoutSetSummary(ex) {
+  normalizeWorkoutExercise(ex);
+  const sets = ex.setList || [];
+  if (!sets.length) return '';
+  const nLbl = sets.length + (sets.length === 1 ? ' set' : ' sets');
+  if (!sets.some(s => s.reps != null && s.reps !== '')) return nLbl;
+  const unitOf = s => s.unit === 'secs' ? 'secs' : 'reps';
+  const sameUnit = sets.every(s => unitOf(s) === unitOf(sets[0]));
+  const sameVal = sets.every(s => String(s.reps) === String(sets[0].reps));
+  if (sameVal && sameUnit) return nLbl + ' × ' + sets[0].reps + ' ' + unitOf(sets[0]);
+  const parts = sets.map(s => ((s.reps === '' || s.reps == null) ? '–' : s.reps) + (sameUnit ? '' : ' ' + unitOf(s)));
+  return nLbl + ' · ' + parts.join(', ') + (sameUnit ? ' ' + unitOf(sets[0]) : '');
+}
+
+/* workout exercises: name + a list of sets (each set = reps/secs) + optional video */
 function workoutExercisesEditor(data) {
   if (!Array.isArray(data.exercises)) data.exercises = [];
+  data.exercises.forEach(normalizeWorkoutExercise);
   const wrap = h('div');
   function draw() {
     wrap.innerHTML = '';
     data.exercises.forEach((ex, i) => {
+      normalizeWorkoutExercise(ex);
+      const setsWrap = h('div');
+      const drawSets = () => {
+        setsWrap.innerHTML = '';
+        ex.setList.forEach((st, si) => {
+          setsWrap.appendChild(h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '6px' } },
+            h('div', { style: { width: '48px', flex: 'none', fontSize: '13px', fontWeight: '700', color: 'var(--muted)' } }, 'Set ' + (si + 1)),
+            h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 12', style: { flex: '1', minWidth: '0' }, value: st.reps != null ? st.reps : '', oninput: e => st.reps = e.target.value }),
+            h('select', { style: { width: '78px', flex: 'none' }, onchange: e => st.unit = e.target.value },
+              h('option', { value: 'reps', selected: st.unit !== 'secs' ? 'selected' : null }, 'reps'),
+              h('option', { value: 'secs', selected: st.unit === 'secs' ? 'selected' : null }, 'secs')),
+            h('button', { class: 'del-x', type: 'button', title: 'Remove set', style: { opacity: ex.setList.length <= 1 ? '.3' : '1' },
+              onclick: () => { if (ex.setList.length <= 1) return; ex.setList.splice(si, 1); drawSets(); } }, '✕')));
+        });
+        setsWrap.appendChild(h('button', { class: 'btn ghost small', type: 'button', style: { marginTop: '2px' },
+          onclick: () => { const last = ex.setList[ex.setList.length - 1] || {}; ex.setList.push({ reps: '', unit: last.unit || 'reps' }); drawSets(); } }, '+ Add set'));
+      };
+      drawSets();
       wrap.appendChild(h('div', { class: 'sub-item' },
-        h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' } },
+        h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } },
           h('input', { class: 'grow', placeholder: 'Exercise (e.g. Push-ups)', value: ex.name || '', oninput: e => ex.name = e.target.value }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { data.exercises.splice(i, 1); draw(); } }, '✕')),
-        h('div', { class: 'row2' },
-          h('div', { class: 'field' }, h('label', null, 'Sets'), h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 3', value: ex.sets != null ? ex.sets : '', oninput: e => ex.sets = e.target.value })),
-          h('div', { class: 'field' }, h('label', null, 'Reps / time each set'),
-            h('div', { style: { display: 'flex', gap: '6px' } },
-              h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 12', style: { flex: '1', minWidth: '0' }, value: ex.reps != null ? ex.reps : '', oninput: e => ex.reps = e.target.value }),
-              h('select', { style: { width: '80px', flex: 'none' }, onchange: e => ex.unit = e.target.value },
-                h('option', { value: 'reps', selected: ex.unit !== 'secs' ? 'selected' : null }, 'reps'),
-                h('option', { value: 'secs', selected: ex.unit === 'secs' ? 'selected' : null }, 'secs'))))),
+        h('label', { style: { display: 'block', fontSize: '13px', color: 'var(--muted)', fontWeight: '600', marginBottom: '6px' } }, 'Sets (reps or seconds each)'),
+        setsWrap,
         h('div', { class: 'field', style: { marginTop: '8px' } },
           h('label', null, 'Video link (optional)'),
           h('input', { type: 'url', placeholder: 'e.g. YouTube demo of this exercise', value: ex.video || '', oninput: e => ex.video = e.target.value }))));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', sets: '', reps: '', unit: 'reps', video: '', done: false }); draw(); } }, '+ Add exercise'));
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', setList: [{ reps: '', unit: 'reps' }], video: '', done: false }); draw(); } }, '+ Add exercise'));
   }
   draw();
   return wrap;
@@ -2754,8 +2817,11 @@ async function homeScreen() {
     h('div', { class: 'hello' }, h('h2', null, 'Hello 👋'), h('p', null, 'Pick a notebook to open.')),
     grid);
   mount(screen(bar, body));
+  // categories the user has hidden in Settings → Categories
+  let hidden = new Set();
+  try { const s = await DB.getSettings(); hidden = new Set(Array.isArray(s.hiddenCats) ? s.hiddenCats : []); } catch (e) {}
   // counts
-  for (const c of CATS.filter(c => !c.hidden)) {
+  for (const c of CATS.filter(c => !c.hidden && !hidden.has(c.key))) {
     const card = h('div', { class: 'cat-card', onclick: () => navigate('#/cat/' + c.key) },
       h('div', { class: 'emoji' }, c.emoji),
       h('div', null, h('div', { class: 'name' }, c.name), h('div', { class: 'count' }, '…')));
@@ -3141,7 +3207,7 @@ async function renderWorkoutScreen(listEl, items, sub) {
           style: { display: 'inline-block', marginTop: '3px', color: 'var(--accent)', fontWeight: '700', fontSize: '13px', textDecoration: 'none' } }, '▶ Watch video')
       : null;
     exs.forEach(ex => {
-      const detail = [ex.sets && (ex.sets + ' sets'), ex.reps && (ex.reps + ' ' + (ex.unit === 'secs' ? 'secs' : 'reps'))].filter(Boolean).join(' × ');
+      const detail = workoutSetSummary(ex);
       if (!isToday) { // future day → read-only preview
         card.appendChild(h('div', { class: 'check-row' }, h('div', { class: 'cb', style: { opacity: '.4' } }),
           h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null, videoLink(ex))));
@@ -3170,19 +3236,31 @@ async function renderWorkoutScreen(listEl, items, sub) {
   }
 
   function progressList(list, dayNumOf) {
+    const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const monthName = k => { const [y, m] = k.split('-'); return (MONTHS[parseInt(m, 10) - 1] || '') + ' ' + y; };
     const log = [];
     list.forEach(it => (it.data.completions || []).forEach(ds => log.push({ ds, day: dayLabel(it.data, dayNumOf[it.id]) })));
     log.sort((a, b) => b.ds.localeCompare(a.ds));
     if (!log.length) return emptyState('workout', 'No completed workouts yet. Finish a day in the Upcoming tab and it shows up here.');
+    // group completions by calendar month (newest month first)
+    const months = {};
+    log.forEach(e => { const k = e.ds.slice(0, 7); (months[k] = months[k] || []).push(e); });
     const wrap = h('div', null);
-    // per-day totals
-    const counts = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Sessions per day'));
-    list.forEach((it, i) => { const c = (it.data.completions || []).length; counts.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, dayLabel(it.data, i + 1)), h('span', { class: 'v' }, c + (c === 1 ? ' time' : ' times')))); });
-    wrap.appendChild(counts);
-    // chronological log
-    const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, log.length + ' completed session' + (log.length === 1 ? '' : 's')));
-    log.forEach(e => card.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, fmtDate(e.ds)), h('span', { class: 'v' }, '✅ ' + e.day))));
-    wrap.appendChild(card);
+    Object.keys(months).sort((a, b) => b.localeCompare(a)).forEach(k => {
+      const entries = months[k]; // already newest-first within the month
+      const card = h('div', { class: 'detail-card' });
+      card.appendChild(h('div', { class: 'section-title', style: { marginTop: '0' } },
+        monthName(k) + ' · ' + entries.length + ' workout' + (entries.length === 1 ? '' : 's')));
+      // which workouts, and how many of each, this month
+      const byDay = {};
+      entries.forEach(e => { byDay[e.day] = (byDay[e.day] || 0) + 1; });
+      const tally = Object.keys(byDay).sort().map(lbl => lbl + ' ×' + byDay[lbl]).join('   ·   ');
+      card.appendChild(h('div', { style: { color: 'var(--muted)', fontSize: '12.5px', margin: '2px 0 10px', lineHeight: '1.5' } }, tally));
+      // dated log of exactly what was done, day by day
+      entries.forEach(e => card.appendChild(h('div', { class: 'kv' },
+        h('span', { class: 'k' }, fmtDate(e.ds)), h('span', { class: 'v' }, '✅ ' + e.day))));
+      wrap.appendChild(card);
+    });
     return wrap;
   }
 
@@ -3843,20 +3921,51 @@ async function settingsScreen() {
     h('div', { class: 'section-title' }, 'Friends'),
     friendsEditor());
 
+  const hiddenObj = { set: new Set(Array.isArray(s.hiddenCats) ? s.hiddenCats : []) };
+  const categoriesTab = () => {
+    const wrap = h('div', null,
+      h('div', { class: 'hint', style: { margin: '2px 2px 14px' } }, 'Show or hide categories on your home menu, and see what each one does. Hiding a category only removes it from the menu — anything you saved in it stays and returns when you show it again.'));
+    CATS.filter(c => !c.hidden).forEach(c => {
+      const g = CAT_GUIDE[c.key] || {};
+      const toggle = h('button', { class: 'btn small', type: 'button', style: { flex: 'none' } });
+      const card = h('div', { class: 'detail-card' },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
+          h('div', { style: { fontSize: '26px' } }, c.emoji),
+          h('div', { style: { flex: '1', fontWeight: '700' } }, c.name),
+          toggle),
+        g.what ? h('div', { style: { color: 'var(--muted)', fontSize: '13px', lineHeight: '1.55', marginTop: '8px' } }, g.what) : null,
+        g.unique ? h('div', { style: { fontSize: '13px', lineHeight: '1.55', marginTop: '6px' } },
+          h('span', { style: { fontWeight: '700' } }, '✨ What makes it special: '), g.unique) : null,
+        h('div', { style: { fontSize: '13px', lineHeight: '1.55', marginTop: '6px' } },
+          h('span', { style: { fontWeight: '700' } }, '🔔 Reminders: '),
+          g.reminders || 'None — this category never sends alerts.'));
+      const paint = () => {
+        const shown = !hiddenObj.set.has(c.key);
+        toggle.textContent = shown ? '✓ Shown' : 'Hidden';
+        toggle.className = 'btn small ' + (shown ? '' : 'secondary');
+        card.style.opacity = shown ? '' : '.55';
+      };
+      toggle.onclick = () => { hiddenObj.set.has(c.key) ? hiddenObj.set.delete(c.key) : hiddenObj.set.add(c.key); paint(); };
+      paint();
+      wrap.appendChild(card);
+    });
+    return wrap;
+  };
+
   let tab = 'general';
   const tabsEl = h('div', { class: 'tabs' });
   const content = h('div');
   const drawTabs = () => {
     tabsEl.innerHTML = '';
-    [['general', 'General'], ['friends', 'Friends'], ['trips', 'Trip Reminders']].forEach(([k, l]) =>
+    [['general', 'General'], ['categories', 'Categories'], ['friends', 'Friends'], ['trips', 'Trip Reminders']].forEach(([k, l]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, l)));
   };
-  const render = () => { drawTabs(); content.innerHTML = ''; content.appendChild(tab === 'general' ? generalTab() : tab === 'friends' ? friendsTab() : tripsTab()); };
+  const render = () => { drawTabs(); content.innerHTML = ''; content.appendChild(tab === 'general' ? generalTab() : tab === 'categories' ? categoriesTab() : tab === 'friends' ? friendsTab() : tripsTab()); };
   render();
 
   const saveBtn = h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
     const friends = friendsObj.list.map(f => ({ name: (f.name || '').trim(), email: (f.email || '').trim().toLowerCase() })).filter(f => f.email);
-    await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), worldcupAlerts: form.wcAlerts, tripReminders: form.tripReminders, friends, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true });
+    await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), worldcupAlerts: form.wcAlerts, tripReminders: form.tripReminders, friends, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true, hiddenCats: [...hiddenObj.set] });
     FRIENDS = friends;
     toast('Settings saved');
     startReminders();
