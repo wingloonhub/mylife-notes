@@ -1306,35 +1306,22 @@ function checklistEditor(data, key, placeholder, withQty) {
   return wrap;
 }
 
-/* Migrate an exercise to the per-set shape: setList = [{ reps, unit }, …].
-   Old shape was a single { sets:'3', reps:'12', unit:'reps' } — expand it into that many rows. */
+/* Normalise an exercise to { name, sets, reps, unit, video }. Handles the brief per-set
+   `setList` shape by collapsing it back to a single count + reps + unit. */
 function normalizeWorkoutExercise(ex) {
   if (!ex || typeof ex !== 'object') return ex;
-  if (!Array.isArray(ex.setList)) {
-    const n = Math.max(1, parseInt(ex.sets, 10) || 1);
-    const reps = (ex.reps != null && ex.reps !== '') ? String(ex.reps) : '';
-    const unit = ex.unit === 'secs' ? 'secs' : 'reps';
-    ex.setList = Array.from({ length: n }, () => ({ reps, unit }));
-    delete ex.sets; delete ex.reps; delete ex.unit;
+  if (Array.isArray(ex.setList)) {
+    const list = ex.setList;
+    ex.sets = list.length ? String(list.length) : '';
+    ex.reps = (list[0] && list[0].reps != null) ? String(list[0].reps) : '';
+    ex.unit = (list[0] && list[0].unit === 'secs') ? 'secs' : 'reps';
+    delete ex.setList;
   }
+  if (ex.unit !== 'secs') ex.unit = 'reps';
   return ex;
 }
-/* Short human summary of an exercise's sets, e.g. "3 sets × 12 reps" or "3 sets · 12, 10, 8 reps". */
-function workoutSetSummary(ex) {
-  normalizeWorkoutExercise(ex);
-  const sets = ex.setList || [];
-  if (!sets.length) return '';
-  const nLbl = sets.length + (sets.length === 1 ? ' set' : ' sets');
-  if (!sets.some(s => s.reps != null && s.reps !== '')) return nLbl;
-  const unitOf = s => s.unit === 'secs' ? 'secs' : 'reps';
-  const sameUnit = sets.every(s => unitOf(s) === unitOf(sets[0]));
-  const sameVal = sets.every(s => String(s.reps) === String(sets[0].reps));
-  if (sameVal && sameUnit) return nLbl + ' × ' + sets[0].reps + ' ' + unitOf(sets[0]);
-  const parts = sets.map(s => ((s.reps === '' || s.reps == null) ? '–' : s.reps) + (sameUnit ? '' : ' ' + unitOf(s)));
-  return nLbl + ' · ' + parts.join(', ') + (sameUnit ? ' ' + unitOf(sets[0]) : '');
-}
 
-/* workout exercises: name + a list of sets (each set = reps/secs) + optional video */
+/* workout exercises: name + number of sets + reps/secs each + optional video */
 function workoutExercisesEditor(data) {
   if (!Array.isArray(data.exercises)) data.exercises = [];
   data.exercises.forEach(normalizeWorkoutExercise);
@@ -1343,34 +1330,24 @@ function workoutExercisesEditor(data) {
     wrap.innerHTML = '';
     data.exercises.forEach((ex, i) => {
       normalizeWorkoutExercise(ex);
-      const setsWrap = h('div');
-      const drawSets = () => {
-        setsWrap.innerHTML = '';
-        ex.setList.forEach((st, si) => {
-          setsWrap.appendChild(h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '6px' } },
-            h('div', { style: { width: '48px', flex: 'none', fontSize: '13px', fontWeight: '700', color: 'var(--muted)' } }, 'Set ' + (si + 1)),
-            h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 12', style: { flex: '1', minWidth: '0' }, value: st.reps != null ? st.reps : '', oninput: e => st.reps = e.target.value }),
-            h('select', { style: { width: '78px', flex: 'none' }, onchange: e => st.unit = e.target.value },
-              h('option', { value: 'reps', selected: st.unit !== 'secs' ? 'selected' : null }, 'reps'),
-              h('option', { value: 'secs', selected: st.unit === 'secs' ? 'selected' : null }, 'secs')),
-            h('button', { class: 'del-x', type: 'button', title: 'Remove set', style: { opacity: ex.setList.length <= 1 ? '.3' : '1' },
-              onclick: () => { if (ex.setList.length <= 1) return; ex.setList.splice(si, 1); drawSets(); } }, '✕')));
-        });
-        setsWrap.appendChild(h('button', { class: 'btn ghost small', type: 'button', style: { marginTop: '2px' },
-          onclick: () => { const last = ex.setList[ex.setList.length - 1] || {}; ex.setList.push({ reps: '', unit: last.unit || 'reps' }); drawSets(); } }, '+ Add set'));
-      };
-      drawSets();
       wrap.appendChild(h('div', { class: 'sub-item' },
-        h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } },
+        h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' } },
           h('input', { class: 'grow', placeholder: 'Exercise (e.g. Push-ups)', value: ex.name || '', oninput: e => ex.name = e.target.value }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { data.exercises.splice(i, 1); draw(); } }, '✕')),
-        h('label', { style: { display: 'block', fontSize: '13px', color: 'var(--muted)', fontWeight: '600', marginBottom: '6px' } }, 'Sets (reps or seconds each)'),
-        setsWrap,
+        h('div', { class: 'row2' },
+          h('div', { class: 'field' }, h('label', null, 'Number of sets'),
+            h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 3', value: ex.sets != null ? ex.sets : '', oninput: e => ex.sets = e.target.value })),
+          h('div', { class: 'field' }, h('label', null, 'Reps / time each set'),
+            h('div', { style: { display: 'flex', gap: '6px' } },
+              h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 12', style: { flex: '1', minWidth: '0' }, value: ex.reps != null ? ex.reps : '', oninput: e => ex.reps = e.target.value }),
+              h('select', { style: { width: '80px', flex: 'none' }, onchange: e => ex.unit = e.target.value },
+                h('option', { value: 'reps', selected: ex.unit !== 'secs' ? 'selected' : null }, 'reps'),
+                h('option', { value: 'secs', selected: ex.unit === 'secs' ? 'selected' : null }, 'secs'))))),
         h('div', { class: 'field', style: { marginTop: '8px' } },
           h('label', null, 'Video link (optional)'),
           h('input', { type: 'url', placeholder: 'e.g. YouTube demo of this exercise', value: ex.video || '', oninput: e => ex.video = e.target.value }))));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', setList: [{ reps: '', unit: 'reps' }], video: '', done: false }); draw(); } }, '+ Add exercise'));
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', sets: '', reps: '', unit: 'reps', video: '', done: false }); draw(); } }, '+ Add exercise'));
   }
   draw();
   return wrap;
@@ -3177,6 +3154,9 @@ async function renderWorkoutScreen(listEl, items, sub) {
   const refresh = async () => { try { items = await DB.listItems('workout'); } catch (e) {} draw(); };
   const wkOrder = w => ((Number(w) + 6) % 7); // Monday-first
   const dayLabel = (d, n) => 'Day ' + n + ' · ' + (DOW[Number(d.weekday)] || '');
+  // a completion can be a plain date string (old) or { d, ex:[...] } (new) — normalise the date out
+  const compDate = c => (typeof c === 'string' ? c : (c && c.d)) || '';
+  const doneOn = (it, ds) => (it.data.completions || []).some(c => compDate(c) === ds);
   const dateHeading = (dt, off) => off === 0 ? 'Today · ' + DOW[dt.getDay()]
     : off === 1 ? 'Tomorrow · ' + DOW[dt.getDay()]
     : DOW[dt.getDay()] + ' · ' + fmtDate(localDateStr(dt));
@@ -3191,74 +3171,127 @@ async function renderWorkoutScreen(listEl, items, sub) {
       h('div', { class: 'chev' }, '›'));
   }
 
-  function upcomingCard(it, n, occ) {
+  function upcomingCard(it, dayNo, occ) {
     const d = it.data || {};
     const isToday = occ.off === 0;
     const exs = (d.exercises || []).filter(e => e.name && e.name.trim());
-    const doneN = () => exs.filter(e => e.done).length;
+    exs.forEach(normalizeWorkoutExercise);
+    const setCount = ex => Math.max(1, parseInt(ex.sets, 10) || 0);
+    exs.forEach(ex => { if (!Array.isArray(ex.setsDone)) ex.setsDone = []; ex.setsDone.length = setCount(ex); });
+    const exDone = ex => { const c = setCount(ex); for (let i = 0; i < c; i++) if (!ex.setsDone[i]) return false; return true; };
+    const doneN = () => exs.filter(exDone).length;
     const card = h('div', { class: 'detail-card' + (isToday ? '' : ' muted'), style: isToday ? null : { opacity: '.82' } },
       h('div', { class: 'section-title', style: { marginTop: '0' } }, dateHeading(occ.date, occ.off)));
-    const dayLine = h('div', { style: { fontWeight: '700', marginBottom: '2px' } },
-      dayLabel(d, n) + (isToday && exs.length ? '  (' + doneN() + '/' + exs.length + ')' : ''));
+    const dayLine = h('div', { style: { fontWeight: '700', marginBottom: '8px' } },
+      dayLabel(d, dayNo) + (isToday && exs.length ? '  (' + doneN() + '/' + exs.length + ')' : ''));
     card.appendChild(dayLine);
     if (!exs.length) { card.appendChild(h('div', { class: 'hint' }, 'No exercises yet.')); return card; }
     const videoLink = ex => (ex.video && String(ex.video).trim())
       ? h('a', { href: ex.video, target: '_blank', rel: 'noopener', onclick: e => e.stopPropagation(),
-          style: { display: 'inline-block', marginTop: '3px', color: 'var(--accent)', fontWeight: '700', fontSize: '13px', textDecoration: 'none' } }, '▶ Watch video')
+          style: { display: 'inline-block', marginTop: '3px', color: 'var(--accent)', fontWeight: '700', fontSize: '12px', textDecoration: 'none' } }, '▶ Watch')
       : null;
+    const maxSets = Math.max(1, ...exs.map(setCount));
+    const border = '1px solid var(--line)';
+    const th = (txt, left) => h('th', { style: { padding: '6px 8px', borderBottom: border, color: 'var(--muted)', fontSize: '11px', fontWeight: '700', textAlign: left ? 'left' : 'center', whiteSpace: 'nowrap' } }, txt);
+    const head = h('tr', null, th('Exercise', true));
+    for (let i = 1; i <= maxSets; i++) head.appendChild(th('Set ' + i));
+    const tbody = h('tbody');
     exs.forEach(ex => {
-      const detail = workoutSetSummary(ex);
-      if (!isToday) { // future day → read-only preview
-        card.appendChild(h('div', { class: 'check-row' }, h('div', { class: 'cb', style: { opacity: '.4' } }),
-          h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null, videoLink(ex))));
-        return;
+      const c = setCount(ex);
+      const unit = ex.unit === 'secs' ? 'secs' : 'reps';
+      const val = (ex.reps != null && ex.reps !== '') ? String(ex.reps) : '–';
+      const nameTd = h('td', { style: { padding: '8px', borderBottom: border, textAlign: 'left', minWidth: '92px' } },
+        h('div', { style: { fontWeight: '600' } }, ex.name),
+        h('div', { style: { fontSize: '11px', color: 'var(--muted)' } }, unit),
+        videoLink(ex));
+      const tr = h('tr', null, nameTd);
+      for (let i = 0; i < maxSets; i++) {
+        if (i >= c) { tr.appendChild(h('td', { style: { borderBottom: border, textAlign: 'center', color: 'var(--muted)', opacity: '.4' } }, '·')); continue; }
+        const cellStyle = () => {
+          const on = isToday && ex.setsDone[i];
+          return { padding: '8px 6px', borderBottom: border, textAlign: 'center', minWidth: '46px', fontWeight: on ? '800' : '600',
+            background: on ? 'var(--green)' : 'transparent', color: on ? '#fff' : 'var(--text)', cursor: isToday ? 'pointer' : 'default', userSelect: 'none' };
+        };
+        const cell = h('td', { style: cellStyle() }, (isToday && ex.setsDone[i] ? '✓ ' : '') + val);
+        if (isToday) cell.onclick = async () => {
+          ex.setsDone[i] = !ex.setsDone[i];
+          Object.assign(cell.style, cellStyle()); cell.textContent = (ex.setsDone[i] ? '✓ ' : '') + val;
+          dayLine.textContent = dayLabel(d, dayNo) + '  (' + doneN() + '/' + exs.length + ')';
+          try { await DB.saveItem(it); } catch (e) {}
+        };
+        tr.appendChild(cell);
       }
-      const cb = h('div', { class: 'cb' + (ex.done ? ' on' : '') });
-      const row = h('div', { class: 'check-row' + (ex.done ? ' done' : ''), style: { cursor: 'pointer' }, onclick: async () => {
-        ex.done = !ex.done;
-        row.classList.toggle('done', ex.done); cb.classList.toggle('on', ex.done);
-        dayLine.textContent = dayLabel(d, n) + '  (' + doneN() + '/' + exs.length + ')';
-        try { await DB.saveItem(it); } catch (e) {}
-      } }, cb,
-        h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null, videoLink(ex)));
-      card.appendChild(row);
+      tbody.appendChild(tr);
     });
-    if (isToday) card.appendChild(h('div', { style: { marginTop: '10px' } },
-      h('button', { class: 'btn small', type: 'button', onclick: async () => {
-        d.completions = Array.isArray(d.completions) ? d.completions : [];
-        if (!d.completions.includes(occ.ds)) d.completions.push(occ.ds);
-        exs.forEach(e => e.done = false); // reset for next time
-        try { await DB.saveItem(it); } catch (e) {}
-        celebrateWorkout(dayLabel(d, n)); // pop-up + it drops off Upcoming
-        refresh();
-      } }, '✓ Complete training')));
+    card.appendChild(h('div', { style: { overflowX: 'auto', margin: '2px -4px 0' } },
+      h('table', { style: { borderCollapse: 'collapse', width: '100%', fontSize: '13px' } }, h('thead', null, head), tbody)));
+    if (isToday) {
+      card.appendChild(h('div', { style: { fontSize: '11.5px', color: 'var(--muted)', marginTop: '8px' } }, 'Tap each set as you finish it.'));
+      card.appendChild(h('div', { style: { marginTop: '8px' } },
+        h('button', { class: 'btn small', type: 'button', onclick: async () => {
+          d.completions = Array.isArray(d.completions) ? d.completions : [];
+          // snapshot what was done: exercises + set count each, so Progress can show type & sets
+          const rec = { d: occ.ds, ex: exs.map(e => ({ n: e.name, s: setCount(e), u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : '') })) };
+          if (!d.completions.some(c => compDate(c) === occ.ds)) d.completions.push(rec);
+          exs.forEach(e => { e.setsDone = []; e.done = false; }); // reset for next time
+          try { await DB.saveItem(it); } catch (e) {}
+          celebrateWorkout(dayLabel(d, dayNo)); // pop-up + it drops off Upcoming
+          refresh();
+        } }, '✓ Complete training')));
+    }
     return card;
   }
 
   function progressList(list, dayNumOf) {
     const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     const monthName = k => { const [y, m] = k.split('-'); return (MONTHS[parseInt(m, 10) - 1] || '') + ' ' + y; };
-    const log = [];
-    list.forEach(it => (it.data.completions || []).forEach(ds => log.push({ ds, day: dayLabel(it.data, dayNumOf[it.id]) })));
-    log.sort((a, b) => b.ds.localeCompare(a.ds));
-    if (!log.length) return emptyState('workout', 'No completed workouts yet. Finish a day in the Upcoming tab and it shows up here.');
-    // group completions by calendar month (newest month first)
+    const setCountOf = ex => Math.max(1, parseInt(ex.sets, 10) || 0);
+    // build a session per completion, capturing the exercises done + set counts
+    const sessions = [];
+    list.forEach(it => {
+      const dayLbl = dayLabel(it.data, dayNumOf[it.id]);
+      (it.data.completions || []).forEach(c => {
+        const date = compDate(c);
+        if (!date) return;
+        let exs;
+        if (c && Array.isArray(c.ex) && c.ex.length) {
+          exs = c.ex.map(e => ({ name: e.n, sets: Number(e.s) || 0, unit: e.u === 'secs' ? 'secs' : 'reps', reps: e.r }));
+        } else { // old date-only entry → fall back to the day's current exercises
+          exs = (it.data.exercises || []).filter(e => e.name && e.name.trim())
+            .map(normalizeWorkoutExercise).map(e => ({ name: e.name, sets: setCountOf(e), unit: e.unit, reps: e.reps }));
+        }
+        sessions.push({ date, day: dayLbl, exs, totalSets: exs.reduce((s, e) => s + (e.sets || 0), 0) });
+      });
+    });
+    if (!sessions.length) return emptyState('workout', 'No completed workouts yet. Finish a day in the Upcoming tab and it shows up here.');
+    sessions.sort((a, b) => b.date.localeCompare(a.date));
+    // group by calendar month (newest first)
     const months = {};
-    log.forEach(e => { const k = e.ds.slice(0, 7); (months[k] = months[k] || []).push(e); });
+    sessions.forEach(s => { const k = s.date.slice(0, 7); (months[k] = months[k] || []).push(s); });
     const wrap = h('div', null);
     Object.keys(months).sort((a, b) => b.localeCompare(a)).forEach(k => {
-      const entries = months[k]; // already newest-first within the month
+      const ss = months[k];
+      const totWorkouts = ss.length;
+      const totSets = ss.reduce((s, x) => s + x.totalSets, 0);
       const card = h('div', { class: 'detail-card' });
       card.appendChild(h('div', { class: 'section-title', style: { marginTop: '0' } },
-        monthName(k) + ' · ' + entries.length + ' workout' + (entries.length === 1 ? '' : 's')));
-      // which workouts, and how many of each, this month
-      const byDay = {};
-      entries.forEach(e => { byDay[e.day] = (byDay[e.day] || 0) + 1; });
-      const tally = Object.keys(byDay).sort().map(lbl => lbl + ' ×' + byDay[lbl]).join('   ·   ');
-      card.appendChild(h('div', { style: { color: 'var(--muted)', fontSize: '12.5px', margin: '2px 0 10px', lineHeight: '1.5' } }, tally));
-      // dated log of exactly what was done, day by day
-      entries.forEach(e => card.appendChild(h('div', { class: 'kv' },
-        h('span', { class: 'k' }, fmtDate(e.ds)), h('span', { class: 'v' }, '✅ ' + e.day))));
+        monthName(k) + ' · ' + totWorkouts + ' workout' + (totWorkouts === 1 ? '' : 's') + ' · ' + totSets + ' set' + (totSets === 1 ? '' : 's')));
+      // type of workout completed this month: each exercise → total sets + how many sessions
+      const byEx = {};
+      ss.forEach(s => s.exs.forEach(e => { if (!e.name) return; (byEx[e.name] = byEx[e.name] || { sets: 0, n: 0 }); byEx[e.name].sets += (e.sets || 0); byEx[e.name].n += 1; }));
+      Object.keys(byEx).sort().forEach(name => {
+        const b = byEx[name];
+        card.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, name),
+          h('span', { class: 'v' }, b.sets + ' set' + (b.sets === 1 ? '' : 's') + ' · ' + b.n + '×')));
+      });
+      // dated log: what was done each session (day + exercises with set counts)
+      card.appendChild(h('div', { style: { borderTop: '1px solid var(--line)', margin: '10px 0 2px', paddingTop: '8px' } }));
+      ss.forEach(s => {
+        const exText = s.exs.map(e => e.name + (e.sets ? ' (' + e.sets + '×' + (e.reps || '?') + (e.unit === 'secs' ? 's' : '') + ')' : '')).join(', ');
+        card.appendChild(h('div', { style: { margin: '0 0 9px' } },
+          h('div', { style: { fontWeight: '600', fontSize: '13px' } }, '✅ ' + fmtDate(s.date) + ' · ' + s.day + '  ·  ' + s.totalSets + ' sets'),
+          h('div', { style: { color: 'var(--muted)', fontSize: '12.5px', lineHeight: '1.5', marginTop: '1px' } }, exText || '—')));
+      });
       wrap.appendChild(card);
     });
     return wrap;
@@ -3288,7 +3321,7 @@ async function renderWorkoutScreen(listEl, items, sub) {
       const w = String(dt.getDay());
       const ds = localDateStr(dt);
       list.filter(it => String(it.data.weekday) === w)
-        .forEach(it => { if (!(it.data.completions || []).includes(ds)) occs.push({ it, date: dt, ds, off }); });
+        .forEach(it => { if (!doneOn(it, ds)) occs.push({ it, date: dt, ds, off }); });
     }
     if (!occs.length) {
       body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '✅'),
