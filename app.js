@@ -3180,6 +3180,16 @@ async function renderWorkoutScreen(listEl, items, sub) {
     exs.forEach(ex => { if (!Array.isArray(ex.setsDone)) ex.setsDone = []; ex.setsDone.length = setCount(ex); });
     const exDone = ex => { const c = setCount(ex); for (let i = 0; i < c; i++) if (!ex.setsDone[i]) return false; return true; };
     const doneN = () => exs.filter(exDone).length;
+    // logs the day once EVERY set of every exercise has been ticked (no separate "complete" button)
+    const completeDay = async () => {
+      d.completions = Array.isArray(d.completions) ? d.completions : [];
+      const rec = { d: occ.ds, ex: exs.map(e => ({ n: e.name, s: setCount(e), u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : '') })) };
+      if (!d.completions.some(c => compDate(c) === occ.ds)) d.completions.push(rec);
+      exs.forEach(e => { e.setsDone = []; e.done = false; }); // reset for next time
+      try { await DB.saveItem(it); } catch (e) {}
+      celebrateWorkout(dayLabel(d, dayNo)); // pop-up + it drops off Upcoming
+      refresh();
+    };
     const card = h('div', { class: 'detail-card' + (isToday ? '' : ' muted'), style: isToday ? null : { opacity: '.82' } },
       h('div', { class: 'section-title', style: { marginTop: '0' } }, dateHeading(occ.date, occ.off)));
     const dayLine = h('div', { style: { fontWeight: '700', marginBottom: '8px' } },
@@ -3217,6 +3227,7 @@ async function renderWorkoutScreen(listEl, items, sub) {
           ex.setsDone[i] = !ex.setsDone[i];
           Object.assign(cell.style, cellStyle()); cell.textContent = (ex.setsDone[i] ? '✓ ' : '') + val;
           dayLine.textContent = dayLabel(d, dayNo) + '  (' + doneN() + '/' + exs.length + ')';
+          if (exs.every(exDone)) return void completeDay(); // all sets ticked → day auto-logs
           try { await DB.saveItem(it); } catch (e) {}
         };
         tr.appendChild(cell);
@@ -3225,20 +3236,8 @@ async function renderWorkoutScreen(listEl, items, sub) {
     });
     card.appendChild(h('div', { style: { overflowX: 'auto', margin: '2px -4px 0' } },
       h('table', { style: { borderCollapse: 'collapse', width: '100%', fontSize: '13px' } }, h('thead', null, head), tbody)));
-    if (isToday) {
-      card.appendChild(h('div', { style: { fontSize: '11.5px', color: 'var(--muted)', marginTop: '8px' } }, 'Tap each set as you finish it.'));
-      card.appendChild(h('div', { style: { marginTop: '8px' } },
-        h('button', { class: 'btn small', type: 'button', onclick: async () => {
-          d.completions = Array.isArray(d.completions) ? d.completions : [];
-          // snapshot what was done: exercises + set count each, so Progress can show type & sets
-          const rec = { d: occ.ds, ex: exs.map(e => ({ n: e.name, s: setCount(e), u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : '') })) };
-          if (!d.completions.some(c => compDate(c) === occ.ds)) d.completions.push(rec);
-          exs.forEach(e => { e.setsDone = []; e.done = false; }); // reset for next time
-          try { await DB.saveItem(it); } catch (e) {}
-          celebrateWorkout(dayLabel(d, dayNo)); // pop-up + it drops off Upcoming
-          refresh();
-        } }, '✓ Complete training')));
-    }
+    if (isToday) card.appendChild(h('div', { style: { fontSize: '11.5px', color: 'var(--muted)', marginTop: '8px' } },
+      'Tap each set as you finish it. The day logs itself once every set is ticked.'));
     return card;
   }
 
@@ -3260,7 +3259,11 @@ async function renderWorkoutScreen(listEl, items, sub) {
           exs = (it.data.exercises || []).filter(e => e.name && e.name.trim())
             .map(normalizeWorkoutExercise).map(e => ({ name: e.name, sets: setCountOf(e), unit: e.unit, reps: e.reps }));
         }
-        sessions.push({ date, day: dayLbl, exs, totalSets: exs.reduce((s, e) => s + (e.sets || 0), 0) });
+        const vol = e => (e.sets || 0) * (parseInt(e.reps, 10) || 0);
+        sessions.push({ date, day: dayLbl, exs,
+          totalSets: exs.reduce((s, e) => s + (e.sets || 0), 0),
+          totalReps: exs.reduce((s, e) => s + (e.unit === 'secs' ? 0 : vol(e)), 0),
+          totalSecs: exs.reduce((s, e) => s + (e.unit === 'secs' ? vol(e) : 0), 0) });
       });
     });
     if (!sessions.length) return emptyState('workout', 'No completed workouts yet. Finish a day in the Upcoming tab and it shows up here.');
@@ -3273,23 +3276,36 @@ async function renderWorkoutScreen(listEl, items, sub) {
       const ss = months[k];
       const totWorkouts = ss.length;
       const totSets = ss.reduce((s, x) => s + x.totalSets, 0);
+      const totReps = ss.reduce((s, x) => s + x.totalReps, 0);
+      const totSecs = ss.reduce((s, x) => s + x.totalSecs, 0);
       const card = h('div', { class: 'detail-card' });
       card.appendChild(h('div', { class: 'section-title', style: { marginTop: '0' } },
-        monthName(k) + ' · ' + totWorkouts + ' workout' + (totWorkouts === 1 ? '' : 's') + ' · ' + totSets + ' set' + (totSets === 1 ? '' : 's')));
-      // type of workout completed this month: each exercise → total sets + how many sessions
+        monthName(k) + ' · ' + totWorkouts + ' workout' + (totWorkouts === 1 ? '' : 's') + ' · ' + totSets + ' set' + (totSets === 1 ? '' : 's')
+        + ' · ' + totReps + ' rep' + (totReps === 1 ? '' : 's') + (totSecs ? ' · ' + totSecs + 's' : '')));
+      // type of workout completed this month: each exercise → sets, reps (or secs) + how many sessions
       const byEx = {};
-      ss.forEach(s => s.exs.forEach(e => { if (!e.name) return; (byEx[e.name] = byEx[e.name] || { sets: 0, n: 0 }); byEx[e.name].sets += (e.sets || 0); byEx[e.name].n += 1; }));
+      ss.forEach(s => s.exs.forEach(e => {
+        if (!e.name) return;
+        (byEx[e.name] = byEx[e.name] || { sets: 0, reps: 0, secs: 0, n: 0 });
+        const v = (e.sets || 0) * (parseInt(e.reps, 10) || 0);
+        if (e.unit === 'secs') byEx[e.name].secs += v; else byEx[e.name].reps += v;
+        byEx[e.name].sets += (e.sets || 0); byEx[e.name].n += 1;
+      }));
       Object.keys(byEx).sort().forEach(name => {
         const b = byEx[name];
+        const parts = [b.sets + ' set' + (b.sets === 1 ? '' : 's')];
+        if (b.reps) parts.push(b.reps + ' reps');
+        if (b.secs) parts.push(b.secs + 's');
+        parts.push(b.n + '×');
         card.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, name),
-          h('span', { class: 'v' }, b.sets + ' set' + (b.sets === 1 ? '' : 's') + ' · ' + b.n + '×')));
+          h('span', { class: 'v' }, parts.join(' · '))));
       });
       // dated log: what was done each session (day + exercises with set counts)
       card.appendChild(h('div', { style: { borderTop: '1px solid var(--line)', margin: '10px 0 2px', paddingTop: '8px' } }));
       ss.forEach(s => {
         const exText = s.exs.map(e => e.name + (e.sets ? ' (' + e.sets + '×' + (e.reps || '?') + (e.unit === 'secs' ? 's' : '') + ')' : '')).join(', ');
         card.appendChild(h('div', { style: { margin: '0 0 9px' } },
-          h('div', { style: { fontWeight: '600', fontSize: '13px' } }, '✅ ' + fmtDate(s.date) + ' · ' + s.day + '  ·  ' + s.totalSets + ' sets'),
+          h('div', { style: { fontWeight: '600', fontSize: '13px' } }, '✅ ' + fmtDate(s.date) + ' · ' + s.day + '  ·  ' + s.totalSets + ' sets' + (s.totalReps ? ' · ' + s.totalReps + ' reps' : '') + (s.totalSecs ? ' · ' + s.totalSecs + 's' : '')),
           h('div', { style: { color: 'var(--muted)', fontSize: '12.5px', lineHeight: '1.5', marginTop: '1px' } }, exText || '—')));
       });
       wrap.appendChild(card);
