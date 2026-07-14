@@ -3178,22 +3178,23 @@ async function renderWorkoutScreen(listEl, items, sub) {
     exs.forEach(normalizeWorkoutExercise);
     const setCount = ex => Math.max(1, parseInt(ex.sets, 10) || 0);
     exs.forEach(ex => { if (!Array.isArray(ex.setsDone)) ex.setsDone = []; ex.setsDone.length = setCount(ex); });
-    const exDone = ex => { const c = setCount(ex); for (let i = 0; i < c; i++) if (!ex.setsDone[i]) return false; return true; };
-    const doneN = () => exs.filter(exDone).length;
-    // logs the day once EVERY set of every exercise has been ticked (no separate "complete" button)
-    const completeDay = async () => {
+    // ticks belong to ONE day's occurrence — if the stored ticks are from an earlier date, clear them
+    if (isToday && d.setsFor !== occ.ds) { exs.forEach(e => e.setsDone = []); d.setsFor = occ.ds; }
+    const setsTicked = ex => { const c = setCount(ex); let n = 0; for (let i = 0; i < c; i++) if (ex.setsDone[i]) n++; return n; };
+    const doneSetsN = () => exs.reduce((a, e) => a + setsTicked(e), 0);
+    const totalSetsN = exs.reduce((a, e) => a + setCount(e), 0);
+    // Set-level tracking: log each exercise with the number of sets you've actually ticked (≥1),
+    // even a partial one (e.g. 1 of 3 sets → "1 set"). Un-ticking updates it; nothing waits for a full day.
+    const syncToday = async () => {
       d.completions = Array.isArray(d.completions) ? d.completions : [];
-      const rec = { d: occ.ds, ex: exs.map(e => ({ n: e.name, s: setCount(e), u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : '') })) };
-      if (!d.completions.some(c => compDate(c) === occ.ds)) d.completions.push(rec);
-      exs.forEach(e => { e.setsDone = []; e.done = false; }); // reset for next time
+      d.completions = d.completions.filter(c => !(c && typeof c === 'object' && !Array.isArray(c.ex) && c.n && compDate(c) === occ.ds));
+      exs.forEach(e => { const t = setsTicked(e); if (t > 0) d.completions.push({ d: occ.ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : '') }); });
       try { await DB.saveItem(it); } catch (e) {}
-      celebrateWorkout(dayLabel(d, dayNo)); // pop-up + it drops off Upcoming
-      refresh();
     };
     const card = h('div', { class: 'detail-card' + (isToday ? '' : ' muted'), style: isToday ? null : { opacity: '.82' } },
       h('div', { class: 'section-title', style: { marginTop: '0' } }, dateHeading(occ.date, occ.off)));
     const dayLine = h('div', { style: { fontWeight: '700', marginBottom: '8px' } },
-      dayLabel(d, dayNo) + (isToday && exs.length ? '  (' + doneN() + '/' + exs.length + ')' : ''));
+      dayLabel(d, dayNo) + (isToday && exs.length ? '  (' + doneSetsN() + '/' + totalSetsN + ' sets)' : ''));
     card.appendChild(dayLine);
     if (!exs.length) { card.appendChild(h('div', { class: 'hint' }, 'No exercises yet.')); return card; }
     const videoLink = ex => (ex.video && String(ex.video).trim())
@@ -3224,11 +3225,12 @@ async function renderWorkoutScreen(listEl, items, sub) {
         };
         const cell = h('td', { style: cellStyle() }, (isToday && ex.setsDone[i] ? '✓ ' : '') + val);
         if (isToday) cell.onclick = async () => {
+          const before = ex.setsDone[i];
           ex.setsDone[i] = !ex.setsDone[i];
           Object.assign(cell.style, cellStyle()); cell.textContent = (ex.setsDone[i] ? '✓ ' : '') + val;
-          dayLine.textContent = dayLabel(d, dayNo) + '  (' + doneN() + '/' + exs.length + ')';
-          if (exs.every(exDone)) return void completeDay(); // all sets ticked → day auto-logs
-          try { await DB.saveItem(it); } catch (e) {}
+          dayLine.textContent = dayLabel(d, dayNo) + '  (' + doneSetsN() + '/' + totalSetsN + ' sets)';
+          if (!before && ex.setsDone[i]) toast('Set logged 💪'); // that set now counts in Progress
+          await syncToday();
         };
         tr.appendChild(cell);
       }
@@ -3237,7 +3239,7 @@ async function renderWorkoutScreen(listEl, items, sub) {
     card.appendChild(h('div', { style: { overflowX: 'auto', margin: '2px -4px 0' } },
       h('table', { style: { borderCollapse: 'collapse', width: '100%', fontSize: '13px' } }, h('thead', null, head), tbody)));
     if (isToday) card.appendChild(h('div', { style: { fontSize: '11.5px', color: 'var(--muted)', marginTop: '8px' } },
-      'Tap each set as you finish it. The day logs itself once every set is ticked.'));
+      'Tap each set as you finish it. Whatever you tick today is saved to Progress; this card clears tomorrow.'));
     return card;
   }
 
@@ -3245,28 +3247,34 @@ async function renderWorkoutScreen(listEl, items, sub) {
     const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     const monthName = k => { const [y, m] = k.split('-'); return (MONTHS[parseInt(m, 10) - 1] || '') + ' ' + y; };
     const setCountOf = ex => Math.max(1, parseInt(ex.sets, 10) || 0);
-    // build a session per completion, capturing the exercises done + set counts
-    const sessions = [];
+    // Build one session per (workout day, date), collecting the exercises logged for it. A completion
+    // record is either a plain date string (legacy), a { d, ex:[…] } day snapshot, or a single
+    // per-exercise { d, n, s, u, r } (item-level). Multiple per-exercise records on the same day merge.
+    const sessMap = {};
     list.forEach(it => {
       const dayLbl = dayLabel(it.data, dayNumOf[it.id]);
       (it.data.completions || []).forEach(c => {
         const date = compDate(c);
         if (!date) return;
-        let exs;
-        if (c && Array.isArray(c.ex) && c.ex.length) {
-          exs = c.ex.map(e => ({ name: e.n, sets: Number(e.s) || 0, unit: e.u === 'secs' ? 'secs' : 'reps', reps: e.r }));
-        } else { // old date-only entry → fall back to the day's current exercises
-          exs = (it.data.exercises || []).filter(e => e.name && e.name.trim())
-            .map(normalizeWorkoutExercise).map(e => ({ name: e.name, sets: setCountOf(e), unit: e.unit, reps: e.reps }));
+        const key = it.id + '|' + date;
+        const sess = sessMap[key] || (sessMap[key] = { date, day: dayLbl, exs: [] });
+        if (typeof c === 'string') { // legacy date-only → the day's current exercises
+          (it.data.exercises || []).filter(e => e.name && e.name.trim()).map(normalizeWorkoutExercise)
+            .forEach(e => sess.exs.push({ name: e.name, sets: setCountOf(e), unit: e.unit, reps: e.reps }));
+        } else if (Array.isArray(c.ex)) { // day snapshot
+          c.ex.forEach(e => sess.exs.push({ name: e.n, sets: Number(e.s) || 0, unit: e.u === 'secs' ? 'secs' : 'reps', reps: e.r }));
+        } else if (c.n) { // single completed exercise
+          sess.exs.push({ name: c.n, sets: Number(c.s) || 0, unit: c.u === 'secs' ? 'secs' : 'reps', reps: c.r });
         }
-        const vol = e => (e.sets || 0) * (parseInt(e.reps, 10) || 0);
-        sessions.push({ date, day: dayLbl, exs,
-          totalSets: exs.reduce((s, e) => s + (e.sets || 0), 0),
-          totalReps: exs.reduce((s, e) => s + (e.unit === 'secs' ? 0 : vol(e)), 0),
-          totalSecs: exs.reduce((s, e) => s + (e.unit === 'secs' ? vol(e) : 0), 0) });
       });
     });
-    if (!sessions.length) return emptyState('workout', 'No completed workouts yet. Finish a day in the Upcoming tab and it shows up here.');
+    const vol = e => (e.sets || 0) * (parseInt(e.reps, 10) || 0);
+    const sessions = Object.values(sessMap).filter(s => s.exs.length).map(s => Object.assign(s, {
+      totalSets: s.exs.reduce((a, e) => a + (e.sets || 0), 0),
+      totalReps: s.exs.reduce((a, e) => a + (e.unit === 'secs' ? 0 : vol(e)), 0),
+      totalSecs: s.exs.reduce((a, e) => a + (e.unit === 'secs' ? vol(e) : 0), 0)
+    }));
+    if (!sessions.length) return emptyState('workout', 'No workouts logged yet. Tick your exercises in the Upcoming tab and they show up here.');
     sessions.sort((a, b) => b.date.localeCompare(a.date));
     // group by calendar month (newest first)
     const months = {};
@@ -3326,9 +3334,9 @@ async function renderWorkoutScreen(listEl, items, sub) {
     if (tab === 'progress') { body.appendChild(progressList(list, Object.fromEntries(list.map((it, i) => [it.id, i + 1])))); return; }
     if (!list.length) { body.appendChild(emptyState('workout', 'No workout days yet. Tap + to add one.')); return; }
     if (tab === 'setup') { list.forEach((it, i) => body.appendChild(scheduleCard(it, i + 1))); return; }
-    // Upcoming = the next full 7 days. Each scheduled day shows on its date until it's completed.
-    // Only today's is interactive (tick + Complete → pop-up); future days are a read-only preview.
-    // Skip today's and it simply rolls off tomorrow as the window slides forward.
+    // Upcoming = the next full 7 days. Today's card is interactive (tick each set; each finished
+    // exercise is logged to Progress on its own). It stays visible all day and simply rolls off
+    // tomorrow as the 7-day window slides forward; future days are read-only previews.
     const dayNumOf = Object.fromEntries(list.map((it, i) => [it.id, i + 1]));
     const base = new Date(); base.setHours(0, 0, 0, 0);
     const occs = [];
@@ -3336,12 +3344,11 @@ async function renderWorkoutScreen(listEl, items, sub) {
       const dt = new Date(base); dt.setDate(base.getDate() + off);
       const w = String(dt.getDay());
       const ds = localDateStr(dt);
-      list.filter(it => String(it.data.weekday) === w)
-        .forEach(it => { if (!doneOn(it, ds)) occs.push({ it, date: dt, ds, off }); });
+      list.filter(it => String(it.data.weekday) === w).forEach(it => occs.push({ it, date: dt, ds, off }));
     }
     if (!occs.length) {
-      body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '✅'),
-        h('div', null, 'You\'re all caught up for the next 7 days. Nice work.')));
+      body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '😌'),
+        h('div', null, 'No workout days scheduled. Add one in Setup.')));
       return;
     }
     occs.forEach(o => body.appendChild(upcomingCard(o.it, dayNumOf[o.it.id], o)));
