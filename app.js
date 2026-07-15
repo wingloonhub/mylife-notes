@@ -1306,6 +1306,56 @@ function checklistEditor(data, key, placeholder, withQty) {
   return wrap;
 }
 
+/* Built-in library to auto-detect an exercise's category + primary muscles from its name.
+   Ordered most-specific first; first keyword substring match wins. User values always override. */
+const WORKOUT_CATS = ['Cardio', 'Strength', 'Core', 'Mobility', 'Other'];
+const WORKOUT_LIB = [
+  { kw: ['mountain climber'], category: 'Core', muscles: 'Abs, Hip flexors' },
+  { kw: ['russian twist'], category: 'Core', muscles: 'Obliques' },
+  { kw: ['bicycle crunch'], category: 'Core', muscles: 'Abs, Obliques' },
+  { kw: ['leg raise', 'knee raise', 'toes to bar'], category: 'Core', muscles: 'Lower abs, Hip flexors' },
+  { kw: ['ab roller', 'ab wheel', 'ab roll'], category: 'Core', muscles: 'Abs, Obliques' },
+  { kw: ['sit-up', 'situp', 'sit up', 'crunch'], category: 'Core', muscles: 'Abs' },
+  { kw: ['hollow hold', 'dead bug', 'bird dog', 'flutter kick'], category: 'Core', muscles: 'Abs, Core' },
+  { kw: ['plank'], category: 'Core', muscles: 'Abs, Core' },
+  { kw: ['kettlebell swing'], category: 'Cardio', muscles: 'Glutes, Hamstrings, Core' },
+  { kw: ['burpee'], category: 'Cardio', muscles: 'Full body' },
+  { kw: ['jumping jack', 'star jump'], category: 'Cardio', muscles: 'Full body' },
+  { kw: ['high knee'], category: 'Cardio', muscles: 'Legs, Core' },
+  { kw: ['jump rope', 'skipping', 'skip rope', 'jump squat'], category: 'Cardio', muscles: 'Legs' },
+  { kw: ['running', 'run', 'jog', 'treadmill', 'sprint'], category: 'Cardio', muscles: 'Legs' },
+  { kw: ['cycling', 'spin bike', 'spinning', 'stationary bike', 'bike'], category: 'Cardio', muscles: 'Legs' },
+  { kw: ['swim'], category: 'Cardio', muscles: 'Full body' },
+  { kw: ['rowing', 'row machine', 'erg', 'elliptical', 'stair', 'battle rope'], category: 'Cardio', muscles: 'Full body' },
+  { kw: ['push-up', 'pushup', 'push up'], category: 'Strength', muscles: 'Chest, Triceps, Shoulders' },
+  { kw: ['pull-up', 'pullup', 'pull up', 'chin-up', 'chin up'], category: 'Strength', muscles: 'Back, Biceps' },
+  { kw: ['bench press', 'chest press'], category: 'Strength', muscles: 'Chest, Triceps' },
+  { kw: ['shoulder press', 'overhead press', 'military press'], category: 'Strength', muscles: 'Shoulders, Triceps' },
+  { kw: ['deadlift'], category: 'Strength', muscles: 'Back, Glutes, Hamstrings' },
+  { kw: ['goblet squat', 'kettlebell squat', 'front squat', 'back squat', 'squat'], category: 'Strength', muscles: 'Quads, Glutes' },
+  { kw: ['lunge', 'split squat', 'step-up', 'step up'], category: 'Strength', muscles: 'Quads, Glutes' },
+  { kw: ['glute bridge', 'hip thrust'], category: 'Strength', muscles: 'Glutes, Hamstrings' },
+  { kw: ['calf raise'], category: 'Strength', muscles: 'Calves' },
+  { kw: ['wall sit'], category: 'Strength', muscles: 'Quads' },
+  { kw: ['leg curl', 'hamstring curl'], category: 'Strength', muscles: 'Hamstrings' },
+  { kw: ['leg press', 'leg extension'], category: 'Strength', muscles: 'Quads' },
+  { kw: ['bicep curl', 'hammer curl', 'curl'], category: 'Strength', muscles: 'Biceps' },
+  { kw: ['tricep', 'dip', 'skull crusher'], category: 'Strength', muscles: 'Triceps' },
+  { kw: ['lat pulldown', 'pulldown'], category: 'Strength', muscles: 'Back, Biceps' },
+  { kw: ['bent-over row', 'barbell row', 'dumbbell row', 'row'], category: 'Strength', muscles: 'Back, Biceps' },
+  { kw: ['lateral raise', 'lat raise', 'front raise', 'shrug'], category: 'Strength', muscles: 'Shoulders' },
+  { kw: ['chest fly', 'pec deck', 'fly'], category: 'Strength', muscles: 'Chest' },
+  { kw: ['stretch', 'yoga', 'foam roll', 'mobility', 'pigeon', 'cobra', 'downward dog'], category: 'Mobility', muscles: 'Full body' }
+];
+function lookupExercise(name) {
+  const s = String(name || '').toLowerCase().trim();
+  if (!s) return { category: '', muscles: '' };
+  for (const e of WORKOUT_LIB) if (e.kw.some(k => s.includes(k))) return { category: e.category, muscles: e.muscles };
+  return { category: '', muscles: '' };
+}
+function exerciseCategory(ex) { return (ex && ex.category) || lookupExercise(ex && ex.name).category || 'Other'; }
+function exerciseMuscles(ex) { return (ex && ex.muscles) || lookupExercise(ex && ex.name).muscles || ''; }
+
 /* Normalise an exercise to { name, sets, reps, unit, video }. Handles the brief per-set
    `setList` shape by collapsing it back to a single count + reps + unit. */
 function normalizeWorkoutExercise(ex) {
@@ -1330,9 +1380,19 @@ function workoutExercisesEditor(data) {
     wrap.innerHTML = '';
     data.exercises.forEach((ex, i) => {
       normalizeWorkoutExercise(ex);
+      const musInput = h('input', { placeholder: lookupExercise(ex.name).muscles || 'e.g. Chest, Triceps', value: ex.muscles || '', oninput: e => { ex.muscles = e.target.value; paintHint(); } });
+      const catSel = h('select', { onchange: e => { ex.category = e.target.value; paintHint(); } },
+        h('option', { value: '', selected: !ex.category ? 'selected' : null }, 'Auto-detect'),
+        ...WORKOUT_CATS.map(ct => h('option', { value: ct, selected: ex.category === ct ? 'selected' : null }, ct)));
+      const metaHint = h('div', { class: 'hint', style: { marginTop: '6px' } });
+      const paintHint = () => {
+        metaHint.textContent = '→ ' + exerciseCategory(ex) + (exerciseMuscles(ex) ? ' · ' + exerciseMuscles(ex) : '');
+        musInput.placeholder = lookupExercise(ex.name).muscles || 'e.g. Chest, Triceps';
+      };
+      paintHint();
       wrap.appendChild(h('div', { class: 'sub-item' },
         h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' } },
-          h('input', { class: 'grow', placeholder: 'Exercise (e.g. Push-ups)', value: ex.name || '', oninput: e => ex.name = e.target.value }),
+          h('input', { class: 'grow', placeholder: 'Exercise (e.g. Push-ups)', value: ex.name || '', oninput: e => { ex.name = e.target.value; paintHint(); } }),
           h('button', { class: 'del-x', type: 'button', onclick: () => { data.exercises.splice(i, 1); draw(); } }, '✕')),
         h('div', { class: 'row2' },
           h('div', { class: 'field' }, h('label', null, 'Number of sets'),
@@ -1343,11 +1403,15 @@ function workoutExercisesEditor(data) {
               h('select', { style: { width: '80px', flex: 'none' }, onchange: e => ex.unit = e.target.value },
                 h('option', { value: 'reps', selected: ex.unit !== 'secs' ? 'selected' : null }, 'reps'),
                 h('option', { value: 'secs', selected: ex.unit === 'secs' ? 'selected' : null }, 'secs'))))),
+        h('div', { class: 'row2' },
+          h('div', { class: 'field' }, h('label', null, 'Category'), catSel),
+          h('div', { class: 'field' }, h('label', null, 'Primary muscles'), musInput)),
+        metaHint,
         h('div', { class: 'field', style: { marginTop: '8px' } },
           h('label', null, 'Video link (optional)'),
           h('input', { type: 'url', placeholder: 'e.g. YouTube demo of this exercise', value: ex.video || '', oninput: e => ex.video = e.target.value }))));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', sets: '', reps: '', unit: 'reps', video: '', done: false }); draw(); } }, '+ Add exercise'));
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', sets: '', reps: '', unit: 'reps', category: '', muscles: '', video: '', done: false }); draw(); } }, '+ Add exercise'));
   }
   draw();
   return wrap;
@@ -3161,7 +3225,7 @@ async function recoverLegacyWorkoutTicks(items) {
     const ds = localDateStr(dt);
     d.completions = Array.isArray(d.completions) ? d.completions : [];
     d.completions = d.completions.filter(c => !(c && typeof c === 'object' && !Array.isArray(c.ex) && c.n && c.d === ds));
-    exs.forEach(e => { const t = ticked(e); if (t > 0) d.completions.push({ d: ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : '') }); });
+    exs.forEach(e => { const t = ticked(e); if (t > 0) d.completions.push({ d: ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : ''), c: exerciseCategory(e), m: exerciseMuscles(e) }); });
     d.setsFor = ds; // stamp so this runs once; the ticks now belong to that occurrence
     try { await DB.saveItem(it); } catch (e) {}
   }
@@ -3214,7 +3278,7 @@ async function renderWorkoutScreen(listEl, items, sub) {
     const syncToday = async () => {
       d.completions = Array.isArray(d.completions) ? d.completions : [];
       d.completions = d.completions.filter(c => !(c && typeof c === 'object' && !Array.isArray(c.ex) && c.n && compDate(c) === occ.ds));
-      exs.forEach(e => { const t = setsTicked(e); if (t > 0) d.completions.push({ d: occ.ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : '') }); });
+      exs.forEach(e => { const t = setsTicked(e); if (t > 0) d.completions.push({ d: occ.ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : ''), c: exerciseCategory(e), m: exerciseMuscles(e) }); });
       try { await DB.saveItem(it); } catch (e) {}
     };
     const card = h('div', { class: 'detail-card' + (isToday ? '' : ' muted'), style: isToday ? null : { opacity: '.82' } },
@@ -3237,9 +3301,10 @@ async function renderWorkoutScreen(listEl, items, sub) {
       const c = setCount(ex);
       const unit = ex.unit === 'secs' ? 'secs' : 'reps';
       const val = (ex.reps != null && ex.reps !== '') ? String(ex.reps) : '–';
-      const nameTd = h('td', { style: { padding: '8px', borderBottom: border, textAlign: 'left', minWidth: '92px' } },
+      const meta = [exerciseCategory(ex), exerciseMuscles(ex), unit].filter(Boolean).join(' · ');
+      const nameTd = h('td', { style: { padding: '8px', borderBottom: border, textAlign: 'left', minWidth: '110px' } },
         h('div', { style: { fontWeight: '600' } }, ex.name),
-        h('div', { style: { fontSize: '11px', color: 'var(--muted)' } }, unit),
+        h('div', { style: { fontSize: '11px', color: 'var(--muted)', lineHeight: '1.35' } }, meta),
         videoLink(ex));
       const tr = h('tr', null, nameTd);
       for (let i = 0; i < maxSets; i++) {
@@ -3286,11 +3351,11 @@ async function renderWorkoutScreen(listEl, items, sub) {
         const sess = sessMap[key] || (sessMap[key] = { date, day: dayLbl, exs: [] });
         if (typeof c === 'string') { // legacy date-only → the day's current exercises
           (it.data.exercises || []).filter(e => e.name && e.name.trim()).map(normalizeWorkoutExercise)
-            .forEach(e => sess.exs.push({ name: e.name, sets: setCountOf(e), unit: e.unit, reps: e.reps }));
+            .forEach(e => sess.exs.push({ name: e.name, sets: setCountOf(e), unit: e.unit, reps: e.reps, category: exerciseCategory(e), muscles: exerciseMuscles(e) }));
         } else if (Array.isArray(c.ex)) { // day snapshot
-          c.ex.forEach(e => sess.exs.push({ name: e.n, sets: Number(e.s) || 0, unit: e.u === 'secs' ? 'secs' : 'reps', reps: e.r }));
+          c.ex.forEach(e => sess.exs.push({ name: e.n, sets: Number(e.s) || 0, unit: e.u === 'secs' ? 'secs' : 'reps', reps: e.r, category: e.c || lookupExercise(e.n).category || 'Other', muscles: e.m || lookupExercise(e.n).muscles || '' }));
         } else if (c.n) { // single completed exercise
-          sess.exs.push({ name: c.n, sets: Number(c.s) || 0, unit: c.u === 'secs' ? 'secs' : 'reps', reps: c.r });
+          sess.exs.push({ name: c.n, sets: Number(c.s) || 0, unit: c.u === 'secs' ? 'secs' : 'reps', reps: c.r, category: c.c || lookupExercise(c.n).category || 'Other', muscles: c.m || lookupExercise(c.n).muscles || '' });
         }
       });
     });
@@ -3316,6 +3381,22 @@ async function renderWorkoutScreen(listEl, items, sub) {
       card.appendChild(h('div', { class: 'section-title', style: { marginTop: '0' } },
         monthName(k) + ' · ' + totWorkouts + ' workout' + (totWorkouts === 1 ? '' : 's') + ' · ' + totSets + ' set' + (totSets === 1 ? '' : 's')
         + ' · ' + totReps + ' rep' + (totReps === 1 ? '' : 's') + (totSecs ? ' · ' + totSecs + 's' : '')));
+      // by category + muscles worked this month (sets counted per category / per muscle)
+      const byCat = {}, byMuscle = {};
+      ss.forEach(s => s.exs.forEach(e => {
+        const st = e.sets || 0;
+        byCat[e.category || 'Other'] = (byCat[e.category || 'Other'] || 0) + st;
+        (e.muscles || '').split(',').map(m => m.trim()).filter(Boolean).forEach(m => { byMuscle[m] = (byMuscle[m] || 0) + st; });
+      }));
+      const catChips = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', margin: '2px 0 8px' } });
+      Object.keys(byCat).sort((a, b) => byCat[b] - byCat[a]).forEach(cat => catChips.appendChild(
+        h('span', { style: { fontSize: '12px', fontWeight: '700', padding: '3px 9px', borderRadius: '999px', background: 'var(--card-2)', border: '1px solid var(--line)' } },
+          cat + ' · ' + byCat[cat] + ' set' + (byCat[cat] === 1 ? '' : 's'))));
+      card.appendChild(catChips);
+      const topMuscles = Object.keys(byMuscle).sort((a, b) => byMuscle[b] - byMuscle[a]).slice(0, 8);
+      if (topMuscles.length) card.appendChild(h('div', { style: { fontSize: '12.5px', color: 'var(--muted)', margin: '0 0 10px', lineHeight: '1.5' } },
+        h('span', { style: { fontWeight: '700' } }, 'Muscles worked: '),
+        topMuscles.map(m => m + ' ' + byMuscle[m]).join(' · ')));
       // type of workout completed this month: each exercise → sets, reps (or secs) + how many sessions
       const byEx = {};
       ss.forEach(s => s.exs.forEach(e => {
