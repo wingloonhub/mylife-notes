@@ -3142,9 +3142,35 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
   render();
 }
 
+/* One-time recovery for workouts ticked under an older version (before set-level tracking, ≤ v144):
+   those only wrote to Progress when the WHOLE day was finished, so a partial session left tick marks
+   (setsDone) but no dated record. Turn any such leftover ticks into a completion for that day's most
+   recent occurrence, so nothing already done is lost. Runs once per day (stamped via setsFor). */
+async function recoverLegacyWorkoutTicks(items) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  for (const it of items) {
+    const d = it.data || {};
+    if (d.setsFor) continue; // already on set-level tracking — nothing legacy to recover
+    const exs = (d.exercises || []).filter(e => e.name && e.name.trim());
+    exs.forEach(normalizeWorkoutExercise);
+    const setCount = ex => Math.max(1, parseInt(ex.sets, 10) || 0);
+    const ticked = ex => { const c = setCount(ex); let n = 0; for (let i = 0; i < c; i++) if (Array.isArray(ex.setsDone) && ex.setsDone[i]) n++; return n; };
+    if (!exs.some(e => ticked(e) > 0)) continue;
+    const w = Number(d.weekday);
+    const dt = new Date(today); dt.setDate(today.getDate() - (((today.getDay() - w) + 7) % 7)); // most recent occurrence ≤ today
+    const ds = localDateStr(dt);
+    d.completions = Array.isArray(d.completions) ? d.completions : [];
+    d.completions = d.completions.filter(c => !(c && typeof c === 'object' && !Array.isArray(c.ex) && c.n && c.d === ds));
+    exs.forEach(e => { const t = ticked(e); if (t > 0) d.completions.push({ d: ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : '') }); });
+    d.setsFor = ds; // stamp so this runs once; the ticks now belong to that occurrence
+    try { await DB.saveItem(it); } catch (e) {}
+  }
+}
+
 /* Workout Schedule — cards = a workout day (weekday + exercises). Two tabs:
    Schedule (set up the week) and Upcoming (tick off each exercise as done). */
 async function renderWorkoutScreen(listEl, items, sub) {
+  await recoverLegacyWorkoutTicks(items); // rescue partial sessions ticked under an older version
   let tab = (sub === 'setup' || sub === 'progress') ? sub : 'upcoming';
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
