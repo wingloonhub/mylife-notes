@@ -3236,6 +3236,7 @@ async function recoverLegacyWorkoutTicks(items) {
 async function renderWorkoutScreen(listEl, items, sub) {
   await recoverLegacyWorkoutTicks(items); // rescue partial sessions ticked under an older version
   let tab = (sub === 'setup' || sub === 'progress') ? sub : 'upcoming';
+  let progYear = null; // selected year in the Progress report (null = latest)
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
   listEl.innerHTML = '';
@@ -3334,9 +3335,8 @@ async function renderWorkoutScreen(listEl, items, sub) {
     return card;
   }
 
-  function progressList(list, dayNumOf) {
+  function progressList(list, dayNumOf, selYear, onYear) {
     const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-    const monthName = k => { const [y, m] = k.split('-'); return (MONTHS[parseInt(m, 10) - 1] || '') + ' ' + y; };
     const setCountOf = ex => Math.max(1, parseInt(ex.sets, 10) || 0);
     // Build one session per (workout day, date), collecting the exercises logged for it. A completion
     // record is either a plain date string (legacy), a { d, ex:[…] } day snapshot, or a single
@@ -3367,62 +3367,88 @@ async function renderWorkoutScreen(listEl, items, sub) {
     }));
     if (!sessions.length) return emptyState('workout', 'No workouts logged yet. Tick your exercises in the Upcoming tab and they show up here.');
     sessions.sort((a, b) => b.date.localeCompare(a.date));
-    // group by calendar month (newest first)
-    const months = {};
-    sessions.forEach(s => { const k = s.date.slice(0, 7); (months[k] = months[k] || []).push(s); });
+
+    /* ---- report building blocks (category palette is CVD-validated for the dark surface) ---- */
+    const CAT_COLOR = { Strength: '#6366f1', Cardio: '#f43f5e', Core: '#059669', Mobility: '#d97706', Other: '#0891b2' };
+    const catColor = c => CAT_COLOR[c] || '#0891b2';
+    const statTile = (value, label) => h('div', { style: { flex: '1', minWidth: '64px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: '12px', padding: '12px 6px', textAlign: 'center' } },
+      h('div', { style: { fontSize: '21px', fontWeight: '800', lineHeight: '1.1' } }, String(value)),
+      h('div', { style: { fontSize: '10px', color: 'var(--muted)', marginTop: '3px', textTransform: 'uppercase', letterSpacing: '.6px' } }, label));
+    const dot = color => h('span', { style: { width: '9px', height: '9px', borderRadius: '3px', background: color, display: 'inline-block', flex: 'none' } });
+    const bar = (label, value, max, color, suffix) => h('div', { style: { margin: '0 0 9px' } },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', marginBottom: '4px', gap: '8px' } },
+        h('span', { style: { fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' } }, color ? dot(color) : null, label),
+        h('span', { style: { color: 'var(--muted)', whiteSpace: 'nowrap' } }, value + (suffix || ''))),
+      h('div', { style: { height: '8px', background: 'var(--card-2)', borderRadius: '999px', overflow: 'hidden' } },
+        h('div', { style: { height: '100%', width: Math.max(max > 0 ? value / max * 100 : 0, 2) + '%', background: color || 'var(--accent)', borderRadius: '999px' } })));
+    const stackBar = (byCat, total) => {
+      const row = h('div', { style: { display: 'flex', height: '11px', borderRadius: '999px', overflow: 'hidden', gap: '2px' } });
+      Object.keys(byCat).sort((a, b) => byCat[b] - byCat[a]).forEach(cat => { const w = total > 0 ? byCat[cat] / total * 100 : 0; if (w > 0) row.appendChild(h('div', { style: { width: w + '%', minWidth: '4px', background: catColor(cat) }, title: cat + ' ' + byCat[cat] })); });
+      return row;
+    };
+    const aggByCat = arr => { const o = {}; arr.forEach(s => s.exs.forEach(e => { const k = e.category || 'Other'; o[k] = (o[k] || 0) + (e.sets || 0); })); return o; };
+    const aggByMuscle = arr => { const o = {}; arr.forEach(s => s.exs.forEach(e => (e.muscles || '').split(',').map(m => m.trim()).filter(Boolean).forEach(m => { o[m] = (o[m] || 0) + (e.sets || 0); }))); return o; };
+    const sumSets = arr => arr.reduce((a, s) => a + s.totalSets, 0);
+    const sumReps = arr => arr.reduce((a, s) => a + s.totalReps, 0);
+
+    /* ---- year scope ---- */
+    const years = [...new Set(sessions.map(s => s.date.slice(0, 4)))].sort((a, b) => b.localeCompare(a));
+    const year = (selYear && years.includes(selYear)) ? selYear : years[0];
+    const ySess = sessions.filter(s => s.date.slice(0, 4) === year);
     const wrap = h('div', null);
+
+    if (years.length > 1) {
+      const pills = h('div', { style: { display: 'flex', gap: '6px', margin: '0 0 12px', flexWrap: 'wrap' } });
+      years.forEach(y => pills.appendChild(h('button', { class: 'btn small ' + (y === year ? '' : 'secondary'), type: 'button', onclick: () => onYear && onYear(y) }, y)));
+      wrap.appendChild(pills);
+    }
+
+    /* ---- year summary ---- */
+    const yCat = aggByCat(ySess), yMus = aggByMuscle(ySess);
+    const summary = h('div', { class: 'detail-card' },
+      h('div', { style: { fontSize: '18px', fontWeight: '800' } }, year + ' — Workout report'),
+      h('div', { style: { fontSize: '12.5px', color: 'var(--muted)', margin: '2px 0 14px' } }, 'Everything you\'ve completed this year'),
+      h('div', { style: { display: 'flex', gap: '7px', marginBottom: '16px' } },
+        statTile(ySess.length, 'Workouts'), statTile(sumSets(ySess), 'Sets'), statTile(sumReps(ySess), 'Reps'), statTile(new Set(ySess.map(s => s.date)).size, 'Days')));
+    summary.appendChild(h('div', { class: 'section-title', style: { margin: '0 0 8px' } }, 'By category'));
+    const catMax = Math.max(1, ...Object.values(yCat));
+    Object.keys(yCat).sort((a, b) => yCat[b] - yCat[a]).forEach(cat => summary.appendChild(bar(cat, yCat[cat], catMax, catColor(cat), ' sets')));
+    const yTopMus = Object.keys(yMus).sort((a, b) => yMus[b] - yMus[a]).slice(0, 8);
+    if (yTopMus.length) {
+      summary.appendChild(h('div', { class: 'section-title', style: { margin: '16px 0 8px' } }, 'Primary muscles worked'));
+      const mMax = Math.max(1, ...yTopMus.map(m => yMus[m]));
+      yTopMus.forEach(m => summary.appendChild(bar(m, yMus[m], mMax, null, ' sets')));
+    }
+    wrap.appendChild(summary);
+
+    /* ---- month by month ---- */
+    const months = {};
+    ySess.forEach(s => { const k = s.date.slice(0, 7); (months[k] = months[k] || []).push(s); });
+    wrap.appendChild(h('div', { class: 'section-title', style: { margin: '20px 2px 8px' } }, 'Month by month'));
     Object.keys(months).sort((a, b) => b.localeCompare(a)).forEach(k => {
       const ss = months[k];
-      const totWorkouts = ss.length;
-      const totSets = ss.reduce((s, x) => s + x.totalSets, 0);
-      const totReps = ss.reduce((s, x) => s + x.totalReps, 0);
-      const totSecs = ss.reduce((s, x) => s + x.totalSecs, 0);
+      const mCat = aggByCat(ss), mMus = aggByMuscle(ss), mSets = sumSets(ss), mReps = sumReps(ss);
       const card = h('div', { class: 'detail-card' });
-      card.appendChild(h('div', { class: 'section-title', style: { marginTop: '0' } },
-        monthName(k) + ' · ' + totWorkouts + ' workout' + (totWorkouts === 1 ? '' : 's') + ' · ' + totSets + ' set' + (totSets === 1 ? '' : 's')
-        + ' · ' + totReps + ' rep' + (totReps === 1 ? '' : 's') + (totSecs ? ' · ' + totSecs + 's' : '')));
-      // by category + muscles worked this month (sets counted per category / per muscle)
-      const byCat = {}, byMuscle = {};
-      ss.forEach(s => s.exs.forEach(e => {
-        const st = e.sets || 0;
-        byCat[e.category || 'Other'] = (byCat[e.category || 'Other'] || 0) + st;
-        (e.muscles || '').split(',').map(m => m.trim()).filter(Boolean).forEach(m => { byMuscle[m] = (byMuscle[m] || 0) + st; });
-      }));
-      const catChips = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', margin: '2px 0 8px' } });
-      Object.keys(byCat).sort((a, b) => byCat[b] - byCat[a]).forEach(cat => catChips.appendChild(
-        h('span', { style: { fontSize: '12px', fontWeight: '700', padding: '3px 9px', borderRadius: '999px', background: 'var(--card-2)', border: '1px solid var(--line)' } },
-          cat + ' · ' + byCat[cat] + ' set' + (byCat[cat] === 1 ? '' : 's'))));
-      card.appendChild(catChips);
-      const topMuscles = Object.keys(byMuscle).sort((a, b) => byMuscle[b] - byMuscle[a]).slice(0, 8);
-      if (topMuscles.length) card.appendChild(h('div', { style: { fontSize: '12.5px', color: 'var(--muted)', margin: '0 0 10px', lineHeight: '1.5' } },
-        h('span', { style: { fontWeight: '700' } }, 'Muscles worked: '),
-        topMuscles.map(m => m + ' ' + byMuscle[m]).join(' · ')));
-      // type of workout completed this month: each exercise → sets, reps (or secs) + how many sessions
-      const byEx = {};
-      ss.forEach(s => s.exs.forEach(e => {
-        if (!e.name) return;
-        (byEx[e.name] = byEx[e.name] || { sets: 0, reps: 0, secs: 0, n: 0 });
-        const v = (e.sets || 0) * (parseInt(e.reps, 10) || 0);
-        if (e.unit === 'secs') byEx[e.name].secs += v; else byEx[e.name].reps += v;
-        byEx[e.name].sets += (e.sets || 0); byEx[e.name].n += 1;
-      }));
-      Object.keys(byEx).sort().forEach(name => {
-        const b = byEx[name];
-        const parts = [b.sets + ' set' + (b.sets === 1 ? '' : 's')];
-        if (b.reps) parts.push(b.reps + ' reps');
-        if (b.secs) parts.push(b.secs + 's');
-        parts.push(b.n + '×');
-        card.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, name),
-          h('span', { class: 'v' }, parts.join(' · '))));
-      });
-      // dated log: what was done each session (day + exercises with set counts)
-      card.appendChild(h('div', { style: { borderTop: '1px solid var(--line)', margin: '10px 0 2px', paddingTop: '8px' } }));
+      card.appendChild(h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '8px', marginBottom: '9px' } },
+        h('div', { style: { fontWeight: '800', fontSize: '15px' } }, MONTHS[parseInt(k.split('-')[1], 10) - 1]),
+        h('div', { style: { fontSize: '11.5px', color: 'var(--muted)', textAlign: 'right' } }, ss.length + ' workout' + (ss.length === 1 ? '' : 's') + ' · ' + mSets + ' sets · ' + mReps + ' reps')));
+      card.appendChild(stackBar(mCat, mSets));
+      const legend = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '10px', margin: '9px 0 0', fontSize: '11.5px', color: 'var(--muted)' } });
+      Object.keys(mCat).sort((a, b) => mCat[b] - mCat[a]).forEach(cat => legend.appendChild(
+        h('span', { style: { display: 'flex', alignItems: 'center', gap: '5px' } }, dot(catColor(cat)), cat + ' ' + mCat[cat])));
+      card.appendChild(legend);
+      const tm = Object.keys(mMus).sort((a, b) => mMus[b] - mMus[a]).slice(0, 6);
+      if (tm.length) card.appendChild(h('div', { style: { fontSize: '12px', color: 'var(--muted)', marginTop: '9px', lineHeight: '1.5' } },
+        h('span', { style: { fontWeight: '700' } }, 'Muscles: '), tm.map(m => m + ' ' + mMus[m]).join(' · ')));
+      const det = h('details', { style: { marginTop: '10px' } },
+        h('summary', { style: { cursor: 'pointer', fontSize: '12.5px', color: 'var(--accent)', fontWeight: '600' } }, 'View sessions'));
       ss.forEach(s => {
         const exText = s.exs.map(e => e.name + (e.sets ? ' (' + e.sets + '×' + (e.reps || '?') + (e.unit === 'secs' ? 's' : '') + ')' : '')).join(', ');
-        card.appendChild(h('div', { style: { margin: '0 0 9px' } },
-          h('div', { style: { fontWeight: '600', fontSize: '13px' } }, '✅ ' + fmtDate(s.date) + ' · ' + s.day + '  ·  ' + s.totalSets + ' sets' + (s.totalReps ? ' · ' + s.totalReps + ' reps' : '') + (s.totalSecs ? ' · ' + s.totalSecs + 's' : '')),
-          h('div', { style: { color: 'var(--muted)', fontSize: '12.5px', lineHeight: '1.5', marginTop: '1px' } }, exText || '—')));
+        det.appendChild(h('div', { style: { margin: '8px 0 0' } },
+          h('div', { style: { fontWeight: '600', fontSize: '12.5px' } }, fmtDate(s.date) + ' · ' + s.day + ' · ' + s.totalSets + ' sets' + (s.totalReps ? ' · ' + s.totalReps + ' reps' : '') + (s.totalSecs ? ' · ' + s.totalSecs + 's' : '')),
+          h('div', { style: { color: 'var(--muted)', fontSize: '12px', lineHeight: '1.5' } }, exText || '—')));
       });
+      card.appendChild(det);
       wrap.appendChild(card);
     });
     return wrap;
@@ -3438,7 +3464,7 @@ async function renderWorkoutScreen(listEl, items, sub) {
       } }, label)));
     body.innerHTML = '';
     const list = items.slice().sort((a, b) => wkOrder(a.data.weekday) - wkOrder(b.data.weekday));
-    if (tab === 'progress') { body.appendChild(progressList(list, Object.fromEntries(list.map((it, i) => [it.id, i + 1])))); return; }
+    if (tab === 'progress') { body.appendChild(progressList(list, Object.fromEntries(list.map((it, i) => [it.id, i + 1])), progYear, y => { progYear = y; draw(); })); return; }
     if (!list.length) { body.appendChild(emptyState('workout', 'No workout days yet. Tap + to add one.')); return; }
     if (tab === 'setup') { list.forEach((it, i) => body.appendChild(scheduleCard(it, i + 1))); return; }
     // Upcoming = the next full 7 days. Today's card is interactive (tick each set; each finished
