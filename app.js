@@ -392,7 +392,7 @@ const CATS = [
   { key: 'appointments', name: 'Appointments', singular: 'Appointment', emoji: '🗓️' },
   { key: 'reminder', name: 'Reminder', singular: 'Reminder', emoji: '⏰' },
   { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒' },
-  { key: 'workout', name: 'Workout Schedule', singular: 'Workout Day', emoji: '💪' },
+  { key: 'workout', name: 'Workout', singular: 'Workout Day', emoji: '💪' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'vault', name: 'Access Vault', singular: 'Login', emoji: '🔑' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
@@ -3302,6 +3302,8 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
   await seedExLibraryFromWorkouts(items); // one-time: adopt exercises from existing workout days into the library
   let tab = (sub === 'schedule' || sub === 'setup' || sub === 'progress') ? sub : 'upcoming';
   let progYear = null; // selected year in the Progress report (null = latest)
+  let workoutGoal = 3; try { workoutGoal = parseInt((await DB.getSettings()).workoutWeeklyGoal, 10) || 3; } catch (e) {}
+  const setGoal = async (g) => { workoutGoal = Math.max(1, g); try { const s = await DB.getSettings(); await DB.saveSettings(Object.assign({}, s, { workoutWeeklyGoal: workoutGoal })); } catch (e) {} draw(); };
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
   listEl.innerHTML = '';
@@ -3414,7 +3416,7 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
     return card;
   }
 
-  function progressList(list, dayNumOf, selYear, onYear) {
+  function progressList(list, dayNumOf, selYear, onYear, weeklyGoal, onGoal) {
     const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     const setCountOf = ex => Math.max(1, parseInt(ex.sets, 10) || 0);
     // Build one session per (workout day, date), collecting the exercises logged for it. A completion
@@ -3500,6 +3502,131 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
     }
     wrap.appendChild(summary);
 
+    /* =================== INSIGHTS =================== */
+    const localDS = d => localDateStr(d);
+    const weekIdx = ds => { const d = new Date(ds + 'T00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return Math.round(d.getTime() / 604800000); };
+    const insight = h('div', { class: 'detail-card' }, h('div', { class: 'section-title', style: { marginTop: '0' } }, 'Highlights'));
+    const tileRow = h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' } });
+
+    // Workout streak (consecutive weeks with ≥1 workout, across all data)
+    const activeWeeks = [...new Set(sessions.map(s => weekIdx(s.date)))].sort((a, b) => a - b);
+    let best = 0, run = 0, prev = null;
+    activeWeeks.forEach(w => { run = (prev !== null && w === prev + 1) ? run + 1 : 1; best = Math.max(best, run); prev = w; });
+    let trail = 0; for (let i = activeWeeks.length - 1; i >= 0; i--) { if (i === activeWeeks.length - 1 || activeWeeks[i] === activeWeeks[i + 1] - 1) trail++; else break; }
+    const thisWeek = weekIdx(localDS(new Date()));
+    const curStreak = (activeWeeks.length && activeWeeks[activeWeeks.length - 1] >= thisWeek - 1) ? trail : 0;
+    const miniTile = (big, label, sub) => h('div', { style: { background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: '12px', padding: '11px 12px' } },
+      h('div', { style: { fontSize: '11px', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: '4px' } }, label),
+      h('div', { style: { fontSize: '18px', fontWeight: '800', lineHeight: '1.15' } }, big),
+      sub ? h('div', { style: { fontSize: '11.5px', color: 'var(--muted)', marginTop: '2px' } }, sub) : null);
+    tileRow.appendChild(miniTile('🔥 ' + curStreak + (curStreak === 1 ? ' week' : ' weeks'), 'Workout streak', 'Best: ' + best + (best === 1 ? ' week' : ' weeks')));
+
+    // Most performed exercise (this year, by number of sessions it appears in)
+    const perf = {};
+    ySess.forEach(s => new Set(s.exs.map(e => e.name).filter(Boolean)).forEach(n => { perf[n] = (perf[n] || 0) + 1; }));
+    const topPerf = Object.keys(perf).sort((a, b) => perf[b] - perf[a])[0];
+    tileRow.appendChild(miniTile(topPerf || '—', 'Most performed', topPerf ? perf[topPerf] + ' session' + (perf[topPerf] === 1 ? '' : 's') : 'No data yet'));
+
+    // Strength vs Cardio ratio (this year, by sets)
+    const strSets = yCat.Strength || 0, carSets = yCat.Cardio || 0, scTot = strSets + carSets;
+    const scStr = scTot ? Math.round(strSets / scTot * 100) : 0;
+    tileRow.appendChild(miniTile(scTot ? (scStr + '% / ' + (100 - scStr) + '%') : '—', 'Strength vs Cardio', scTot ? (strSets + ' vs ' + carSets + ' sets') : 'No data yet'));
+
+    // Weekly goal (this week's active days vs goal; editable)
+    const goal = Math.max(1, weeklyGoal || 3);
+    const thisWeekDays = new Set(sessions.filter(s => weekIdx(s.date) === thisWeek).map(s => s.date)).size;
+    const goalTile = h('div', { style: { background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: '12px', padding: '11px 12px' } },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+        h('div', { style: { fontSize: '11px', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' } }, 'Weekly goal'),
+        h('div', { style: { display: 'flex', gap: '4px' } },
+          h('button', { class: 'iconbtn small', type: 'button', title: 'Lower goal', onclick: () => onGoal && onGoal(goal - 1) }, '−'),
+          h('button', { class: 'iconbtn small', type: 'button', title: 'Raise goal', onclick: () => onGoal && onGoal(goal + 1) }, '+'))),
+      h('div', { style: { fontSize: '18px', fontWeight: '800', margin: '3px 0 5px' } }, thisWeekDays + ' / ' + goal + (thisWeekDays >= goal ? ' ✅' : '')),
+      h('div', { style: { height: '7px', background: 'var(--card-2)', borderRadius: '999px', overflow: 'hidden' } },
+        h('div', { style: { height: '100%', width: Math.min(100, thisWeekDays / goal * 100) + '%', background: thisWeekDays >= goal ? 'var(--green)' : 'var(--accent)', borderRadius: '999px' } })));
+    tileRow.appendChild(goalTile);
+    insight.appendChild(tileRow);
+    wrap.appendChild(insight);
+
+    /* =================== WORKOUT CALENDAR (heatmap) =================== */
+    const perDay = {};
+    ySess.forEach(s => { perDay[s.date] = (perDay[s.date] || 0) + s.totalSets; });
+    const dayMax = Math.max(1, ...Object.values(perDay));
+    const level = n => !n ? 0 : n <= dayMax * 0.25 ? 1 : n <= dayMax * 0.5 ? 2 : n <= dayMax * 0.75 ? 3 : 4;
+    const LVL = ['var(--card-2)', 'rgba(109,99,255,.30)', 'rgba(109,99,255,.55)', 'rgba(109,99,255,.80)', 'rgba(109,99,255,1)'];
+    const heat = h('div', { class: 'detail-card' }, h('div', { class: 'section-title', style: { marginTop: '0' } }, 'Workout calendar'));
+    const start = new Date(year + '-01-01T00:00'); start.setDate(start.getDate() - ((start.getDay() + 6) % 7)); // back to Monday
+    const end = new Date(year + '-12-31T00:00');
+    const cols = h('div', { style: { display: 'flex', gap: '3px' } });
+    const monthLabels = h('div', { style: { display: 'flex', gap: '3px', marginBottom: '3px', paddingLeft: '2px' } });
+    let cur = new Date(start), lastMonth = -1;
+    while (cur <= end) {
+      const col = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '3px' } });
+      const weekStartMonth = cur.getMonth();
+      for (let dowr = 0; dowr < 7; dowr++) {
+        const ds = localDS(cur);
+        const inYear = cur.getFullYear() === Number(year);
+        const n = inYear ? (perDay[ds] || 0) : 0;
+        col.appendChild(h('div', { title: inYear ? (fmtDate(ds) + ' · ' + n + ' sets') : '', style: { width: '11px', height: '11px', borderRadius: '3px', background: inYear ? LVL[level(n)] : 'transparent' } }));
+        cur.setDate(cur.getDate() + 1);
+      }
+      monthLabels.appendChild(h('div', { style: { width: '11px', fontSize: '9px', color: 'var(--muted)', overflow: 'visible', whiteSpace: 'nowrap' } }, weekStartMonth !== lastMonth ? MONTHS[weekStartMonth].slice(0, 3) : ''));
+      lastMonth = weekStartMonth;
+      cols.appendChild(col);
+    }
+    heat.appendChild(h('div', { style: { overflowX: 'auto', paddingBottom: '4px' } }, h('div', null, monthLabels, cols)));
+    const legend = h('div', { style: { display: 'flex', alignItems: 'center', gap: '5px', marginTop: '8px', fontSize: '11px', color: 'var(--muted)' } }, 'Less');
+    LVL.forEach(c => legend.appendChild(h('div', { style: { width: '11px', height: '11px', borderRadius: '3px', background: c } })));
+    legend.appendChild(h('span', null, 'More'));
+    heat.appendChild(legend);
+    wrap.appendChild(heat);
+
+    /* =================== CATEGORY TREND + MUSCLE BALANCE + EXERCISE DISTRIBUTION =================== */
+    const trendCard = h('div', { class: 'detail-card' });
+    // Category trend — a mini stacked bar per month, oldest → newest
+    const mAsc = {};
+    ySess.forEach(s => { const k = s.date.slice(0, 7); (mAsc[k] = mAsc[k] || []).push(s); });
+    const trendKeys = Object.keys(mAsc).sort();
+    if (trendKeys.length) {
+      trendCard.appendChild(h('div', { class: 'section-title', style: { marginTop: '0' } }, 'Category trend'));
+      const trendRow = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-end', overflowX: 'auto', paddingBottom: '2px' } });
+      trendKeys.forEach(k => {
+        const mc = aggByCat(mAsc[k]); const tot = Object.values(mc).reduce((a, b) => a + b, 0);
+        const colBar = h('div', { style: { display: 'flex', flexDirection: 'column-reverse', height: '64px', width: '22px', borderRadius: '5px', overflow: 'hidden', gap: '2px', background: 'var(--card-2)' } });
+        Object.keys(mc).sort((a, b) => mc[a] - mc[b]).forEach(cat => colBar.appendChild(h('div', { style: { height: (tot ? mc[cat] / tot * 100 : 0) + '%', background: catColor(cat) }, title: cat + ' ' + mc[cat] })));
+        trendRow.appendChild(h('div', { style: { textAlign: 'center', flex: 'none' } }, colBar,
+          h('div', { style: { fontSize: '10px', color: 'var(--muted)', marginTop: '4px' } }, MONTHS[parseInt(k.split('-')[1], 10) - 1].slice(0, 3))));
+      });
+      trendCard.appendChild(trendRow);
+    }
+    // Muscle balance — sets grouped into body regions
+    const REGION = { Chest: 'Upper', Back: 'Upper', Shoulders: 'Upper', Biceps: 'Upper', Triceps: 'Upper', Quads: 'Lower', Glutes: 'Lower', Hamstrings: 'Lower', Calves: 'Lower', Legs: 'Lower', Abs: 'Core', Obliques: 'Core', Core: 'Core', 'Hip flexors': 'Core', 'Lower abs': 'Core' };
+    const byRegion = { Upper: 0, Lower: 0, Core: 0 };
+    ySess.forEach(s => s.exs.forEach(e => (e.muscles || '').split(',').map(canonMuscle).filter(Boolean).forEach(m => { const r = REGION[m]; if (r) byRegion[r] += (e.sets || 0); })));
+    const regTot = byRegion.Upper + byRegion.Lower + byRegion.Core;
+    if (regTot) {
+      trendCard.appendChild(h('div', { class: 'section-title', style: { margin: '16px 0 8px' } }, 'Muscle balance'));
+      const REGCOL = { Upper: '#6366f1', Lower: '#059669', Core: '#d97706' };
+      const regMax = Math.max(byRegion.Upper, byRegion.Lower, byRegion.Core);
+      ['Upper', 'Lower', 'Core'].forEach(r => trendCard.appendChild(bar(r + ' body', byRegion[r], regMax, REGCOL[r], ' sets (' + Math.round(byRegion[r] / regTot * 100) + '%)')));
+      const shares = ['Upper', 'Lower', 'Core'].map(r => byRegion[r] / regTot);
+      const spread = Math.max(...shares) - Math.min(...shares);
+      trendCard.appendChild(h('div', { style: { fontSize: '12px', color: 'var(--muted)', marginTop: '4px' } },
+        spread <= 0.2 ? '✅ Nicely balanced across the body.' : ('⚠ Leaning ' + ['Upper', 'Lower', 'Core'][shares.indexOf(Math.max(...shares))].toLowerCase() + '-heavy — mix in the others.')));
+    }
+    if (trendCard.childNodes.length) wrap.appendChild(trendCard);
+
+    // Exercise distribution — top exercises by total sets (this year)
+    const byEx2 = {};
+    ySess.forEach(s => s.exs.forEach(e => { if (e.name) byEx2[e.name] = (byEx2[e.name] || 0) + (e.sets || 0); }));
+    const topExs = Object.keys(byEx2).sort((a, b) => byEx2[b] - byEx2[a]).slice(0, 8);
+    if (topExs.length) {
+      const distCard = h('div', { class: 'detail-card' }, h('div', { class: 'section-title', style: { marginTop: '0' } }, 'Exercise distribution'));
+      const exMax = Math.max(1, ...topExs.map(n => byEx2[n]));
+      topExs.forEach(n => distCard.appendChild(bar(n, byEx2[n], exMax, 'var(--accent-2)', ' sets')));
+      wrap.appendChild(distCard);
+    }
+
     /* ---- month by month ---- */
     const months = {};
     ySess.forEach(s => { const k = s.date.slice(0, 7); (months[k] = months[k] || []).push(s); });
@@ -3549,7 +3676,7 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
     }
     body.innerHTML = '';
     const list = items.slice().sort((a, b) => wkOrder(a.data.weekday) - wkOrder(b.data.weekday));
-    if (tab === 'progress') { body.appendChild(progressList(list, Object.fromEntries(list.map((it, i) => [it.id, i + 1])), progYear, y => { progYear = y; draw(); })); return; }
+    if (tab === 'progress') { body.appendChild(progressList(list, Object.fromEntries(list.map((it, i) => [it.id, i + 1])), progYear, y => { progYear = y; draw(); }, workoutGoal, setGoal)); return; }
     if (tab === 'setup') { renderExerciseLibrary(body); return; }
     if (tab === 'schedule') {
       if (!list.length) { body.appendChild(emptyState('workout', 'No workout days yet. Tap + to add one.')); return; }
