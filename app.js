@@ -1384,6 +1384,26 @@ function libFind(name) {
 function exerciseCategory(ex) { const lib = libFind(ex && ex.name) || {}; return (ex && ex.category) || lib.category || lookupExercise(ex && ex.name).category || 'Other'; }
 function exerciseMuscles(ex) { const lib = libFind(ex && ex.name) || {}; return (ex && ex.muscles) || lib.muscles || lookupExercise(ex && ex.name).muscles || ''; }
 function exerciseVideo(ex) { const lib = libFind(ex && ex.name) || {}; return (ex && ex.video && String(ex.video).trim()) ? ex.video : (lib.video || ''); }
+// Canonical muscle name so the Progress breakdown merges duplicates (case/synonyms): "core"→"Core", "Quadriceps"→"Quads".
+const MUSCLE_SYNONYMS = {
+  quadriceps: 'Quads', quad: 'Quads', quads: 'Quads',
+  hamstring: 'Hamstrings', hamstrings: 'Hamstrings', hams: 'Hamstrings',
+  glute: 'Glutes', glutes: 'Glutes', gluteus: 'Glutes',
+  ab: 'Abs', abs: 'Abs', abdominal: 'Abs', abdominals: 'Abs',
+  oblique: 'Obliques', obliques: 'Obliques',
+  pec: 'Chest', pecs: 'Chest', pectorals: 'Chest', chest: 'Chest',
+  delt: 'Shoulders', delts: 'Shoulders', deltoid: 'Shoulders', deltoids: 'Shoulders', shoulder: 'Shoulders', shoulders: 'Shoulders',
+  tricep: 'Triceps', triceps: 'Triceps',
+  bicep: 'Biceps', biceps: 'Biceps',
+  lat: 'Back', lats: 'Back', back: 'Back',
+  calf: 'Calves', calves: 'Calves'
+};
+function canonMuscle(m) {
+  const s = String(m || '').trim();
+  if (!s) return '';
+  const low = s.toLowerCase();
+  return MUSCLE_SYNONYMS[low] || (s.charAt(0).toUpperCase() + s.slice(1).toLowerCase());
+}
 
 /* Normalise an exercise to { name, sets, reps, unit, video }. Handles the brief per-set
    `setList` shape by collapsing it back to a single count + reps + unit. */
@@ -3446,7 +3466,7 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
       return row;
     };
     const aggByCat = arr => { const o = {}; arr.forEach(s => s.exs.forEach(e => { const k = e.category || 'Other'; o[k] = (o[k] || 0) + (e.sets || 0); })); return o; };
-    const aggByMuscle = arr => { const o = {}; arr.forEach(s => s.exs.forEach(e => (e.muscles || '').split(',').map(m => m.trim()).filter(Boolean).forEach(m => { o[m] = (o[m] || 0) + (e.sets || 0); }))); return o; };
+    const aggByMuscle = arr => { const o = {}; arr.forEach(s => s.exs.forEach(e => (e.muscles || '').split(',').map(canonMuscle).filter(Boolean).forEach(m => { o[m] = (o[m] || 0) + (e.sets || 0); }))); return o; };
     const sumSets = arr => arr.reduce((a, s) => a + s.totalSets, 0);
     const sumReps = arr => arr.reduce((a, s) => a + s.totalReps, 0);
 
