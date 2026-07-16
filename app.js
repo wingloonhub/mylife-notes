@@ -400,6 +400,7 @@ const CATS = [
   { key: 'party', name: 'Party Planner', emoji: '🎉' },
   { key: 'trips', name: 'Trip Planner', emoji: '🧳' },
   { key: 'shopping', name: 'Grocery Planner', emoji: '🛒' },
+  { key: 'exercise', name: 'Exercise', singular: 'Exercise', emoji: '🏋️', hidden: true },
   { key: 'shopitem', name: 'Saved Item', emoji: '🏷️', hidden: true },
   { key: 'tripcat', name: 'Trip Area', emoji: '🏷️', hidden: true },
   { key: 'activity', name: 'Activity', emoji: '📌', hidden: true },
@@ -909,6 +910,23 @@ function buildEditor(cat, data, amOwner) {
       a(workoutExercisesEditor(data));
       break;
     }
+    case 'exercise': { // a library exercise (Setup tab): name auto-detects category + muscles, editable
+      if (data.category == null) data.category = '';
+      const hint = h('div', { class: 'hint', style: { margin: '2px 2px 10px' } });
+      const musInput = h('input', { value: data.muscles || '', oninput: e => data.muscles = e.target.value });
+      const paint = () => {
+        const g = lookupExercise(data.name);
+        hint.textContent = data.name ? ('Auto-detected: ' + (g.category || 'Other') + (g.muscles ? ' · ' + g.muscles : '') + '  —  edit below to change.') : 'Type a name and I\'ll guess the category & muscles.';
+        musInput.placeholder = g.muscles || 'e.g. Chest, Triceps';
+      };
+      a(h('div', { class: 'field' }, h('label', null, 'Exercise name'),
+        h('input', { class: 'title-input', placeholder: 'e.g. Push-ups', value: data.name || '', oninput: e => { data.name = e.target.value; paint(); } })));
+      a(hint); paint();
+      a(selectField('Category', data, 'category', [{ value: '', label: 'Auto-detect' }, ...WORKOUT_CATS.map(ct => ({ value: ct, label: ct }))]));
+      a(h('div', { class: 'field' }, h('label', null, 'Primary muscles'), musInput));
+      a(field('YouTube video link (optional)', data, 'video', { type: 'url', placeholder: 'e.g. https://youtube.com/…' }));
+      break;
+    }
     case 'events':
     case 'appointments': {
       a(field('Title', data, 'title', { placeholder: cat === 'appointments' ? 'e.g. Dentist — scaling' : 'e.g. School concert' }));
@@ -1353,8 +1371,19 @@ function lookupExercise(name) {
   for (const e of WORKOUT_LIB) if (e.kw.some(k => s.includes(k))) return { category: e.category, muscles: e.muscles };
   return { category: '', muscles: '' };
 }
-function exerciseCategory(ex) { return (ex && ex.category) || lookupExercise(ex && ex.name).category || 'Other'; }
-function exerciseMuscles(ex) { return (ex && ex.muscles) || lookupExercise(ex && ex.name).muscles || ''; }
+// User-defined exercise library (Setup tab) — cached items of the hidden `exercise` category.
+let EX_LIBRARY = [];
+async function loadExLibrary() { try { EX_LIBRARY = await DB.listItems('exercise'); } catch (e) { EX_LIBRARY = []; } }
+function libFind(name) {
+  const s = String(name || '').trim().toLowerCase();
+  if (!s) return null;
+  const it = EX_LIBRARY.find(x => ((x.data && x.data.name) || '').trim().toLowerCase() === s);
+  return it ? it.data : null;
+}
+// Category / muscles / video resolve in order: the exercise's own value → the library entry → auto-detect.
+function exerciseCategory(ex) { const lib = libFind(ex && ex.name) || {}; return (ex && ex.category) || lib.category || lookupExercise(ex && ex.name).category || 'Other'; }
+function exerciseMuscles(ex) { const lib = libFind(ex && ex.name) || {}; return (ex && ex.muscles) || lib.muscles || lookupExercise(ex && ex.name).muscles || ''; }
+function exerciseVideo(ex) { const lib = libFind(ex && ex.name) || {}; return (ex && ex.video && String(ex.video).trim()) ? ex.video : (lib.video || ''); }
 
 /* Normalise an exercise to { name, sets, reps, unit, video }. Handles the brief per-set
    `setList` shape by collapsing it back to a single count + reps + unit. */
@@ -1371,28 +1400,28 @@ function normalizeWorkoutExercise(ex) {
   return ex;
 }
 
-/* workout exercises: name + number of sets + reps/secs each + optional video */
+/* workout-day exercises: pick from the Setup exercise library + sets/reps(or secs)/weight.
+   Only names in the library can be chosen (plus any legacy name already on this day, to avoid losing it). */
 function workoutExercisesEditor(data) {
   if (!Array.isArray(data.exercises)) data.exercises = [];
   data.exercises.forEach(normalizeWorkoutExercise);
+  const libNames = EX_LIBRARY.map(x => (x.data && x.data.name || '').trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
   const wrap = h('div');
   function draw() {
     wrap.innerHTML = '';
+    if (!libNames.length) wrap.appendChild(h('div', { class: 'hint', style: { margin: '0 2px 10px' } },
+      'No exercises in your library yet. Add them in the Setup tab first, then pick them here.'));
     data.exercises.forEach((ex, i) => {
       normalizeWorkoutExercise(ex);
-      const musInput = h('input', { placeholder: lookupExercise(ex.name).muscles || 'e.g. Chest, Triceps', value: ex.muscles || '', oninput: e => { ex.muscles = e.target.value; paintHint(); } });
-      const catSel = h('select', { onchange: e => { ex.category = e.target.value; paintHint(); } },
-        h('option', { value: '', selected: !ex.category ? 'selected' : null }, 'Auto-detect'),
-        ...WORKOUT_CATS.map(ct => h('option', { value: ct, selected: ex.category === ct ? 'selected' : null }, ct)));
-      const metaHint = h('div', { class: 'hint', style: { marginTop: '6px' } });
-      const paintHint = () => {
-        metaHint.textContent = '→ ' + exerciseCategory(ex) + (exerciseMuscles(ex) ? ' · ' + exerciseMuscles(ex) : '');
-        musInput.placeholder = lookupExercise(ex.name).muscles || 'e.g. Chest, Triceps';
-      };
-      paintHint();
+      const inLib = libNames.some(n => n.toLowerCase() === (ex.name || '').trim().toLowerCase());
+      const metaHint = h('div', { class: 'hint', style: { marginTop: '6px' } }, ex.name ? ('→ ' + exerciseCategory(ex) + (exerciseMuscles(ex) ? ' · ' + exerciseMuscles(ex) : '')) : '');
+      const sel = h('select', { class: 'grow', onchange: e => { ex.name = e.target.value; metaHint.textContent = ex.name ? ('→ ' + exerciseCategory(ex) + (exerciseMuscles(ex) ? ' · ' + exerciseMuscles(ex) : '')) : ''; } },
+        h('option', { value: '', selected: !ex.name ? 'selected' : null }, '— Select exercise —'),
+        ...libNames.map(n => h('option', { value: n, selected: (ex.name || '').trim().toLowerCase() === n.toLowerCase() ? 'selected' : null }, n)),
+        ...(ex.name && !inLib ? [h('option', { value: ex.name, selected: 'selected' }, ex.name + ' (not in library)')] : []));
       wrap.appendChild(h('div', { class: 'sub-item' },
         h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' } },
-          h('input', { class: 'grow', placeholder: 'Exercise (e.g. Push-ups)', value: ex.name || '', oninput: e => { ex.name = e.target.value; paintHint(); } }),
+          sel,
           h('button', { class: 'del-x', type: 'button', onclick: () => { data.exercises.splice(i, 1); draw(); } }, '✕')),
         h('div', { class: 'row2' },
           h('div', { class: 'field' }, h('label', null, 'Number of sets'),
@@ -1403,15 +1432,11 @@ function workoutExercisesEditor(data) {
               h('select', { style: { width: '80px', flex: 'none' }, onchange: e => ex.unit = e.target.value },
                 h('option', { value: 'reps', selected: ex.unit !== 'secs' ? 'selected' : null }, 'reps'),
                 h('option', { value: 'secs', selected: ex.unit === 'secs' ? 'selected' : null }, 'secs'))))),
-        h('div', { class: 'row2' },
-          h('div', { class: 'field' }, h('label', null, 'Category'), catSel),
-          h('div', { class: 'field' }, h('label', null, 'Primary muscles'), musInput)),
-        metaHint,
-        h('div', { class: 'field', style: { marginTop: '8px' } },
-          h('label', null, 'Video link (optional)'),
-          h('input', { type: 'url', placeholder: 'e.g. YouTube demo of this exercise', value: ex.video || '', oninput: e => ex.video = e.target.value }))));
+        h('div', { class: 'field', style: { marginTop: '8px' } }, h('label', null, 'Weight (optional)'),
+          h('input', { placeholder: 'e.g. 20kg', value: ex.weight || '', oninput: e => ex.weight = e.target.value })),
+        metaHint));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', sets: '', reps: '', unit: 'reps', category: '', muscles: '', video: '', done: false }); draw(); } }, '+ Add exercise'));
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', sets: '', reps: '', unit: 'reps', weight: '', done: false }); draw(); } }, '+ Add exercise'));
   }
   draw();
   return wrap;
@@ -2893,7 +2918,7 @@ async function listScreen(cat, sub) {
   listEl.innerHTML = '';
 
   if (cat === 'reminder') { renderReminderScreen(listEl, items, sub); return; }
-  if (cat === 'workout') { renderWorkoutScreen(listEl, items, sub); return; }
+  if (cat === 'workout') { renderWorkoutScreen(listEl, items, fab, sub); return; }
   if (cat === 'vault') { renderVaultScreen(listEl, items, fab); return; }
   if (cat === 'memberships') { renderMembershipList(listEl, items); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
@@ -3225,26 +3250,60 @@ async function recoverLegacyWorkoutTicks(items) {
     const ds = localDateStr(dt);
     d.completions = Array.isArray(d.completions) ? d.completions : [];
     d.completions = d.completions.filter(c => !(c && typeof c === 'object' && !Array.isArray(c.ex) && c.n && c.d === ds));
-    exs.forEach(e => { const t = ticked(e); if (t > 0) d.completions.push({ d: ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : ''), c: exerciseCategory(e), m: exerciseMuscles(e) }); });
+    exs.forEach(e => { const t = ticked(e); if (t > 0) d.completions.push({ d: ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : ''), c: exerciseCategory(e), m: exerciseMuscles(e), w: e.weight || '' }); });
     d.setsFor = ds; // stamp so this runs once; the ticks now belong to that occurrence
     try { await DB.saveItem(it); } catch (e) {}
   }
 }
 
-/* Workout Schedule — cards = a workout day (weekday + exercises). Two tabs:
-   Schedule (set up the week) and Upcoming (tick off each exercise as done). */
-async function renderWorkoutScreen(listEl, items, sub) {
+/* One-time: adopt every distinct exercise already used on a workout day into the Setup library,
+   preserving any inline category/muscles/video, so existing plans keep working and the Schedule
+   dropdown isn't empty. Only adds names not already in the library. */
+async function seedExLibraryFromWorkouts(workoutItems) {
+  const have = new Set(EX_LIBRARY.map(x => ((x.data && x.data.name) || '').trim().toLowerCase()).filter(Boolean));
+  const seen = new Set(), toAdd = [];
+  (workoutItems || []).forEach(it => (it.data.exercises || []).forEach(e => {
+    const nm = (e.name || '').trim(); if (!nm) return;
+    const key = nm.toLowerCase();
+    if (have.has(key) || seen.has(key)) return;
+    seen.add(key);
+    toAdd.push({ name: nm, category: e.category || '', muscles: e.muscles || '', video: e.video || '' });
+  }));
+  if (!toAdd.length) return;
+  for (const d of toAdd) { try { await DB.saveItem({ cat: 'exercise', data: d }); } catch (e) {} }
+  await loadExLibrary();
+}
+
+/* Workout Schedule — 4 tabs: Upcoming (do & tick), Schedule (build workout days from library
+   exercises), Setup (the exercise library), Progress (report). */
+async function renderWorkoutScreen(listEl, items, fab, sub) {
   await recoverLegacyWorkoutTicks(items); // rescue partial sessions ticked under an older version
-  let tab = (sub === 'setup' || sub === 'progress') ? sub : 'upcoming';
+  await loadExLibrary();
+  await seedExLibraryFromWorkouts(items); // one-time: adopt exercises from existing workout days into the library
+  let tab = (sub === 'schedule' || sub === 'setup' || sub === 'progress') ? sub : 'upcoming';
   let progYear = null; // selected year in the Progress report (null = latest)
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
   listEl.innerHTML = '';
   listEl.appendChild(tabsEl);
   listEl.appendChild(body);
-  const refresh = async () => { try { items = await DB.listItems('workout'); } catch (e) {} draw(); };
+  const refresh = async () => { try { items = await DB.listItems('workout'); } catch (e) {} await loadExLibrary(); draw(); };
   const wkOrder = w => ((Number(w) + 6) % 7); // Monday-first
   const dayLabel = (d, n) => 'Day ' + n + ' · ' + (DOW[Number(d.weekday)] || '');
+  function renderExerciseLibrary(container) {
+    container.appendChild(h('div', { class: 'hint', style: { margin: '0 2px 12px' } },
+      'Your exercise library. Add each exercise once — name, category, muscles, video. Then pick them when building workout days in the Schedule tab.'));
+    const lib = EX_LIBRARY.slice().sort((a, b) => ((a.data.name || '').localeCompare(b.data.name || '')));
+    if (!lib.length) { container.appendChild(emptyState('exercise', 'No exercises yet. Tap + to add your first one.')); return; }
+    lib.forEach(it => {
+      const d = it.data || {};
+      container.appendChild(h('div', { class: 'row', onclick: () => navigate('#/edit/exercise/' + it.id) },
+        h('div', { class: 'main' },
+          h('div', { class: 'title' }, d.name || 'Exercise'),
+          h('div', { class: 'meta' }, [exerciseCategory(d), exerciseMuscles(d)].filter(Boolean).join(' · ') + (exerciseVideo(d) ? ' · ▶' : ''))),
+        h('div', { class: 'chev' }, '›')));
+    });
+  }
   // a completion can be a plain date string (old) or { d, ex:[...] } (new) — normalise the date out
   const compDate = c => (typeof c === 'string' ? c : (c && c.d)) || '';
   const doneOn = (it, ds) => (it.data.completions || []).some(c => compDate(c) === ds);
@@ -3279,7 +3338,7 @@ async function renderWorkoutScreen(listEl, items, sub) {
     const syncToday = async () => {
       d.completions = Array.isArray(d.completions) ? d.completions : [];
       d.completions = d.completions.filter(c => !(c && typeof c === 'object' && !Array.isArray(c.ex) && c.n && compDate(c) === occ.ds));
-      exs.forEach(e => { const t = setsTicked(e); if (t > 0) d.completions.push({ d: occ.ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : ''), c: exerciseCategory(e), m: exerciseMuscles(e) }); });
+      exs.forEach(e => { const t = setsTicked(e); if (t > 0) d.completions.push({ d: occ.ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : ''), c: exerciseCategory(e), m: exerciseMuscles(e), w: e.weight || '' }); });
       try { await DB.saveItem(it); } catch (e) {}
     };
     const card = h('div', { class: 'detail-card' + (isToday ? '' : ' muted'), style: isToday ? null : { opacity: '.82' } },
@@ -3288,10 +3347,10 @@ async function renderWorkoutScreen(listEl, items, sub) {
       dayLabel(d, dayNo) + (isToday && exs.length ? '  (' + doneSetsN() + '/' + totalSetsN + ' sets)' : ''));
     card.appendChild(dayLine);
     if (!exs.length) { card.appendChild(h('div', { class: 'hint' }, 'No exercises yet.')); return card; }
-    const videoLink = ex => (ex.video && String(ex.video).trim())
-      ? h('a', { href: ex.video, target: '_blank', rel: 'noopener', onclick: e => e.stopPropagation(),
+    const videoLink = ex => { const v = exerciseVideo(ex); return v
+      ? h('a', { href: v, target: '_blank', rel: 'noopener', onclick: e => e.stopPropagation(),
           style: { display: 'inline-block', marginTop: '3px', color: 'var(--accent)', fontWeight: '700', fontSize: '12px', textDecoration: 'none' } }, '▶ Watch')
-      : null;
+      : null; };
     const maxSets = Math.max(1, ...exs.map(setCount));
     const border = '1px solid var(--line)';
     const th = (txt, left) => h('th', { style: { padding: '6px 8px', borderBottom: border, color: 'var(--muted)', fontSize: '11px', fontWeight: '700', textAlign: left ? 'left' : 'center', whiteSpace: 'nowrap' } }, txt);
@@ -3302,7 +3361,7 @@ async function renderWorkoutScreen(listEl, items, sub) {
       const c = setCount(ex);
       const unit = ex.unit === 'secs' ? 'secs' : 'reps';
       const val = (ex.reps != null && ex.reps !== '') ? String(ex.reps) : '–';
-      const meta = [exerciseCategory(ex), exerciseMuscles(ex), unit].filter(Boolean).join(' · ');
+      const meta = [exerciseCategory(ex), exerciseMuscles(ex), unit, (ex.weight && String(ex.weight).trim()) ? '⚖ ' + ex.weight : ''].filter(Boolean).join(' · ');
       const nameTd = h('td', { style: { padding: '8px', borderBottom: border, textAlign: 'left', minWidth: '110px' } },
         h('div', { style: { fontWeight: '600' } }, ex.name),
         h('div', { style: { fontSize: '11px', color: 'var(--muted)', lineHeight: '1.35' } }, meta),
@@ -3355,7 +3414,7 @@ async function renderWorkoutScreen(listEl, items, sub) {
         } else if (Array.isArray(c.ex)) { // day snapshot
           c.ex.forEach(e => sess.exs.push({ name: e.n, sets: Number(e.s) || 0, unit: e.u === 'secs' ? 'secs' : 'reps', reps: e.r, category: e.c || lookupExercise(e.n).category || 'Other', muscles: e.m || lookupExercise(e.n).muscles || '' }));
         } else if (c.n) { // single completed exercise
-          sess.exs.push({ name: c.n, sets: Number(c.s) || 0, unit: c.u === 'secs' ? 'secs' : 'reps', reps: c.r, category: c.c || lookupExercise(c.n).category || 'Other', muscles: c.m || lookupExercise(c.n).muscles || '' });
+          sess.exs.push({ name: c.n, sets: Number(c.s) || 0, unit: c.u === 'secs' ? 'secs' : 'reps', reps: c.r, category: c.c || lookupExercise(c.n).category || 'Other', muscles: c.m || lookupExercise(c.n).muscles || '', weight: c.w || '' });
         }
       });
     });
@@ -3443,7 +3502,7 @@ async function renderWorkoutScreen(listEl, items, sub) {
       const det = h('details', { style: { marginTop: '10px' } },
         h('summary', { style: { cursor: 'pointer', fontSize: '12.5px', color: 'var(--accent)', fontWeight: '600' } }, 'View sessions'));
       ss.forEach(s => {
-        const exText = s.exs.map(e => e.name + (e.sets ? ' (' + e.sets + '×' + (e.reps || '?') + (e.unit === 'secs' ? 's' : '') + ')' : '')).join(', ');
+        const exText = s.exs.map(e => e.name + (e.sets ? ' (' + e.sets + '×' + (e.reps || '?') + (e.unit === 'secs' ? 's' : '') + (e.weight ? ' @ ' + e.weight : '') + ')' : '')).join(', ');
         det.appendChild(h('div', { style: { margin: '8px 0 0' } },
           h('div', { style: { fontWeight: '600', fontSize: '12.5px' } }, fmtDate(s.date) + ' · ' + s.day + ' · ' + s.totalSets + ' sets' + (s.totalReps ? ' · ' + s.totalReps + ' reps' : '') + (s.totalSecs ? ' · ' + s.totalSecs + 's' : '')),
           h('div', { style: { color: 'var(--muted)', fontSize: '12px', lineHeight: '1.5' } }, exText || '—')));
@@ -3456,17 +3515,28 @@ async function renderWorkoutScreen(listEl, items, sub) {
 
   function draw() {
     tabsEl.innerHTML = '';
-    [['upcoming', 'Upcoming'], ['setup', 'Setup'], ['progress', 'Progress']].forEach(([k, label]) =>
+    [['upcoming', 'Upcoming'], ['schedule', 'Schedule'], ['setup', 'Setup'], ['progress', 'Progress']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => {
         tab = k;
         try { history.replaceState(null, '', k === 'upcoming' ? '#/cat/workout' : '#/cat/workout/' + k); } catch (e) {}
         draw();
       } }, label)));
+    // FAB: Schedule adds a workout day, Setup adds a library exercise, others none
+    if (fab) {
+      if (tab === 'schedule') { fab.style.display = ''; fab.onclick = () => navigate('#/edit/workout'); }
+      else if (tab === 'setup') { fab.style.display = ''; fab.onclick = () => navigate('#/edit/exercise'); }
+      else fab.style.display = 'none';
+    }
     body.innerHTML = '';
     const list = items.slice().sort((a, b) => wkOrder(a.data.weekday) - wkOrder(b.data.weekday));
     if (tab === 'progress') { body.appendChild(progressList(list, Object.fromEntries(list.map((it, i) => [it.id, i + 1])), progYear, y => { progYear = y; draw(); })); return; }
-    if (!list.length) { body.appendChild(emptyState('workout', 'No workout days yet. Tap + to add one.')); return; }
-    if (tab === 'setup') { list.forEach((it, i) => body.appendChild(scheduleCard(it, i + 1))); return; }
+    if (tab === 'setup') { renderExerciseLibrary(body); return; }
+    if (tab === 'schedule') {
+      if (!list.length) { body.appendChild(emptyState('workout', 'No workout days yet. Tap + to add one.')); return; }
+      list.forEach((it, i) => body.appendChild(scheduleCard(it, i + 1))); return;
+    }
+    if (!list.length) { body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '😌'),
+      h('div', null, 'No workout days yet. Add exercises in Setup, then build your week in Schedule.'))); return; }
     // Upcoming = the next full 7 days. Today's card is interactive (tick each set; each finished
     // exercise is logged to Progress on its own). It stays visible all day and simply rolls off
     // tomorrow as the 7-day window slides forward; future days are read-only previews.
@@ -3727,6 +3797,7 @@ async function enrichRowDistance(it, row, posP) {
 /* ----- EDITOR ----- */
 async function editScreen(cat, id) {
   await loadFriends(); // so share boxes can offer the saved-friends dropdown
+  if (cat === 'workout') await loadExLibrary(); // the workout-day editor picks exercises from the library
   let item = id ? await DB.getItem(cat, id) : null;
   if (id && !item) { redirectReplace('#/cat/' + cat); return; } // editing a deleted item — skip it for Back
   let currentId = id;
@@ -3743,6 +3814,7 @@ async function editScreen(cat, id) {
   const isQuick = cat === 'quick';
   const hasContent = () => {
     if (cat === 'records' || cat === 'workout') return true;
+    if (cat === 'exercise') return !!(data.name && data.name.trim());
     if (cat === 'vault') return !!(data.platform || data.username || data.password);
     if (isQuick) return !!(data.title || (data.bodyHtml || '').replace(/<[^>]+>/g, '').trim() || (data.strokes && data.strokes.length));
     return !!data.title;
