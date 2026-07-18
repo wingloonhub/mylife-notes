@@ -3359,7 +3359,9 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
     // even a partial one (e.g. 1 of 3 sets → "1 set"). Un-ticking updates it; nothing waits for a full day.
     const syncToday = async () => {
       d.completions = Array.isArray(d.completions) ? d.completions : [];
-      d.completions = d.completions.filter(c => !(c && typeof c === 'object' && !Array.isArray(c.ex) && c.n && compDate(c) === occ.ds));
+      // rebuild today's log from scratch: drop EVERY record dated today (any old format), then re-add
+      // only the exercises with sets still ticked — so unticking always removes it from the count.
+      d.completions = d.completions.filter(c => compDate(c) !== occ.ds);
       exs.forEach(e => { const t = setsTicked(e); if (t > 0) d.completions.push({ d: occ.ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : ''), c: exerciseCategory(e), m: exerciseMuscles(e), w: e.weight || '' }); });
       try { await DB.saveItem(it); } catch (e) {}
     };
