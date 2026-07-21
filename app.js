@@ -3349,9 +3349,20 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
     const exs = (d.exercises || []).filter(e => e.name && e.name.trim());
     exs.forEach(normalizeWorkoutExercise);
     const setCount = ex => Math.max(1, parseInt(ex.sets, 10) || 0);
-    exs.forEach(ex => { if (!Array.isArray(ex.setsDone)) ex.setsDone = []; ex.setsDone.length = setCount(ex); });
-    // ticks belong to ONE day's occurrence — if the stored ticks are from an earlier date, clear them
-    if (isToday && d.setsFor !== occ.ds) { exs.forEach(e => e.setsDone = []); d.setsFor = occ.ds; }
+    // The tick display DERIVES from the durable completions log for THIS date — so anything you
+    // logged stays ticked when you leave and reopen (even hours later, even in a new session), and a
+    // fresh occurrence (a new date with no records) starts empty. setsDone is just a view of the log.
+    exs.forEach(e => {
+      const cnt = setCount(e);
+      let done = 0;
+      if (isToday) {
+        const rec = (d.completions || []).find(c => c && typeof c === 'object' && !Array.isArray(c.ex) && c.n && compDate(c) === occ.ds && String(c.n).trim().toLowerCase() === String(e.name || '').trim().toLowerCase());
+        done = rec ? Math.min(cnt, Math.max(0, Number(rec.s) || 0)) : 0;
+      }
+      e.setsDone = [];
+      for (let i = 0; i < done; i++) e.setsDone[i] = true;
+    });
+    if (isToday) d.setsFor = occ.ds;
     const setsTicked = ex => { const c = setCount(ex); let n = 0; for (let i = 0; i < c; i++) if (ex.setsDone[i]) n++; return n; };
     const doneSetsN = () => exs.reduce((a, e) => a + setsTicked(e), 0);
     const totalSetsN = exs.reduce((a, e) => a + setCount(e), 0);
