@@ -108,7 +108,15 @@ async function initStorage() {
       const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
       const fsMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js');
       const app = appMod.initializeApp(FIREBASE.config);
-      fb = { auth: authMod.getAuth(app), db: fsMod.getFirestore(app), a: authMod, f: fsMod };
+      // Persistent (IndexedDB) cache so writes are durable across app close/reopen — without it, a
+      // quick burst of edits could be lost if the tab closed before syncing. Falls back to memory cache.
+      let db;
+      try {
+        db = fsMod.initializeFirestore(app, { localCache: fsMod.persistentLocalCache({ tabManager: fsMod.persistentMultipleTabManager() }) });
+      } catch (e) {
+        try { db = fsMod.getFirestore(app); } catch (e2) { db = fsMod.getFirestore(app); }
+      }
+      fb = { auth: authMod.getAuth(app), db, a: authMod, f: fsMod };
       MODE = 'firebase';
       return;
     } catch (e) {
@@ -263,7 +271,7 @@ const DB = {
         const participants = cleanEmails([ownerEmail, ...sharedWith]);
         // grocery is a singleton; give it a per-owner shared id so two people's lists don't collide
         const sid = (item.cat === 'shopping') ? (ownerUid + '_shoplist') : item.id;
-        await setDoc(doc(fb.db, 'shared', sid), { cat: item.cat, data: item.data, ownerUid, ownerEmail, participants, updatedAt: item.updatedAt }, { merge: true });
+        await setDoc(doc(fb.db, 'shared', sid), JSON.parse(JSON.stringify({ cat: item.cat, data: item.data, ownerUid, ownerEmail, participants, updatedAt: item.updatedAt })), { merge: true });
         // if I own it and a private copy lingers, remove it
         if (ownerUid === CURRENT.uid) {
           const privId = (item.cat === 'shopping') ? '_shoplist' : item.id;
@@ -274,7 +282,10 @@ const DB = {
         // private
         const privId = (item.cat === 'shopping') ? '_shoplist' : item.id;
         const { id, _shared, _ownerUid, _ownerEmail, _amOwner, ...rest } = item;
-        await setDoc(doc(fb.db, 'users', CURRENT.uid, 'items', privId), rest, { merge: true });
+        // Firestore REJECTS undefined values and sparse-array holes — one bad field silently killed
+        // the whole write. JSON round-trip strips undefined and fills holes with null, so saves never throw on shape.
+        const clean = JSON.parse(JSON.stringify(rest));
+        await setDoc(doc(fb.db, 'users', CURRENT.uid, 'items', privId), clean, { merge: true });
         // if it used to be shared (now un-shared), remove the shared copy
         if (isShareable) { try { await deleteDoc(doc(fb.db, 'shared', (item.cat === 'shopping') ? (CURRENT.uid + '_shoplist') : id)); } catch (e) {} }
         item.id = privId;
@@ -3374,7 +3385,8 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
       // only the exercises with sets still ticked — so unticking always removes it from the count.
       d.completions = d.completions.filter(c => compDate(c) !== occ.ds);
       exs.forEach(e => { const t = setsTicked(e); if (t > 0) d.completions.push({ d: occ.ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : ''), c: exerciseCategory(e), m: exerciseMuscles(e), w: e.weight || '' }); });
-      try { await DB.saveItem(it); } catch (e) {}
+      // never swallow a failed save — the tick would look done but be gone on the next open
+      try { await DB.saveItem(it); } catch (e) { console.error('workout save failed', e); toast('⚠ Not saved — check your connection and tap again'); }
     };
     const card = h('div', { class: 'detail-card' + (isToday ? '' : ' muted'), style: isToday ? null : { opacity: '.82' } },
       h('div', { class: 'section-title', style: { marginTop: '0' } }, dateHeading(occ.date, occ.off)));
@@ -3411,8 +3423,12 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
         };
         const cell = h('td', { style: cellStyle() }, (isToday && ex.setsDone[i] ? '✓ ' : '') + val);
         if (isToday) cell.onclick = async () => {
-          const before = ex.setsDone[i];
-          ex.setsDone[i] = !ex.setsDone[i];
+          const before = !!ex.setsDone[i];
+          // rebuild as a dense boolean array — ticking Set 3 before Set 1 must not leave holes
+          // (Firestore rejects sparse arrays, which would kill the save)
+          const next = [];
+          for (let k = 0; k < c; k++) next[k] = (k === i) ? !before : !!ex.setsDone[k];
+          ex.setsDone = next;
           Object.assign(cell.style, cellStyle()); cell.textContent = (ex.setsDone[i] ? '✓ ' : '') + val;
           dayLine.textContent = dayLabel(d, dayNo) + '  (' + doneSetsN() + '/' + totalSetsN + ' sets)';
           if (!before && ex.setsDone[i]) toast('Set logged 💪'); // that set now counts in Progress
