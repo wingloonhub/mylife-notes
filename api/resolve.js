@@ -15,10 +15,15 @@ function extractCoords(s) {
   return null;
 }
 
+// only Google Maps links — this must not be usable as an open URL resolver
+const ALLOWED = /^https?:\/\/(maps\.app\.goo\.gl|goo\.gl|maps\.google\.[a-z.]{2,10}|(www\.)?google\.[a-z.]{2,10})\//i;
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cache-Control', 's-maxage=86400, stale-while-revalidate'); // a share link never changes its target
   const url = req.query && req.query.url;
   if (!url) { res.status(400).json({ error: 'missing url' }); return; }
+  if (!ALLOWED.test(url)) { res.status(400).json({ error: 'not a Google Maps link' }); return; }
   try {
     const r = await fetch(url, { redirect: 'follow', headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MyLifeNotes/1.0)' } });
     let coords = extractCoords(r.url);

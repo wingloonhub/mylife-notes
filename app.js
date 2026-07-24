@@ -108,7 +108,15 @@ async function initStorage() {
       const authMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js');
       const fsMod = await import('https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js');
       const app = appMod.initializeApp(FIREBASE.config);
-      fb = { auth: authMod.getAuth(app), db: fsMod.getFirestore(app), a: authMod, f: fsMod };
+      // Persistent (IndexedDB) cache so writes are durable across app close/reopen — without it, a
+      // quick burst of edits could be lost if the tab closed before syncing. Falls back to memory cache.
+      let db;
+      try {
+        db = fsMod.initializeFirestore(app, { localCache: fsMod.persistentLocalCache({ tabManager: fsMod.persistentMultipleTabManager() }) });
+      } catch (e) {
+        try { db = fsMod.getFirestore(app); } catch (e2) { db = fsMod.getFirestore(app); }
+      }
+      fb = { auth: authMod.getAuth(app), db, a: authMod, f: fsMod };
       MODE = 'firebase';
       return;
     } catch (e) {
@@ -263,7 +271,7 @@ const DB = {
         const participants = cleanEmails([ownerEmail, ...sharedWith]);
         // grocery is a singleton; give it a per-owner shared id so two people's lists don't collide
         const sid = (item.cat === 'shopping') ? (ownerUid + '_shoplist') : item.id;
-        await setDoc(doc(fb.db, 'shared', sid), { cat: item.cat, data: item.data, ownerUid, ownerEmail, participants, updatedAt: item.updatedAt }, { merge: true });
+        await setDoc(doc(fb.db, 'shared', sid), JSON.parse(JSON.stringify({ cat: item.cat, data: item.data, ownerUid, ownerEmail, participants, updatedAt: item.updatedAt })), { merge: true });
         // if I own it and a private copy lingers, remove it
         if (ownerUid === CURRENT.uid) {
           const privId = (item.cat === 'shopping') ? '_shoplist' : item.id;
@@ -274,7 +282,10 @@ const DB = {
         // private
         const privId = (item.cat === 'shopping') ? '_shoplist' : item.id;
         const { id, _shared, _ownerUid, _ownerEmail, _amOwner, ...rest } = item;
-        await setDoc(doc(fb.db, 'users', CURRENT.uid, 'items', privId), rest, { merge: true });
+        // Firestore REJECTS undefined values and sparse-array holes — one bad field silently killed
+        // the whole write. JSON round-trip strips undefined and fills holes with null, so saves never throw on shape.
+        const clean = JSON.parse(JSON.stringify(rest));
+        await setDoc(doc(fb.db, 'users', CURRENT.uid, 'items', privId), clean, { merge: true });
         // if it used to be shared (now un-shared), remove the shared copy
         if (isShareable) { try { await deleteDoc(doc(fb.db, 'shared', (item.cat === 'shopping') ? (CURRENT.uid + '_shoplist') : id)); } catch (e) {} }
         item.id = privId;
@@ -388,11 +399,12 @@ const DB = {
 const CATS = [
   { key: 'quick', name: 'Quick Note', emoji: '📝' },
   { key: 'todo', name: 'To-Do List', emoji: '✅' },
-  { key: 'events', name: 'Events', singular: 'Event', emoji: '📅' },
-  { key: 'appointments', name: 'Appointments', singular: 'Appointment', emoji: '🗓️' },
+  { key: 'mysched', name: 'My Schedule', singular: 'Schedule', emoji: '📅' },
+  { key: 'events', name: 'Events', singular: 'Event', emoji: '📅', hidden: true },
+  { key: 'appointments', name: 'Appointments', singular: 'Appointment', emoji: '🗓️', hidden: true },
   { key: 'reminder', name: 'Reminder', singular: 'Reminder', emoji: '⏰' },
-  { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒' },
-  { key: 'workout', name: 'Workout Schedule', singular: 'Workout Day', emoji: '💪' },
+  { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒', hidden: true },
+  { key: 'workout', name: 'Workout', singular: 'Workout Day', emoji: '💪' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'vault', name: 'Access Vault', singular: 'Login', emoji: '🔑' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
@@ -400,6 +412,7 @@ const CATS = [
   { key: 'party', name: 'Party Planner', emoji: '🎉' },
   { key: 'trips', name: 'Trip Planner', emoji: '🧳' },
   { key: 'shopping', name: 'Grocery Planner', emoji: '🛒' },
+  { key: 'exercise', name: 'Exercise', singular: 'Exercise', emoji: '🏋️', hidden: true },
   { key: 'shopitem', name: 'Saved Item', emoji: '🏷️', hidden: true },
   { key: 'tripcat', name: 'Trip Area', emoji: '🏷️', hidden: true },
   { key: 'activity', name: 'Activity', emoji: '📌', hidden: true },
@@ -416,6 +429,7 @@ const catSingular = k => { const c = CATS.find(c => c.key === k) || {}; return c
 const CAT_GUIDE = {
   quick: { what: 'Freeform notes with rich text and a sketch pad — for quick jots, lists or a doodle.', unique: 'The only category with a built-in drawing pad — you can sketch, not just type.', reminders: null },
   todo: { what: 'Checklists where each item can carry its own due date; tick things off as you go.', unique: 'Every item can have its own due date and reminder — not one deadline for the whole list.', reminders: 'You set one time per list ("Remind me at"). On each item\'s due date, a nudge is sent to your Telegram at that time.' },
+  mysched: { what: 'All your events, appointments and recurring activities in one place. Each card is one-time or recurring (daily, weekly, monthly or yearly), with a date/time, location and map link. One-time cards move to the Past tab the day after.', unique: 'One category for everything scheduled — a dentist visit, a birthday every year, piano class every Tuesday — with reminders that repeat automatically for recurring cards.', reminders: 'Up to two Telegram reminders before it starts (per occurrence for recurring cards), plus an optional before-it-ends reminder for pick-ups. Location-aware: includes distance and drive time. Tap 🔕 on a card to silence it.' },
   events: { what: 'One-off events with a date, time and location (with a map link). An event moves to the Past tab the day after it happens.', unique: 'Reminders are location-aware — they tell you how far away you are and the drive time so you leave on time.', reminders: 'Up to two Telegram reminders before it starts. If you added a location, the reminder also tells you how far away you are and the drive time. In the list, tap "I\'m here" once you arrive to stop them.' },
   appointments: { what: 'Same as Events, worded for appointments — date, time, location and map link, with a Past tab.', unique: 'Re-book in seconds: duplicate a past appointment to make the same one again.', reminders: 'Up to two Telegram reminders before it starts, including distance and drive time when a location is set. Tap "I\'m here" in the list to stop them once you arrive.' },
   reminder: { what: 'Standalone recurring reminders. Choose Once, Weekly, Every 2 weeks or Monthly, and how often it should repeat once it goes off.', unique: 'It nags — keeps pinging every couple of hours until you actually turn it off, so nothing slips.', reminders: 'This is the whole point of the category: it fires to Telegram on the due date/time and keeps nudging (e.g. every 2 or 4 hours) until you tap "Turn off". A card only shows under the Due tab while it\'s actually going off.' },
@@ -488,6 +502,37 @@ function remindRow(data, onKey, minKey, label, hint, defMin, defOn) {
   const b = h('button', { class: 'btn small ' + (on() ? '' : 'secondary'), type: 'button' }, lbl());
   b.onclick = () => { data[onKey] = !on(); b.className = 'btn small ' + (on() ? '' : 'secondary'); b.textContent = lbl(); minRow.style.display = on() ? '' : 'none'; };
   return h('div', null, h('div', { class: 'field', style: { marginTop: '8px' } }, b), minRow);
+}
+/* reminder row with a value + unit (minutes/hours/days). Canonical total-minutes is kept in minKey
+   so the reminder engine stays unchanged; valKey/unitKey remember what the user typed. */
+function remindUnitRow(data, onKey, valKey, unitKey, minKey, label, suffix, defVal, defUnit, defOn, units) {
+  units = units || ['minutes', 'hours', 'days'];
+  const FACTOR = { minutes: 1, hours: 60, days: 1440 };
+  if (data[onKey] == null) data[onKey] = !!defOn;
+  if (data[valKey] == null || data[valKey] === '') {
+    // adopt a legacy minutes-only value if one exists, else the default
+    const legacy = parseInt(data[minKey], 10);
+    if (legacy > 0) {
+      if (legacy % 1440 === 0 && units.includes('days')) { data[valKey] = legacy / 1440; data[unitKey] = 'days'; }
+      else if (legacy % 60 === 0 && legacy >= 60) { data[valKey] = legacy / 60; data[unitKey] = 'hours'; }
+      else { data[valKey] = legacy; data[unitKey] = 'minutes'; }
+    } else { data[valKey] = defVal; data[unitKey] = data[unitKey] || defUnit; }
+  }
+  if (!units.includes(data[unitKey])) data[unitKey] = units[0];
+  const sync = () => { const v = parseInt(data[valKey], 10); data[minKey] = (v > 0) ? v * (FACTOR[data[unitKey]] || 1) : ''; };
+  sync();
+  const on = () => data[onKey] !== false;
+  const row = h('div', { class: 'field', style: { marginTop: '6px', display: on() ? '' : 'none' } },
+    h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+      h('input', { type: 'number', inputmode: 'numeric', min: '1', step: '1', style: { flex: '1', minWidth: '0' }, value: data[valKey],
+        oninput: e => { const v = parseInt(e.target.value, 10); data[valKey] = (isNaN(v) || v < 1) ? '' : v; sync(); } }),
+      h('select', { style: { width: '110px', flex: 'none' }, onchange: e => { data[unitKey] = e.target.value; sync(); } },
+        ...units.map(u => h('option', { value: u, selected: data[unitKey] === u ? 'selected' : null }, u))),
+      h('span', { style: { fontSize: '12.5px', color: 'var(--muted)', flex: 'none' } }, suffix)));
+  const lbl = () => (on() ? '✓ ' : '') + label;
+  const b = h('button', { class: 'btn small ' + (on() ? '' : 'secondary'), type: 'button' }, lbl());
+  b.onclick = () => { data[onKey] = !on(); b.className = 'btn small ' + (on() ? '' : 'secondary'); b.textContent = lbl(); row.style.display = on() ? '' : 'none'; };
+  return h('div', null, h('div', { class: 'field', style: { marginTop: '8px' } }, b), row);
 }
 
 /* editable list of simple strings */
@@ -909,6 +954,134 @@ function buildEditor(cat, data, amOwner) {
       a(workoutExercisesEditor(data));
       break;
     }
+    case 'exercise': { // a library exercise (Setup tab): name auto-detects category + muscles, editable
+      if (data.category == null) data.category = '';
+      const hint = h('div', { class: 'hint', style: { margin: '2px 2px 10px' } });
+      const musInput = h('input', { value: data.muscles || '', oninput: e => data.muscles = e.target.value });
+      const paint = () => {
+        const g = lookupExercise(data.name);
+        hint.textContent = data.name ? ('Auto-detected: ' + (g.category || 'Other') + (g.muscles ? ' · ' + g.muscles : '') + '  —  edit below to change.') : 'Type a name and I\'ll guess the category & muscles.';
+        musInput.placeholder = g.muscles || 'e.g. Chest, Triceps';
+      };
+      a(h('div', { class: 'field' }, h('label', null, 'Exercise name'),
+        h('input', { class: 'title-input', placeholder: 'e.g. Push-ups', value: data.name || '', oninput: e => { data.name = e.target.value; paint(); } })));
+      a(hint); paint();
+      a(selectField('Category', data, 'category', [{ value: '', label: 'Auto-detect' }, ...WORKOUT_CATS.map(ct => ({ value: ct, label: ct }))]));
+      a(h('div', { class: 'field' }, h('label', null, 'Primary muscles'), musInput));
+      a(field('YouTube video link (optional)', data, 'video', { type: 'url', placeholder: 'e.g. https://youtube.com/…' }));
+      break;
+    }
+    case 'mysched': {
+      if (data.schedType == null) data.schedType = 'once';
+      normMySched(data);
+      // 📷 snap a flyer / ticket / appointment card → Gemini reads it → form fills itself
+      const camInput = h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, onchange: async e => {
+        const f = e.target.files && e.target.files[0];
+        if (!f) return;
+        toast('📷 Reading the photo…');
+        try {
+          const dataUrl = await compressImage(f, 1200, 0.6);
+          const r = await fetch('/api/scan-schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: dataUrl }) });
+          const j = await r.json();
+          const fl = j && j.fields;
+          if (fl && (fl.title || fl.date || fl.location)) {
+            if (fl.title) data.title = fl.title;
+            if (fl.date) data.startDate = fl.date;
+            if (fl.time) data.time = fl.time;
+            if (fl.endDate) data.endDate = fl.endDate;
+            if (fl.endTime) data.end = fl.endTime;
+            if (fl.location) { data.location = titleCaseWords(fl.location); if (!data.map) data.map = fl.location; }
+            if (fl.notes && !data.notes) data.notes = fl.notes;
+            normMySched(data);
+            rerenderEditor('mysched', data);
+            toast('Filled in from your photo — give it a quick check ✏');
+          } else toast('⚠ ' + ((j && j.message) || 'Couldn\'t read details from that photo.'));
+        } catch (err) { toast('⚠ Photo reading works on the live site only.'); }
+        e.target.value = '';
+      } });
+      a(h('div', { class: 'field' }, camInput,
+        h('button', { class: 'btn secondary', type: 'button', style: { width: '100%' }, onclick: () => camInput.click() }, '📷 Fill from a photo'),
+        h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Snap a flyer, ticket, invite or appointment card and the details fill themselves in.')));
+      a(h('div', { class: 'section-title' }, 'Basic information'));
+      a(field('Title', data, 'title', { placeholder: 'e.g. School concert / Dentist / Piano class' }));
+      a(h('div', { class: 'field' }, h('label', null, 'Location name'),
+        h('input', { placeholder: 'e.g. Sunway Lagoon', autocapitalize: 'words', value: data.location || '',
+          oninput: e => data.location = e.target.value,
+          onblur: e => { const v = titleCaseWords(e.target.value); data.location = v; e.target.value = v; } })));
+      a(mapFieldBlock(data));
+      a(field('Notes', data, 'notes', { type: 'textarea' }));
+      a(h('div', { class: 'section-title' }, 'Date and time'));
+      const dtInput = (key, type, sync) => h('input', { type, value: data[key] || '', oninput: e => { data[key] = e.target.value; if (sync) normMySched(data); } });
+      a(h('div', { class: 'row2' },
+        h('div', { class: 'field' }, h('label', null, data.schedType === 'recur' ? 'Start date (first occurrence)' : 'Start date'), dtInput('startDate', 'date', true)),
+        h('div', { class: 'field' }, h('label', null, 'Start time'), dtInput('time', 'time', true))));
+      a(h('div', { class: 'row2' },
+        data.schedType === 'once'
+          ? h('div', { class: 'field' }, h('label', null, 'End date (optional)'), dtInput('endDate', 'date'))
+          : h('div', { class: 'field' }, h('label', null, ' '), h('div', { class: 'hint', style: { marginTop: '10px' } }, 'Ends the same day each time.')),
+        h('div', { class: 'field' }, h('label', null, 'End time (optional)'), dtInput('end', 'time'))));
+      a(h('div', { class: 'section-title' }, 'Schedule type'));
+      a(selectField('Schedule type', data, 'schedType',
+        [{ value: 'once', label: 'One-time' }, { value: 'recur', label: 'Recurring' }],
+        () => { normMySched(data); rerenderEditor('mysched', data); }));
+      if (data.schedType === 'recur') {
+        a(h('div', { class: 'section-title' }, 'Recurring schedule'));
+        a(selectField('Repeat', data, 'repeatSel',
+          [{ value: 'daily', label: 'Daily' }, { value: 'weekly', label: 'Weekly' }, { value: 'monthly', label: 'Monthly' }, { value: 'yearly', label: 'Yearly' }, { value: 'custom', label: 'Custom' }],
+          () => { if (data.repeatSel !== 'custom') data.interval = 1; rerenderEditor('mysched', data); }));
+        if (data.repeatSel === 'custom') {
+          a(h('div', { class: 'row2' },
+            h('div', { class: 'field' }, h('label', null, 'Repeat every'),
+              h('input', { type: 'number', inputmode: 'numeric', min: '1', value: data.interval || 1, oninput: e => { const v = parseInt(e.target.value, 10); data.interval = (v > 0) ? v : 1; } })),
+            h('div', { class: 'field' }, h('label', null, ' '),
+              h('select', { onchange: e => { data.customUnit = e.target.value; rerenderEditor('mysched', data); } },
+                ...['days', 'weeks', 'months', 'years'].map(u => h('option', { value: u, selected: data.customUnit === u ? 'selected' : null }, u))))));
+        }
+        if (myschedFreq(data) === 'weekly') {
+          const chips = h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } });
+          [1, 2, 3, 4, 5, 6, 0].forEach(w => {
+            const onW = () => (data.weekdays || []).includes(String(w));
+            const c = h('button', { class: 'btn small ' + (onW() ? '' : 'secondary'), type: 'button' }, DOW_SHORT[w]);
+            c.onclick = () => {
+              data.weekdays = Array.isArray(data.weekdays) ? data.weekdays : [];
+              if (onW()) { if (data.weekdays.length > 1) data.weekdays = data.weekdays.filter(x => x !== String(w)); }
+              else data.weekdays.push(String(w));
+              c.className = 'btn small ' + (onW() ? '' : 'secondary');
+            };
+            chips.appendChild(c);
+          });
+          a(h('div', { class: 'field' }, h('label', null, 'Repeat on'), chips));
+        } else if (myschedFreq(data) === 'monthly') {
+          a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Repeats on day ' + (data.startDate ? new Date(data.startDate + 'T00:00').getDate() : '…') + ' of the month (from the start date; shorter months clamp to their last day).'));
+        } else if (myschedFreq(data) === 'yearly') {
+          a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Repeats every year on the start date\'s day and month.'));
+        }
+        if (data.repeatMode == null) data.repeatMode = 'forever';
+        a(selectField('When does this schedule end?', data, 'repeatMode',
+          [{ value: 'forever', label: 'No end date' }, { value: 'until', label: 'End on a specific date' }, { value: 'count', label: 'End after a number of occurrences' }],
+          () => rerenderEditor('mysched', data)));
+        if (data.repeatMode === 'until') a(field('End date', data, 'until', { type: 'date', hint: 'The schedule (and its reminders) stop after this date.' }));
+        if (data.repeatMode === 'count') a(field('Number of occurrences', data, 'count', { type: 'number', inputmode: 'numeric', placeholder: 'e.g. 10' }));
+      }
+      a(h('div', { class: 'section-title' }, 'Reminder settings'));
+      if (data.remWhen == null) data.remWhen = 'start';
+      a(selectField('When should reminders be sent?', data, 'remWhen',
+        [{ value: 'start', label: 'Before the event starts' }, { value: 'end', label: 'Before the event ends' }, { value: 'both', label: 'Both' }],
+        () => rerenderEditor('mysched', data)));
+      a(h('div', { class: 'hint', style: { margin: '-4px 2px 6px' } }, 'Sent to your Telegram' + (data.schedType === 'recur' ? ', for every occurrence.' : '.')));
+      if (data.remWhen !== 'end') {
+        a(h('div', { class: 'section-title' }, 'Before the event starts'));
+        a(remindUnitRow(data, 'startReminder', 'startRemindVal', 'startRemindUnit', 'startRemindMin', 'First reminder', 'before start', 60, 'minutes', true, ['minutes', 'hours', 'days']));
+        a(remindUnitRow(data, 'startReminder2', 'startRemind2Val', 'startRemind2Unit', 'startRemind2Min', 'Second reminder (optional)', 'before start', 15, 'minutes', false, ['minutes', 'hours', 'days']));
+      }
+      if (data.remWhen !== 'start') {
+        a(h('div', { class: 'section-title' }, 'Before the event ends'));
+        if (!data.end) a(h('div', { class: 'hint', style: { margin: '-2px 2px 6px' } }, '⚠ Set an End time above or these can\'t fire.'));
+        a(remindUnitRow(data, 'endReminder', 'endRemindVal', 'endRemindUnit', 'endRemindMin', 'First reminder', 'before end', 20, 'minutes', true, ['minutes', 'hours']));
+        a(remindUnitRow(data, 'endReminder2', 'endRemind2Val', 'endRemind2Unit', 'endRemind2Min', 'Second reminder (optional)', 'before end', 10, 'minutes', false, ['minutes', 'hours']));
+      }
+      break;
+    }
     case 'events':
     case 'appointments': {
       a(field('Title', data, 'title', { placeholder: cat === 'appointments' ? 'e.g. Dentist — scaling' : 'e.g. School concert' }));
@@ -948,6 +1121,9 @@ function buildEditor(cat, data, amOwner) {
 /* Google Maps field with live coordinate lookup (shared by Events + Weekly Schedule) */
 /* Location search: type a place name → live suggestions → pick one → coordinates auto-filled.
    Uses a free OpenStreetMap-based geocoder (Photon). Also accepts pasted coordinates / a Maps link. */
+/* "sunway lagoon" → "Sunway Lagoon" (leaves the rest of each word as typed, so "KLCC" stays) */
+function titleCaseWords(s) { return String(s || '').replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1)); }
+
 function mapFieldBlock(data) {
   const frag = h('div');
   const status = h('div', { class: 'hint', style: { margin: '4px 2px 12px' } },
@@ -964,11 +1140,25 @@ function mapFieldBlock(data) {
   };
   async function search(q) {
     sug.innerHTML = '<div class="sug-load">Searching…</div>'; sug.style.display = '';
+    // Google Places first (via our /api/places proxy — real Google Maps data)…
+    try {
+      const g = await fetch('/api/places?q=' + encodeURIComponent(q)).then(x => x.json());
+      if (g && Array.isArray(g.places) && g.places.length) {
+        sug.innerHTML = '';
+        g.places.forEach(p => {
+          sug.appendChild(h('div', { class: 'sug', onclick: () => pick([p.name, p.address].filter(Boolean).join(', '), p.lat, p.lng) },
+            h('div', { class: 'sug-name' }, p.name || p.address),
+            h('div', { class: 'sug-sub' }, p.address)));
+        });
+        return;
+      }
+    } catch (e) {} // offline preview / key missing → fall through to the free search
+    // …falling back to the free OSM search
     try {
       const r = await fetch('https://photon.komoot.io/api/?limit=6&lang=en&q=' + encodeURIComponent(q)).then(x => x.json());
       const feats = (r && r.features) || [];
       sug.innerHTML = '';
-      if (!feats.length) { sug.innerHTML = '<div class="sug-load">No matches — try a different name.</div>'; return; }
+      if (!feats.length) { sug.innerHTML = '<div class="sug-load">No matches — try a different name, or paste a Google Maps link.</div>'; return; }
       feats.forEach(f => {
         const p = f.properties || {}, c = (f.geometry || {}).coordinates || [];
         if (typeof c[1] !== 'number') return;
@@ -984,6 +1174,21 @@ function mapFieldBlock(data) {
     clearTimeout(timer);
     const coords = parseLatLng(q); // still accept pasted "lat,lng"
     if (coords) { data.lat = coords[0]; data.lng = coords[1]; data._coordSrc = q; setStatus('', coords[0], coords[1]); sug.style.display = 'none'; return; }
+    // pasted Google Maps link — incl. shared routes / short links (maps.app.goo.gl)
+    if (/^https?:\/\/|^maps\.app\.goo\.gl|goo\.gl\/maps|google\.[^\s]+\/maps/i.test(q)) {
+      sug.style.display = 'none';
+      const m = q.match(/@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/) || q.match(/[?&]q=(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/) || q.match(/!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)/);
+      if (m) { data.lat = parseFloat(m[1]); data.lng = parseFloat(m[2]); data._coordSrc = q; setStatus(data.location || 'From your link', data.lat, data.lng); return; }
+      // short/share links hide the pin — let the server unshorten it and read the coordinates
+      delete data.lat; delete data.lng; data._coordSrc = '';
+      status.textContent = '🔗 Reading your Google Maps link…';
+      fetch('/api/resolve?url=' + encodeURIComponent(q)).then(r => r.json()).then(j => {
+        if (data.map !== q) return; // the box changed while we were resolving
+        if (j && typeof j.lat === 'number') { data.lat = j.lat; data.lng = j.lng; data._coordSrc = q; setStatus(data.location || 'From your link', j.lat, j.lng); }
+        else status.textContent = '🔗 Google Maps link saved — directions will open from it. (Couldn\'t read a pin from it, so distance can\'t be shown.)';
+      }).catch(() => { if (data.map === q) status.textContent = '🔗 Google Maps link saved — directions will open from it.'; });
+      return;
+    }
     if (q.length < 2) { sug.style.display = 'none'; return; }
     timer = setTimeout(() => search(q), 350);
   });
@@ -1306,71 +1511,139 @@ function checklistEditor(data, key, placeholder, withQty) {
   return wrap;
 }
 
-/* Migrate an exercise to the per-set shape: setList = [{ reps, unit }, …].
-   Old shape was a single { sets:'3', reps:'12', unit:'reps' } — expand it into that many rows. */
-function normalizeWorkoutExercise(ex) {
-  if (!ex || typeof ex !== 'object') return ex;
-  if (!Array.isArray(ex.setList)) {
-    const n = Math.max(1, parseInt(ex.sets, 10) || 1);
-    const reps = (ex.reps != null && ex.reps !== '') ? String(ex.reps) : '';
-    const unit = ex.unit === 'secs' ? 'secs' : 'reps';
-    ex.setList = Array.from({ length: n }, () => ({ reps, unit }));
-    delete ex.sets; delete ex.reps; delete ex.unit;
-  }
-  return ex;
+/* Built-in library to auto-detect an exercise's category + primary muscles from its name.
+   Ordered most-specific first; first keyword substring match wins. User values always override. */
+const WORKOUT_CATS = ['Cardio', 'Strength', 'Core', 'Mobility', 'Other'];
+const WORKOUT_LIB = [
+  { kw: ['mountain climber'], category: 'Core', muscles: 'Abs, Hip flexors' },
+  { kw: ['russian twist'], category: 'Core', muscles: 'Obliques' },
+  { kw: ['bicycle crunch'], category: 'Core', muscles: 'Abs, Obliques' },
+  { kw: ['leg raise', 'knee raise', 'toes to bar'], category: 'Core', muscles: 'Lower abs, Hip flexors' },
+  { kw: ['ab roller', 'ab wheel', 'ab roll'], category: 'Core', muscles: 'Abs, Obliques' },
+  { kw: ['sit-up', 'situp', 'sit up', 'crunch'], category: 'Core', muscles: 'Abs' },
+  { kw: ['hollow hold', 'dead bug', 'bird dog', 'flutter kick'], category: 'Core', muscles: 'Abs, Core' },
+  { kw: ['plank'], category: 'Core', muscles: 'Abs, Core' },
+  { kw: ['kettlebell swing'], category: 'Cardio', muscles: 'Glutes, Hamstrings, Core' },
+  { kw: ['burpee'], category: 'Cardio', muscles: 'Full body' },
+  { kw: ['jumping jack', 'star jump'], category: 'Cardio', muscles: 'Full body' },
+  { kw: ['high knee'], category: 'Cardio', muscles: 'Legs, Core' },
+  { kw: ['jump rope', 'skipping', 'skip rope', 'jump squat'], category: 'Cardio', muscles: 'Legs' },
+  { kw: ['running', 'run', 'jog', 'treadmill', 'sprint'], category: 'Cardio', muscles: 'Legs' },
+  { kw: ['cycling', 'spin bike', 'spinning', 'stationary bike', 'bike'], category: 'Cardio', muscles: 'Legs' },
+  { kw: ['swim'], category: 'Cardio', muscles: 'Full body' },
+  { kw: ['rowing', 'row machine', 'erg', 'elliptical', 'stair', 'battle rope'], category: 'Cardio', muscles: 'Full body' },
+  { kw: ['push-up', 'pushup', 'push up'], category: 'Strength', muscles: 'Chest, Triceps, Shoulders' },
+  { kw: ['pull-up', 'pullup', 'pull up', 'chin-up', 'chin up'], category: 'Strength', muscles: 'Back, Biceps' },
+  { kw: ['bench press', 'chest press'], category: 'Strength', muscles: 'Chest, Triceps' },
+  { kw: ['shoulder press', 'overhead press', 'military press'], category: 'Strength', muscles: 'Shoulders, Triceps' },
+  { kw: ['deadlift'], category: 'Strength', muscles: 'Back, Glutes, Hamstrings' },
+  { kw: ['goblet squat', 'kettlebell squat', 'front squat', 'back squat', 'squat'], category: 'Strength', muscles: 'Quads, Glutes' },
+  { kw: ['lunge', 'split squat', 'step-up', 'step up'], category: 'Strength', muscles: 'Quads, Glutes' },
+  { kw: ['glute bridge', 'hip thrust'], category: 'Strength', muscles: 'Glutes, Hamstrings' },
+  { kw: ['calf raise'], category: 'Strength', muscles: 'Calves' },
+  { kw: ['wall sit'], category: 'Strength', muscles: 'Quads' },
+  { kw: ['leg curl', 'hamstring curl'], category: 'Strength', muscles: 'Hamstrings' },
+  { kw: ['leg press', 'leg extension'], category: 'Strength', muscles: 'Quads' },
+  { kw: ['bicep curl', 'hammer curl', 'curl'], category: 'Strength', muscles: 'Biceps' },
+  { kw: ['tricep', 'dip', 'skull crusher'], category: 'Strength', muscles: 'Triceps' },
+  { kw: ['lat pulldown', 'pulldown'], category: 'Strength', muscles: 'Back, Biceps' },
+  { kw: ['bent-over row', 'barbell row', 'dumbbell row', 'row'], category: 'Strength', muscles: 'Back, Biceps' },
+  { kw: ['lateral raise', 'lat raise', 'front raise', 'shrug'], category: 'Strength', muscles: 'Shoulders' },
+  { kw: ['chest fly', 'pec deck', 'fly'], category: 'Strength', muscles: 'Chest' },
+  { kw: ['stretch', 'yoga', 'foam roll', 'mobility', 'pigeon', 'cobra', 'downward dog'], category: 'Mobility', muscles: 'Full body' }
+];
+function lookupExercise(name) {
+  const s = String(name || '').toLowerCase().trim();
+  if (!s) return { category: '', muscles: '' };
+  for (const e of WORKOUT_LIB) if (e.kw.some(k => s.includes(k))) return { category: e.category, muscles: e.muscles };
+  return { category: '', muscles: '' };
 }
-/* Short human summary of an exercise's sets, e.g. "3 sets × 12 reps" or "3 sets · 12, 10, 8 reps". */
-function workoutSetSummary(ex) {
-  normalizeWorkoutExercise(ex);
-  const sets = ex.setList || [];
-  if (!sets.length) return '';
-  const nLbl = sets.length + (sets.length === 1 ? ' set' : ' sets');
-  if (!sets.some(s => s.reps != null && s.reps !== '')) return nLbl;
-  const unitOf = s => s.unit === 'secs' ? 'secs' : 'reps';
-  const sameUnit = sets.every(s => unitOf(s) === unitOf(sets[0]));
-  const sameVal = sets.every(s => String(s.reps) === String(sets[0].reps));
-  if (sameVal && sameUnit) return nLbl + ' × ' + sets[0].reps + ' ' + unitOf(sets[0]);
-  const parts = sets.map(s => ((s.reps === '' || s.reps == null) ? '–' : s.reps) + (sameUnit ? '' : ' ' + unitOf(s)));
-  return nLbl + ' · ' + parts.join(', ') + (sameUnit ? ' ' + unitOf(sets[0]) : '');
+// User-defined exercise library (Setup tab) — cached items of the hidden `exercise` category.
+let EX_LIBRARY = [];
+async function loadExLibrary() { try { EX_LIBRARY = await DB.listItems('exercise'); } catch (e) { EX_LIBRARY = []; } }
+function libFind(name) {
+  const s = String(name || '').trim().toLowerCase();
+  if (!s) return null;
+  const it = EX_LIBRARY.find(x => ((x.data && x.data.name) || '').trim().toLowerCase() === s);
+  return it ? it.data : null;
+}
+// Category / muscles / video resolve in order: the exercise's own value → the library entry → auto-detect.
+function exerciseCategory(ex) { const lib = libFind(ex && ex.name) || {}; return (ex && ex.category) || lib.category || lookupExercise(ex && ex.name).category || 'Other'; }
+function exerciseMuscles(ex) { const lib = libFind(ex && ex.name) || {}; return (ex && ex.muscles) || lib.muscles || lookupExercise(ex && ex.name).muscles || ''; }
+function exerciseVideo(ex) { const lib = libFind(ex && ex.name) || {}; return (ex && ex.video && String(ex.video).trim()) ? ex.video : (lib.video || ''); }
+// Canonical muscle name so the Progress breakdown merges duplicates (case/synonyms): "core"→"Core", "Quadriceps"→"Quads".
+const MUSCLE_SYNONYMS = {
+  quadriceps: 'Quads', quad: 'Quads', quads: 'Quads',
+  hamstring: 'Hamstrings', hamstrings: 'Hamstrings', hams: 'Hamstrings',
+  glute: 'Glutes', glutes: 'Glutes', gluteus: 'Glutes',
+  ab: 'Abs', abs: 'Abs', abdominal: 'Abs', abdominals: 'Abs',
+  oblique: 'Obliques', obliques: 'Obliques',
+  pec: 'Chest', pecs: 'Chest', pectorals: 'Chest', chest: 'Chest',
+  delt: 'Shoulders', delts: 'Shoulders', deltoid: 'Shoulders', deltoids: 'Shoulders', shoulder: 'Shoulders', shoulders: 'Shoulders',
+  tricep: 'Triceps', triceps: 'Triceps',
+  bicep: 'Biceps', biceps: 'Biceps',
+  lat: 'Back', lats: 'Back', back: 'Back',
+  calf: 'Calves', calves: 'Calves'
+};
+function canonMuscle(m) {
+  const s = String(m || '').trim();
+  if (!s) return '';
+  const low = s.toLowerCase();
+  return MUSCLE_SYNONYMS[low] || (s.charAt(0).toUpperCase() + s.slice(1).toLowerCase());
 }
 
-/* workout exercises: name + a list of sets (each set = reps/secs) + optional video */
+/* Normalise an exercise to { name, sets, reps, unit, video }. Handles the brief per-set
+   `setList` shape by collapsing it back to a single count + reps + unit. */
+function normalizeWorkoutExercise(ex) {
+  if (!ex || typeof ex !== 'object') return ex;
+  if (Array.isArray(ex.setList)) {
+    const list = ex.setList;
+    ex.sets = list.length ? String(list.length) : '';
+    ex.reps = (list[0] && list[0].reps != null) ? String(list[0].reps) : '';
+    ex.unit = (list[0] && list[0].unit === 'secs') ? 'secs' : 'reps';
+    delete ex.setList;
+  }
+  if (ex.unit !== 'secs') ex.unit = 'reps';
+  return ex;
+}
+
+/* workout-day exercises: pick from the Setup exercise library + sets/reps(or secs)/weight.
+   Only names in the library can be chosen (plus any legacy name already on this day, to avoid losing it). */
 function workoutExercisesEditor(data) {
   if (!Array.isArray(data.exercises)) data.exercises = [];
   data.exercises.forEach(normalizeWorkoutExercise);
+  const libNames = EX_LIBRARY.map(x => (x.data && x.data.name || '').trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
   const wrap = h('div');
   function draw() {
     wrap.innerHTML = '';
+    if (!libNames.length) wrap.appendChild(h('div', { class: 'hint', style: { margin: '0 2px 10px' } },
+      'No exercises in your library yet. Add them in the Setup tab first, then pick them here.'));
     data.exercises.forEach((ex, i) => {
       normalizeWorkoutExercise(ex);
-      const setsWrap = h('div');
-      const drawSets = () => {
-        setsWrap.innerHTML = '';
-        ex.setList.forEach((st, si) => {
-          setsWrap.appendChild(h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '6px' } },
-            h('div', { style: { width: '48px', flex: 'none', fontSize: '13px', fontWeight: '700', color: 'var(--muted)' } }, 'Set ' + (si + 1)),
-            h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 12', style: { flex: '1', minWidth: '0' }, value: st.reps != null ? st.reps : '', oninput: e => st.reps = e.target.value }),
-            h('select', { style: { width: '78px', flex: 'none' }, onchange: e => st.unit = e.target.value },
-              h('option', { value: 'reps', selected: st.unit !== 'secs' ? 'selected' : null }, 'reps'),
-              h('option', { value: 'secs', selected: st.unit === 'secs' ? 'selected' : null }, 'secs')),
-            h('button', { class: 'del-x', type: 'button', title: 'Remove set', style: { opacity: ex.setList.length <= 1 ? '.3' : '1' },
-              onclick: () => { if (ex.setList.length <= 1) return; ex.setList.splice(si, 1); drawSets(); } }, '✕')));
-        });
-        setsWrap.appendChild(h('button', { class: 'btn ghost small', type: 'button', style: { marginTop: '2px' },
-          onclick: () => { const last = ex.setList[ex.setList.length - 1] || {}; ex.setList.push({ reps: '', unit: last.unit || 'reps' }); drawSets(); } }, '+ Add set'));
-      };
-      drawSets();
+      const inLib = libNames.some(n => n.toLowerCase() === (ex.name || '').trim().toLowerCase());
+      const metaHint = h('div', { class: 'hint', style: { marginTop: '6px' } }, ex.name ? ('→ ' + exerciseCategory(ex) + (exerciseMuscles(ex) ? ' · ' + exerciseMuscles(ex) : '')) : '');
+      const sel = h('select', { class: 'grow', onchange: e => { ex.name = e.target.value; metaHint.textContent = ex.name ? ('→ ' + exerciseCategory(ex) + (exerciseMuscles(ex) ? ' · ' + exerciseMuscles(ex) : '')) : ''; } },
+        h('option', { value: '', selected: !ex.name ? 'selected' : null }, '— Select exercise —'),
+        ...libNames.map(n => h('option', { value: n, selected: (ex.name || '').trim().toLowerCase() === n.toLowerCase() ? 'selected' : null }, n)),
+        ...(ex.name && !inLib ? [h('option', { value: ex.name, selected: 'selected' }, ex.name + ' (not in library)')] : []));
       wrap.appendChild(h('div', { class: 'sub-item' },
-        h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px' } },
-          h('input', { class: 'grow', placeholder: 'Exercise (e.g. Push-ups)', value: ex.name || '', oninput: e => ex.name = e.target.value }),
+        h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '8px' } },
+          sel,
           h('button', { class: 'del-x', type: 'button', onclick: () => { data.exercises.splice(i, 1); draw(); } }, '✕')),
-        h('label', { style: { display: 'block', fontSize: '13px', color: 'var(--muted)', fontWeight: '600', marginBottom: '6px' } }, 'Sets (reps or seconds each)'),
-        setsWrap,
-        h('div', { class: 'field', style: { marginTop: '8px' } },
-          h('label', null, 'Video link (optional)'),
-          h('input', { type: 'url', placeholder: 'e.g. YouTube demo of this exercise', value: ex.video || '', oninput: e => ex.video = e.target.value }))));
+        h('div', { class: 'row2' },
+          h('div', { class: 'field' }, h('label', null, 'Number of sets'),
+            h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 3', value: ex.sets != null ? ex.sets : '', oninput: e => ex.sets = e.target.value })),
+          h('div', { class: 'field' }, h('label', null, 'Reps / time each set'),
+            h('div', { style: { display: 'flex', gap: '6px' } },
+              h('input', { type: 'number', inputmode: 'numeric', min: '0', placeholder: 'e.g. 12', style: { flex: '1', minWidth: '0' }, value: ex.reps != null ? ex.reps : '', oninput: e => ex.reps = e.target.value }),
+              h('select', { style: { width: '80px', flex: 'none' }, onchange: e => ex.unit = e.target.value },
+                h('option', { value: 'reps', selected: ex.unit !== 'secs' ? 'selected' : null }, 'reps'),
+                h('option', { value: 'secs', selected: ex.unit === 'secs' ? 'selected' : null }, 'secs'))))),
+        h('div', { class: 'field', style: { marginTop: '8px' } }, h('label', null, 'Weight (optional)'),
+          h('input', { placeholder: 'e.g. 20kg', value: ex.weight || '', oninput: e => ex.weight = e.target.value })),
+        metaHint));
     });
-    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', setList: [{ reps: '', unit: 'reps' }], video: '', done: false }); draw(); } }, '+ Add exercise'));
+    wrap.appendChild(h('button', { class: 'btn ghost', type: 'button', onclick: () => { data.exercises.push({ name: '', sets: '', reps: '', unit: 'reps', weight: '', done: false }); draw(); } }, '+ Add exercise'));
   }
   draw();
   return wrap;
@@ -1897,6 +2170,17 @@ async function renderDetail(cat, item) {
       a(card);
       break;
     }
+    case 'mysched': {
+      const n = data.schedType === 'recur' ? myschedNextOccur(data) : null;
+      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Schedule'),
+        data.schedType === 'recur'
+          ? kv('Repeats', myschedFreqLabel(data) + (data.time ? ' · ' + fmtHM(data.time) : '') + (data.end ? '–' + fmtHM(data.end) : ''))
+          : kv('When', fmtDT(data.when)),
+        n ? kv('Next', fmtDate(localDateStr(n))) : null,
+        kv('Location', data.location), kv('Notes', data.notes)));
+      if (data.map || data.location) a(mapCard(item));
+      break;
+    }
     case 'events':
     case 'appointments': {
       a(h('div', { class: 'detail-card' }, h('h3', null, data.title || (cat === 'appointments' ? 'Appointment' : 'Event')),
@@ -2008,6 +2292,13 @@ function summary(cat, data) {
     case 'quick': {
       const txt = ((data.bodyHtml || '').replace(/<[^>]+>/g, ' ').trim() || data.body || '').slice(0, 60);
       return { title: data.title || 'Note', meta: txt || ((data.strokes && data.strokes.length) ? '✍️ Handwritten note' : '') };
+    }
+    case 'mysched': {
+      if (data.schedType === 'recur') {
+        const n = myschedNextOccur(data);
+        return { title: data.title || 'Schedule', meta: ['🔁 ' + myschedFreqLabel(data) + (data.time ? ' · ' + fmtHM(data.time) : ''), n ? 'next ' + fmtDate(localDateStr(n)) : '', data.location].filter(Boolean).join(' · ') };
+      }
+      return { title: data.title || 'Schedule', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
     }
     case 'events': return { title: data.title || 'Event', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
     case 'appointments': return { title: data.title || 'Appointment', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
@@ -2291,12 +2582,12 @@ function buildActivityRow(act, rerender) {
   const dt = new Date(d.date + 'T00:00:00');
   const dayLabel = (isNaN(dt) ? d.date : (DOW_SHORT[dt.getDay()] + ', ' + fmtDate(d.date)));
   const timeLabel = d.start ? (fmtHM(d.start) + (d.end ? '–' + fmtHM(d.end) : '')) : '';
-  const offBtn = h('button', { class: 'btn small ' + (d.done ? '' : 'secondary'), type: 'button', onclick: async (e) => {
+  const offBtn = h('button', { class: 'iconbtn small', type: 'button', title: d.done ? 'Turn reminders on' : 'Turn reminders off', onclick: async (e) => {
     e.stopPropagation();
     d.done = !d.done;
     await DB.saveItem(act);
     rerender();
-  } }, d.done ? '🔔 Turn on' : '🔕 Turn off');
+  } }, d.done ? '🔔' : '🔕');
   const cancelBtn = h('button', { class: 'btn small ' + (d.cancelled ? '' : 'secondary'), type: 'button', onclick: async (e) => {
     e.stopPropagation();
     d.cancelled = !d.cancelled;
@@ -2341,7 +2632,8 @@ function mapCard(item) {
   const enc = encodeURIComponent(q);
   const isUrl = /^https?:\/\//i.test(q);
   const openHref = isUrl ? q : 'https://www.google.com/maps/search/?api=1&query=' + enc;
-  const dirHref = 'https://www.google.com/maps/dir/?api=1&destination=' + enc;
+  // a pasted Google link IS the directions target; coords beat text when we have them
+  const dirHref = isUrl ? q : ('https://www.google.com/maps/dir/?api=1&destination=' + ((typeof d.lat === 'number') ? (d.lat + ',' + d.lng) : enc));
   const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Getting there'));
   if (d.location) card.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Location'), h('span', { class: 'v' }, d.location)));
   const info = h('div');
@@ -2787,6 +3079,7 @@ function homeCount(cat, items) {
   const d = it => it.data || {};
   switch (cat) {
     case 'todo': return plural(items.filter(it => (d(it).items || []).some(t => !t.checked)).length, 'list');
+    case 'mysched': return plural(items.filter(it => !myschedIsArchived(it)).length, 'upcoming schedule');
     case 'events': return plural(items.filter(it => !eventIsArchived(it)).length, 'upcoming event');
     case 'appointments': return plural(items.filter(it => !eventIsArchived(it)).length, 'upcoming appointment');
     case 'reminder': return plural(items.filter(it => (it.data || {}).active !== false).length, 'active reminder');
@@ -2817,23 +3110,35 @@ async function homeScreen() {
     h('div', { class: 'hello' }, h('h2', null, 'Hello 👋'), h('p', null, 'Pick a notebook to open.')),
     grid);
   mount(screen(bar, body));
-  // categories the user has hidden in Settings → Categories
-  let hidden = new Set();
-  try { const s = await DB.getSettings(); hidden = new Set(Array.isArray(s.hiddenCats) ? s.hiddenCats : []); } catch (e) {}
-  // counts
-  for (const c of CATS.filter(c => !c.hidden && !hidden.has(c.key))) {
-    const card = h('div', { class: 'cat-card', onclick: () => navigate('#/cat/' + c.key) },
-      h('div', { class: 'emoji' }, c.emoji),
-      h('div', null, h('div', { class: 'name' }, c.name), h('div', { class: 'count' }, '…')));
-    grid.appendChild(card);
-    if (c.key === 'worldcup') {
-      card.querySelector('.count').textContent = 'Live scores & tables';
-    } else if (c.key === 'schedule') {
-      (async () => { try { await generateActivities(); } catch (e) {} const today = localDateStr(new Date()); const n = (await DB.listItems('activity')).filter(a => !a.data.cancelled && (a.data.date || '') >= today && activityActive(a.data)).length; card.querySelector('.count').textContent = n + ' upcoming ' + (n === 1 ? 'activity' : 'activities'); })();
-    } else {
-      DB.listItems(c.key).then(items => { card.querySelector('.count').textContent = homeCount(c.key, items); });
+  // INSTANT paint: draw the tiles from a local snapshot (hidden set + last-known counts) with zero
+  // network waits, then refresh both in the background. This is why the hub no longer "hangs" on open.
+  const uid = (CURRENT && CURRENT.uid) || 'anon';
+  const hiddenKey = 'mln_hidden_' + uid, countKey = 'mln_homecounts_' + uid;
+  const countCache = LS.get(countKey, {});
+  let drawnHidden = null;
+  function buildTiles(hiddenArr) {
+    drawnHidden = (hiddenArr || []).slice().sort().join(',');
+    grid.innerHTML = '';
+    for (const c of CATS.filter(x => !x.hidden && !(hiddenArr || []).includes(x.key))) {
+      const card = h('div', { class: 'cat-card', onclick: () => navigate('#/cat/' + c.key) },
+        h('div', { class: 'emoji' }, c.emoji),
+        h('div', null, h('div', { class: 'name' }, c.name), h('div', { class: 'count' }, countCache[c.key] || '…')));
+      grid.appendChild(card);
+      if (c.key === 'worldcup') { card.querySelector('.count').textContent = 'Live scores & tables'; continue; }
+      DB.listItems(c.key).then(items => {
+        const txt = homeCount(c.key, items);
+        card.querySelector('.count').textContent = txt;
+        countCache[c.key] = txt; LS.set(countKey, countCache);
+      }).catch(() => {});
     }
   }
+  buildTiles(LS.get(hiddenKey, []));
+  // background: reconcile the hidden set with real Settings (only rebuilds if it actually changed)
+  DB.getSettings().then(s => {
+    const hs = Array.isArray(s.hiddenCats) ? s.hiddenCats : [];
+    LS.set(hiddenKey, hs);
+    if (hs.slice().sort().join(',') !== drawnHidden) buildTiles(hs);
+  }).catch(() => {});
 }
 
 /* ----- CATEGORY LIST ----- */
@@ -2852,10 +3157,11 @@ async function listScreen(cat, sub) {
   listEl.innerHTML = '';
 
   if (cat === 'reminder') { renderReminderScreen(listEl, items, sub); return; }
-  if (cat === 'workout') { renderWorkoutScreen(listEl, items, sub); return; }
+  if (cat === 'workout') { renderWorkoutScreen(listEl, items, fab, sub); return; }
   if (cat === 'vault') { renderVaultScreen(listEl, items, fab); return; }
   if (cat === 'memberships') { renderMembershipList(listEl, items); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
+  if (cat === 'mysched') { renderMySchedScreen(listEl, items, sub); return; }
   if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past', reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'appointments') { renderArchiveList(listEl, 'appointments', items, eventIsArchived, { distance: true, archiveLabel: 'Past', duplicateAll: true, reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'schedule') { renderScheduleScreen(listEl, items, fab, sub === 'def' ? 'schedule' : 'upcoming'); return; }
@@ -3112,6 +3418,241 @@ function eventIsArchived(it) {
   return Date.now() > t + 3600000; // 1 hour after the event time
 }
 
+/* ---------------- MY SCHEDULE (events + appointments + weekly schedule, unified) ---------------- */
+/* Normalise a card: sync `when` ⇄ startDate/time for one-time cards; fill recurrence defaults.
+   Recurrence model: repeatSel daily|weekly|monthly|yearly|custom (custom = interval + customUnit),
+   weekdays[] (weekly, multi), anchor = startDate (drives monthly day / yearly date / interval math),
+   repeatMode forever|until|count (+ until date / count N). */
+function normMySched(d) {
+  if (!d || typeof d !== 'object') return d;
+  if (d.schedType === 'recur') {
+    if (!d.repeatSel) d.repeatSel = (parseInt(d.interval, 10) > 1) ? 'custom' : (d.freq || 'weekly');
+    if (!d.customUnit) d.customUnit = { daily: 'days', weekly: 'weeks', monthly: 'months', yearly: 'years' }[d.freq] || 'weeks';
+    d.interval = Math.max(1, parseInt(d.interval, 10) || 1);
+    if (!Array.isArray(d.weekdays) || !d.weekdays.length) d.weekdays = (d.weekday != null && d.weekday !== '') ? [String(d.weekday)] : [];
+    if (!d.startDate) {
+      // anchor the series: old monthly/yearly fields, else today
+      const t = new Date();
+      if (d.freq === 'monthly' && d.monthDay) { const day = Math.min(parseInt(d.monthDay, 10) || 1, new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate()); d.startDate = localDateStr(new Date(t.getFullYear(), t.getMonth(), day)); }
+      else if (d.freq === 'yearly' && d.yearDate) d.startDate = t.getFullYear() + d.yearDate.slice(4);
+      else d.startDate = localDateStr(t);
+    }
+    if (!d.weekdays.length && myschedFreq(d) === 'weekly') d.weekdays = [String(new Date(d.startDate + 'T00:00').getDay())];
+    if (!d.repeatMode) d.repeatMode = 'forever';
+  } else {
+    if (d.when && !d.startDate) { d.startDate = d.when.slice(0, 10); d.time = d.time || d.when.slice(11, 16); }
+    if (d.startDate && d.time) d.when = d.startDate + 'T' + d.time;
+  }
+  return d;
+}
+/* effective frequency: 'custom' resolves through its unit */
+function myschedFreq(d) {
+  if (d.repeatSel === 'custom') return { days: 'daily', weeks: 'weekly', months: 'monthly', years: 'yearly' }[d.customUnit] || 'weekly';
+  return d.repeatSel || d.freq || 'weekly';
+}
+/* does the series occur on this local calendar date? (ignores until/count caps) */
+function myschedOccursOn(d, dt) {
+  const anchor = d.startDate ? new Date(d.startDate + 'T00:00') : null;
+  const day0 = new Date(dt); day0.setHours(0, 0, 0, 0);
+  if (anchor && day0 < anchor) return false;
+  const iv = Math.max(1, parseInt(d.interval, 10) || 1);
+  const freq = myschedFreq(d);
+  if (freq === 'daily') {
+    if (!anchor) return true;
+    return Math.round((day0 - anchor) / 86400000) % iv === 0;
+  }
+  if (freq === 'weekly') {
+    const wds = (Array.isArray(d.weekdays) && d.weekdays.length) ? d.weekdays.map(Number) : (anchor ? [anchor.getDay()] : []);
+    if (!wds.includes(day0.getDay())) return false;
+    if (!anchor || iv === 1) return true;
+    const monday = x => { const m = new Date(x); m.setDate(m.getDate() - ((m.getDay() + 6) % 7)); m.setHours(0, 0, 0, 0); return m; };
+    return Math.round((monday(day0) - monday(anchor)) / 604800000) % iv === 0;
+  }
+  if (freq === 'monthly') {
+    const want = anchor ? anchor.getDate() : 1;
+    const dim = new Date(day0.getFullYear(), day0.getMonth() + 1, 0).getDate();
+    if (day0.getDate() !== Math.min(want, dim)) return false;
+    if (!anchor || iv === 1) return true;
+    return ((day0.getFullYear() - anchor.getFullYear()) * 12 + (day0.getMonth() - anchor.getMonth())) % iv === 0;
+  }
+  if (freq === 'yearly') {
+    if (!anchor) return false;
+    const dim = new Date(day0.getFullYear(), anchor.getMonth() + 1, 0).getDate();
+    if (day0.getMonth() !== anchor.getMonth() || day0.getDate() !== Math.min(anchor.getDate(), dim)) return false;
+    return (day0.getFullYear() - anchor.getFullYear()) % iv === 0;
+  }
+  return false;
+}
+/* next occurrence as a local Date, honouring until/count endings; null when the series is over.
+   Scans day-by-day (bounded) — simple and identical in spirit to the serverless copy. */
+function myschedNextOccur(d, from) {
+  if (d.schedType !== 'recur') { const t = new Date(d.when || ''); return isNaN(t) ? null : t; }
+  normMySched(d);
+  const base = from ? new Date(from) : new Date();
+  const [hh, mm] = String(d.time || '09:00').split(':').map(Number);
+  const at = x => { const c = new Date(x); c.setHours(hh || 0, mm || 0, 0, 0); return c; };
+  const cnt = (d.repeatMode === 'count') ? Math.max(1, parseInt(d.count, 10) || 1) : null;
+  let cursor = new Date(d.startDate + 'T00:00');
+  const today = new Date(base); today.setHours(0, 0, 0, 0);
+  if (!cnt && cursor < today) cursor = new Date(today); // no counting needed → start scanning from today
+  let seen = 0;
+  for (let i = 0; i < 3700; i++) {
+    if (myschedOccursOn(d, cursor)) {
+      seen++;
+      if (cnt && seen > cnt) return null;                       // series exhausted
+      if (d.repeatMode === 'until' && d.until && localDateStr(cursor) > d.until) return null;
+      const c = at(cursor);
+      if (c > base) return c;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return null;
+}
+function myschedFreqLabel(d) {
+  normMySched(d);
+  const freq = myschedFreq(d), iv = Math.max(1, parseInt(d.interval, 10) || 1);
+  const unit = { daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year' }[freq];
+  let lbl = iv === 1 ? ('Every ' + unit) : ('Every ' + iv + ' ' + unit + 's');
+  if (freq === 'weekly' && Array.isArray(d.weekdays) && d.weekdays.length) lbl += ' · ' + d.weekdays.slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).map(w => DOW_SHORT[Number(w)]).join(', ');
+  if (freq === 'monthly' && d.startDate) lbl += ' · day ' + new Date(d.startDate + 'T00:00').getDate();
+  if (freq === 'yearly' && d.startDate) { const a = new Date(d.startDate + 'T00:00'); lbl += ' · ' + ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][a.getMonth()] + ' ' + a.getDate(); }
+  if (d.repeatMode === 'until' && d.until) lbl += ' · until ' + fmtDate(d.until);
+  if (d.repeatMode === 'count' && d.count) lbl += ' · ' + d.count + '×';
+  return lbl;
+}
+/* one-time cards archive like events; recurring cards archive when their series is over */
+function myschedIsArchived(it) {
+  const d = it.data || {};
+  if (d.schedType === 'recur') return myschedNextOccur(d) === null;
+  return eventIsArchived(it);
+}
+/* One-time migration: fold existing Events, Appointments and Weekly Schedules into My Schedule.
+   Events/appointments → one-time cards (fields carried verbatim). Each weekly-schedule session →
+   a recurring-weekly card (title, place, times and all three reminders preserved). Originals are
+   deleted afterwards so the old reminder loops don't double-fire. Runs once (settings flag). */
+async function migrateToMySched() {
+  let s = {}; try { s = await DB.getSettings(); } catch (e) {}
+  if (s.myschedMigrated) return false;
+  let changed = false;
+  try {
+    const evs = await DB.listItems('events');
+    const apps = await DB.listItems('appointments');
+    for (const it of [...evs, ...apps]) {
+      if (it._shared && !it._amOwner) continue; // never migrate someone else's shared card
+      const d = JSON.parse(JSON.stringify(it.data || {}));
+      delete d.sharedWith;
+      d.schedType = 'once';
+      d.remWhen = 'start';
+      await DB.saveItem({ cat: 'mysched', data: d });
+      await DB.deleteItem(it.cat, it.id);
+      changed = true;
+    }
+    const scheds = await DB.listItems('schedule');
+    for (const sc of scheds) {
+      const d = sc.data || {};
+      const slots = (d.slots || []).filter(sl => sl.day !== undefined && sl.start);
+      if (!scheduleIsCompleted(sc)) for (const sl of slots) {
+        await DB.saveItem({ cat: 'mysched', data: {
+          title: d.title || 'Activity', schedType: 'recur', repeatSel: 'weekly', freq: 'weekly', interval: 1,
+          weekdays: [String(sl.day)], time: sl.start, end: sl.end || '',
+          startDate: localDateStr(new Date()),
+          repeatMode: (d.repeatMode === 'until' && d.until) ? 'until' : 'forever', until: d.until || '',
+          location: d.location || '', map: d.map || '', lat: d.lat, lng: d.lng, _coordSrc: d._coordSrc,
+          notes: d.notes || '',
+          remWhen: d.endReminder ? (d.startReminder !== false ? 'both' : 'end') : 'start',
+          startReminder: d.startReminder, startRemindMin: d.startRemindMin,
+          startReminder2: d.startReminder2, startRemind2Min: d.startRemind2Min,
+          endReminder: d.endReminder, endRemindMin: d.endRemindMin
+        } });
+      }
+      await DB.deleteItem('schedule', sc.id);
+      changed = true;
+    }
+    // clear generated activity instances — reminders now come from the recurring cards
+    const acts = await DB.listItems('activity');
+    for (const a of acts) { await DB.deleteItem('activity', a.id); changed = true; }
+    await DB.saveSettings(Object.assign({}, s, { myschedMigrated: true }));
+  } catch (e) { console.error('mysched migration failed', e); }
+  return changed;
+}
+/* the local date a card's life ended: one-time → its event date; recurring → its until date or the
+   last counted occurrence. null = still active or never ends. */
+function myschedEndedOn(d) {
+  if (d.schedType !== 'recur') { const w = d.when || d.eventDate; return w ? w.slice(0, 10) : null; }
+  normMySched(d);
+  if (d.repeatMode === 'until' && d.until) return d.until;
+  if (d.repeatMode === 'count') {
+    const cnt = Math.max(1, parseInt(d.count, 10) || 1);
+    let cur = new Date(d.startDate + 'T00:00'), seen = 0;
+    for (let i = 0; i < 3700; i++) { if (myschedOccursOn(d, cur)) { seen++; if (seen === cnt) return localDateStr(cur); } cur.setDate(cur.getDate() + 1); }
+  }
+  return null;
+}
+async function renderMySchedScreen(listEl, items, sub) {
+  if (await migrateToMySched()) { try { items = await DB.listItems('mysched'); } catch (e) {} }
+  // housekeeping: cards sitting in Past for over 3 months are deleted automatically
+  const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 3);
+  const cutStr = localDateStr(cutoff);
+  const stale = items.filter(it => { if (!myschedIsArchived(it)) return false; const e = myschedEndedOn(it.data || {}); return !!(e && e < cutStr); });
+  for (const s of stale) { try { await DB.deleteItem('mysched', s.id); } catch (e) {} }
+  if (stale.length) items = items.filter(it => !stale.includes(it));
+  // chronological: sort by next occurrence (recurring) / event time (one-time)
+  const nextMs = it => {
+    const d = it.data || {};
+    if (d.schedType === 'recur') { const n = myschedNextOccur(d); return n ? n.getTime() : Infinity; }
+    const t = new Date(d.when || '').getTime(); return isNaN(t) ? Infinity : t;
+  };
+  items.sort((a, b) => nextMs(a) - nextMs(b));
+  let tab = (sub === 'schedule' || sub === 'past') ? sub : 'upcoming';
+  const tabsEl = h('div', { class: 'tabs' });
+  const body = h('div', { class: 'list' });
+  listEl.appendChild(tabsEl); listEl.appendChild(body);
+  const posP = currentPosition(); // for distance on upcoming rows
+  const lists = () => ({
+    upcoming: items.filter(it => !myschedIsArchived(it)),          // everything coming up (one-time + recurring)
+    schedule: items.filter(it => (it.data || {}).schedType === 'recur'), // manage the recurring set-up
+    past: items.filter(myschedIsArchived)
+  });
+  function render() {
+    const L = lists();
+    tabsEl.innerHTML = '';
+    [['upcoming', 'Upcoming (' + L.upcoming.length + ')'], ['schedule', 'Schedule (' + L.schedule.length + ')'], ['past', 'Past (' + L.past.length + ')']].forEach(([k, label]) =>
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => {
+        tab = k;
+        try { history.replaceState(null, '', k === 'upcoming' ? '#/cat/mysched' : '#/cat/mysched/' + k); } catch (e) {}
+        render();
+      } }, label)));
+    body.innerHTML = '';
+    const list = L[tab];
+    if (!list.length) {
+      body.appendChild(emptyState('mysched', tab === 'upcoming' ? 'Nothing coming up. Tap + to add one.'
+        : tab === 'schedule' ? 'No recurring schedules yet. Tap + and pick "Recurring".' : 'Nothing in past yet.'));
+      return;
+    }
+    for (const it of list) {
+      const btns = [];
+      if (tab !== 'past') {
+        const done = it.data && it.data.done;
+        btns.push(h('button', { class: 'iconbtn small', type: 'button', title: done ? 'Turn reminders on' : 'Turn reminders off', onclick: async (e) => {
+          e.stopPropagation();
+          it.data.done = !it.data.done;
+          try { await DB.saveItem(it); } catch (x) {}
+          toast(it.data.done ? 'Reminders turned off' : 'Reminders back on');
+          render();
+        } }, done ? '🔔' : '🔕'));
+      }
+      const action = btns.length ? h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...btns) : null;
+      try { // one bad card must not blank the rest of the list
+        const row = buildRow('mysched', it, { action });
+        if (it.data && it.data.done) row.classList.add('cancelled-row');
+        body.appendChild(row);
+        if (tab === 'upcoming' && posP) enrichRowDistance(it, row, posP);
+      } catch (err) { console.error('row render failed mysched', it.id, err); }
+    }
+  }
+  render();
+}
+
 async function duplicateItem(cat, it) {
   const data = JSON.parse(JSON.stringify(it.data || {}));
   data.archived = false;
@@ -3143,21 +3684,23 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
       const btns = [];
       if (tab === 'upcoming' && opts.reminderOff) {
         const done = it.data && it.data.done;
-        btns.push(h('button', { class: 'btn small ' + (done ? '' : 'secondary'), type: 'button', onclick: async (e) => {
+        btns.push(h('button', { class: 'iconbtn small', type: 'button', title: done ? 'Turn reminders on' : 'Turn reminders off', onclick: async (e) => {
           e.stopPropagation();
           it.data.done = !it.data.done;
           try { await DB.saveItem(it); } catch (x) {}
           toast(it.data.done ? 'Reminders turned off' : 'Reminders back on');
           render();
-        } }, done ? '🔔 Turn on' : '🔕 Turn off'));
+        } }, done ? '🔔' : '🔕'));
       }
       const canDup = opts.duplicateAll || (tab === 'archive' && opts.duplicate);
       if (canDup) btns.push(h('button', { class: 'btn small secondary', type: 'button', onclick: async (e) => { e.stopPropagation(); await duplicateItem(cat, it); toast('Duplicated to Upcoming'); navigate('#/cat/' + cat); } }, 'Duplicate'));
       const action = btns.length ? h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...btns) : null;
-      const row = buildRow(cat, it, { action });
-      if (it.data && it.data.done) row.classList.add('cancelled-row');
-      body.appendChild(row);
-      if (posP) enrichRowDistance(it, row, posP);
+      try { // one bad card must not blank the rest of the list
+        const row = buildRow(cat, it, { action });
+        if (it.data && it.data.done) row.classList.add('cancelled-row');
+        body.appendChild(row);
+        if (posP) enrichRowDistance(it, row, posP);
+      } catch (err) { console.error('row render failed', cat, it.id, err); }
     }
   }
   listEl.appendChild(tabsEl);
@@ -3165,18 +3708,84 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
   render();
 }
 
-/* Workout Schedule — cards = a workout day (weekday + exercises). Two tabs:
-   Schedule (set up the week) and Upcoming (tick off each exercise as done). */
-async function renderWorkoutScreen(listEl, items, sub) {
-  let tab = (sub === 'setup' || sub === 'progress') ? sub : 'upcoming';
+/* One-time recovery for workouts ticked under an older version (before set-level tracking, ≤ v144):
+   those only wrote to Progress when the WHOLE day was finished, so a partial session left tick marks
+   (setsDone) but no dated record. Turn any such leftover ticks into a completion for that day's most
+   recent occurrence, so nothing already done is lost. Runs once per day (stamped via setsFor). */
+async function recoverLegacyWorkoutTicks(items) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  for (const it of items) {
+    const d = it.data || {};
+    if (d.setsFor) continue; // already on set-level tracking — nothing legacy to recover
+    const exs = (d.exercises || []).filter(e => e.name && e.name.trim());
+    exs.forEach(normalizeWorkoutExercise);
+    const setCount = ex => Math.max(1, parseInt(ex.sets, 10) || 0);
+    const ticked = ex => { const c = setCount(ex); let n = 0; for (let i = 0; i < c; i++) if (Array.isArray(ex.setsDone) && ex.setsDone[i]) n++; return n; };
+    if (!exs.some(e => ticked(e) > 0)) continue;
+    const w = Number(d.weekday);
+    const dt = new Date(today); dt.setDate(today.getDate() - (((today.getDay() - w) + 7) % 7)); // most recent occurrence ≤ today
+    const ds = localDateStr(dt);
+    d.completions = Array.isArray(d.completions) ? d.completions : [];
+    d.completions = d.completions.filter(c => !(c && typeof c === 'object' && !Array.isArray(c.ex) && c.n && c.d === ds));
+    exs.forEach(e => { const t = ticked(e); if (t > 0) d.completions.push({ d: ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : ''), c: exerciseCategory(e), m: exerciseMuscles(e), w: e.weight || '' }); });
+    d.setsFor = ds; // stamp so this runs once; the ticks now belong to that occurrence
+    try { await DB.saveItem(it); } catch (e) {}
+  }
+}
+
+/* One-time: adopt every distinct exercise already used on a workout day into the Setup library,
+   preserving any inline category/muscles/video, so existing plans keep working and the Schedule
+   dropdown isn't empty. Only adds names not already in the library. */
+async function seedExLibraryFromWorkouts(workoutItems) {
+  const have = new Set(EX_LIBRARY.map(x => ((x.data && x.data.name) || '').trim().toLowerCase()).filter(Boolean));
+  const seen = new Set(), toAdd = [];
+  (workoutItems || []).forEach(it => (it.data.exercises || []).forEach(e => {
+    const nm = (e.name || '').trim(); if (!nm) return;
+    const key = nm.toLowerCase();
+    if (have.has(key) || seen.has(key)) return;
+    seen.add(key);
+    toAdd.push({ name: nm, category: e.category || '', muscles: e.muscles || '', video: e.video || '' });
+  }));
+  if (!toAdd.length) return;
+  for (const d of toAdd) { try { await DB.saveItem({ cat: 'exercise', data: d }); } catch (e) {} }
+  await loadExLibrary();
+}
+
+/* Workout Schedule — 4 tabs: Upcoming (do & tick), Schedule (build workout days from library
+   exercises), Setup (the exercise library), Progress (report). */
+async function renderWorkoutScreen(listEl, items, fab, sub) {
+  await recoverLegacyWorkoutTicks(items); // rescue partial sessions ticked under an older version
+  await loadExLibrary();
+  await seedExLibraryFromWorkouts(items); // one-time: adopt exercises from existing workout days into the library
+  let tab = (sub === 'schedule' || sub === 'setup' || sub === 'progress') ? sub : 'upcoming';
+  let progYear = null; // selected year in the Progress report (null = latest)
+  let workoutGoal = 3; try { workoutGoal = parseInt((await DB.getSettings()).workoutWeeklyGoal, 10) || 3; } catch (e) {}
+  const setGoal = async (g) => { workoutGoal = Math.max(1, g); try { const s = await DB.getSettings(); await DB.saveSettings(Object.assign({}, s, { workoutWeeklyGoal: workoutGoal })); } catch (e) {} draw(); };
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', { class: 'list' });
   listEl.innerHTML = '';
   listEl.appendChild(tabsEl);
   listEl.appendChild(body);
-  const refresh = async () => { try { items = await DB.listItems('workout'); } catch (e) {} draw(); };
+  const refresh = async () => { try { items = await DB.listItems('workout'); } catch (e) {} await loadExLibrary(); draw(); };
   const wkOrder = w => ((Number(w) + 6) % 7); // Monday-first
   const dayLabel = (d, n) => 'Day ' + n + ' · ' + (DOW[Number(d.weekday)] || '');
+  function renderExerciseLibrary(container) {
+    container.appendChild(h('div', { class: 'hint', style: { margin: '0 2px 12px' } },
+      'Your exercise library. Add each exercise once — name, category, muscles, video. Then pick them when building workout days in the Schedule tab.'));
+    const lib = EX_LIBRARY.slice().sort((a, b) => ((a.data.name || '').localeCompare(b.data.name || '')));
+    if (!lib.length) { container.appendChild(emptyState('exercise', 'No exercises yet. Tap + to add your first one.')); return; }
+    lib.forEach(it => {
+      const d = it.data || {};
+      container.appendChild(h('div', { class: 'row', onclick: () => navigate('#/edit/exercise/' + it.id) },
+        h('div', { class: 'main' },
+          h('div', { class: 'title' }, d.name || 'Exercise'),
+          h('div', { class: 'meta' }, [exerciseCategory(d), exerciseMuscles(d)].filter(Boolean).join(' · ') + (exerciseVideo(d) ? ' · ▶' : ''))),
+        h('div', { class: 'chev' }, '›')));
+    });
+  }
+  // a completion can be a plain date string (old) or { d, ex:[...] } (new) — normalise the date out
+  const compDate = c => (typeof c === 'string' ? c : (c && c.d)) || '';
+  const doneOn = (it, ds) => (it.data.completions || []).some(c => compDate(c) === ds);
   const dateHeading = (dt, off) => off === 0 ? 'Today · ' + DOW[dt.getDay()]
     : off === 1 ? 'Tomorrow · ' + DOW[dt.getDay()]
     : DOW[dt.getDay()] + ' · ' + fmtDate(localDateStr(dt));
@@ -3191,74 +3800,336 @@ async function renderWorkoutScreen(listEl, items, sub) {
       h('div', { class: 'chev' }, '›'));
   }
 
-  function upcomingCard(it, n, occ) {
+  function upcomingCard(it, dayNo, occ) {
     const d = it.data || {};
     const isToday = occ.off === 0;
     const exs = (d.exercises || []).filter(e => e.name && e.name.trim());
-    const doneN = () => exs.filter(e => e.done).length;
+    exs.forEach(normalizeWorkoutExercise);
+    const setCount = ex => Math.max(1, parseInt(ex.sets, 10) || 0);
+    // The tick display DERIVES from the durable completions log for THIS date — so anything you
+    // logged stays ticked when you leave and reopen (even hours later, even in a new session), and a
+    // fresh occurrence (a new date with no records) starts empty. setsDone is just a view of the log.
+    exs.forEach(e => {
+      const cnt = setCount(e);
+      let done = 0;
+      if (isToday) {
+        const rec = (d.completions || []).find(c => c && typeof c === 'object' && !Array.isArray(c.ex) && c.n && compDate(c) === occ.ds && String(c.n).trim().toLowerCase() === String(e.name || '').trim().toLowerCase());
+        done = rec ? Math.min(cnt, Math.max(0, Number(rec.s) || 0)) : 0;
+      }
+      e.setsDone = [];
+      for (let i = 0; i < done; i++) e.setsDone[i] = true;
+    });
+    if (isToday) d.setsFor = occ.ds;
+    const setsTicked = ex => { const c = setCount(ex); let n = 0; for (let i = 0; i < c; i++) if (ex.setsDone[i]) n++; return n; };
+    const doneSetsN = () => exs.reduce((a, e) => a + setsTicked(e), 0);
+    const totalSetsN = exs.reduce((a, e) => a + setCount(e), 0);
+    // Set-level tracking: log each exercise with the number of sets you've actually ticked (≥1),
+    // even a partial one (e.g. 1 of 3 sets → "1 set"). Un-ticking updates it; nothing waits for a full day.
+    const syncToday = async () => {
+      d.completions = Array.isArray(d.completions) ? d.completions : [];
+      // rebuild today's log from scratch: drop EVERY record dated today (any old format), then re-add
+      // only the exercises with sets still ticked — so unticking always removes it from the count.
+      d.completions = d.completions.filter(c => compDate(c) !== occ.ds);
+      exs.forEach(e => { const t = setsTicked(e); if (t > 0) d.completions.push({ d: occ.ds, n: e.name, s: t, u: e.unit === 'secs' ? 'secs' : 'reps', r: (e.reps != null ? String(e.reps) : ''), c: exerciseCategory(e), m: exerciseMuscles(e), w: e.weight || '' }); });
+      // never swallow a failed save — the tick would look done but be gone on the next open
+      try { await DB.saveItem(it); } catch (e) { console.error('workout save failed', e); toast('⚠ Not saved — check your connection and tap again'); }
+    };
     const card = h('div', { class: 'detail-card' + (isToday ? '' : ' muted'), style: isToday ? null : { opacity: '.82' } },
       h('div', { class: 'section-title', style: { marginTop: '0' } }, dateHeading(occ.date, occ.off)));
-    const dayLine = h('div', { style: { fontWeight: '700', marginBottom: '2px' } },
-      dayLabel(d, n) + (isToday && exs.length ? '  (' + doneN() + '/' + exs.length + ')' : ''));
+    const dayLine = h('div', { style: { fontWeight: '700', marginBottom: '8px' } },
+      dayLabel(d, dayNo) + (isToday && exs.length ? '  (' + doneSetsN() + '/' + totalSetsN + ' sets)' : ''));
     card.appendChild(dayLine);
     if (!exs.length) { card.appendChild(h('div', { class: 'hint' }, 'No exercises yet.')); return card; }
-    const videoLink = ex => (ex.video && String(ex.video).trim())
-      ? h('a', { href: ex.video, target: '_blank', rel: 'noopener', onclick: e => e.stopPropagation(),
-          style: { display: 'inline-block', marginTop: '3px', color: 'var(--accent)', fontWeight: '700', fontSize: '13px', textDecoration: 'none' } }, '▶ Watch video')
-      : null;
+    const videoLink = ex => { const v = exerciseVideo(ex); return v
+      ? h('a', { href: v, target: '_blank', rel: 'noopener', onclick: e => e.stopPropagation(),
+          style: { display: 'inline-block', marginTop: '3px', color: 'var(--accent)', fontWeight: '700', fontSize: '12px', textDecoration: 'none' } }, '▶ Watch')
+      : null; };
+    const maxSets = Math.max(1, ...exs.map(setCount));
+    const border = '1px solid var(--line)';
+    const th = (txt, left) => h('th', { style: { padding: '6px 8px', borderBottom: border, color: 'var(--muted)', fontSize: '11px', fontWeight: '700', textAlign: left ? 'left' : 'center', whiteSpace: 'nowrap' } }, txt);
+    const head = h('tr', null, th('Exercise', true));
+    for (let i = 1; i <= maxSets; i++) head.appendChild(th('Set ' + i));
+    const tbody = h('tbody');
     exs.forEach(ex => {
-      const detail = workoutSetSummary(ex);
-      if (!isToday) { // future day → read-only preview
-        card.appendChild(h('div', { class: 'check-row' }, h('div', { class: 'cb', style: { opacity: '.4' } }),
-          h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null, videoLink(ex))));
-        return;
+      const c = setCount(ex);
+      const unit = ex.unit === 'secs' ? 'secs' : 'reps';
+      const val = (ex.reps != null && ex.reps !== '') ? String(ex.reps) : '–';
+      const meta = [exerciseCategory(ex), exerciseMuscles(ex), unit, (ex.weight && String(ex.weight).trim()) ? '⚖ ' + ex.weight : ''].filter(Boolean).join(' · ');
+      const nameTd = h('td', { style: { padding: '8px', borderBottom: border, textAlign: 'left', minWidth: '110px' } },
+        h('div', { style: { fontWeight: '600' } }, ex.name),
+        h('div', { style: { fontSize: '11px', color: 'var(--muted)', lineHeight: '1.35' } }, meta),
+        videoLink(ex));
+      const tr = h('tr', null, nameTd);
+      for (let i = 0; i < maxSets; i++) {
+        if (i >= c) { tr.appendChild(h('td', { style: { borderBottom: border, textAlign: 'center', color: 'var(--muted)', opacity: '.4' } }, '·')); continue; }
+        const cellStyle = () => {
+          const on = isToday && ex.setsDone[i];
+          return { padding: '8px 6px', borderBottom: border, textAlign: 'center', minWidth: '46px', fontWeight: on ? '800' : '600',
+            background: on ? 'var(--green)' : 'transparent', color: on ? '#fff' : 'var(--text)', cursor: isToday ? 'pointer' : 'default', userSelect: 'none' };
+        };
+        const cell = h('td', { style: cellStyle() }, (isToday && ex.setsDone[i] ? '✓ ' : '') + val);
+        if (isToday) cell.onclick = async () => {
+          const before = !!ex.setsDone[i];
+          // rebuild as a dense boolean array — ticking Set 3 before Set 1 must not leave holes
+          // (Firestore rejects sparse arrays, which would kill the save)
+          const next = [];
+          for (let k = 0; k < c; k++) next[k] = (k === i) ? !before : !!ex.setsDone[k];
+          ex.setsDone = next;
+          Object.assign(cell.style, cellStyle()); cell.textContent = (ex.setsDone[i] ? '✓ ' : '') + val;
+          dayLine.textContent = dayLabel(d, dayNo) + '  (' + doneSetsN() + '/' + totalSetsN + ' sets)';
+          if (!before && ex.setsDone[i]) toast('Set logged 💪'); // that set now counts in Progress
+          await syncToday();
+        };
+        tr.appendChild(cell);
       }
-      const cb = h('div', { class: 'cb' + (ex.done ? ' on' : '') });
-      const row = h('div', { class: 'check-row' + (ex.done ? ' done' : ''), style: { cursor: 'pointer' }, onclick: async () => {
-        ex.done = !ex.done;
-        row.classList.toggle('done', ex.done); cb.classList.toggle('on', ex.done);
-        dayLine.textContent = dayLabel(d, n) + '  (' + doneN() + '/' + exs.length + ')';
-        try { await DB.saveItem(it); } catch (e) {}
-      } }, cb,
-        h('div', { class: 'ttl' }, ex.name, detail ? h('div', { class: 'px' }, detail) : null, videoLink(ex)));
-      card.appendChild(row);
+      tbody.appendChild(tr);
     });
-    if (isToday) card.appendChild(h('div', { style: { marginTop: '10px' } },
-      h('button', { class: 'btn small', type: 'button', onclick: async () => {
-        d.completions = Array.isArray(d.completions) ? d.completions : [];
-        if (!d.completions.includes(occ.ds)) d.completions.push(occ.ds);
-        exs.forEach(e => e.done = false); // reset for next time
-        try { await DB.saveItem(it); } catch (e) {}
-        celebrateWorkout(dayLabel(d, n)); // pop-up + it drops off Upcoming
-        refresh();
-      } }, '✓ Complete training')));
+    card.appendChild(h('div', { style: { overflowX: 'auto', margin: '2px -4px 0' } },
+      h('table', { style: { borderCollapse: 'collapse', width: '100%', fontSize: '13px' } }, h('thead', null, head), tbody)));
+    if (isToday) card.appendChild(h('div', { style: { fontSize: '11.5px', color: 'var(--muted)', marginTop: '8px' } },
+      'Tap each set as you finish it. Whatever you tick today is saved to Progress; this card clears tomorrow.'));
     return card;
   }
 
-  function progressList(list, dayNumOf) {
+  function progressList(list, dayNumOf, selYear, onYear, weeklyGoal, onGoal) {
     const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-    const monthName = k => { const [y, m] = k.split('-'); return (MONTHS[parseInt(m, 10) - 1] || '') + ' ' + y; };
-    const log = [];
-    list.forEach(it => (it.data.completions || []).forEach(ds => log.push({ ds, day: dayLabel(it.data, dayNumOf[it.id]) })));
-    log.sort((a, b) => b.ds.localeCompare(a.ds));
-    if (!log.length) return emptyState('workout', 'No completed workouts yet. Finish a day in the Upcoming tab and it shows up here.');
-    // group completions by calendar month (newest month first)
-    const months = {};
-    log.forEach(e => { const k = e.ds.slice(0, 7); (months[k] = months[k] || []).push(e); });
+    const setCountOf = ex => Math.max(1, parseInt(ex.sets, 10) || 0);
+    // Build one session per (workout day, date), collecting the exercises logged for it. A completion
+    // record is either a plain date string (legacy), a { d, ex:[…] } day snapshot, or a single
+    // per-exercise { d, n, s, u, r } (item-level). Multiple per-exercise records on the same day merge.
+    const sessMap = {};
+    list.forEach(it => {
+      const dayLbl = dayLabel(it.data, dayNumOf[it.id]);
+      (it.data.completions || []).forEach(c => {
+        const date = compDate(c);
+        if (!date) return;
+        const key = it.id + '|' + date;
+        const sess = sessMap[key] || (sessMap[key] = { date, day: dayLbl, exs: [] });
+        if (typeof c === 'string') { // legacy date-only → the day's current exercises
+          (it.data.exercises || []).filter(e => e.name && e.name.trim()).map(normalizeWorkoutExercise)
+            .forEach(e => sess.exs.push({ name: e.name, sets: setCountOf(e), unit: e.unit, reps: e.reps, category: exerciseCategory(e), muscles: exerciseMuscles(e) }));
+        } else if (Array.isArray(c.ex)) { // day snapshot
+          c.ex.forEach(e => sess.exs.push({ name: e.n, sets: Number(e.s) || 0, unit: e.u === 'secs' ? 'secs' : 'reps', reps: e.r, category: e.c || lookupExercise(e.n).category || 'Other', muscles: e.m || lookupExercise(e.n).muscles || '' }));
+        } else if (c.n) { // single completed exercise
+          sess.exs.push({ name: c.n, sets: Number(c.s) || 0, unit: c.u === 'secs' ? 'secs' : 'reps', reps: c.r, category: c.c || lookupExercise(c.n).category || 'Other', muscles: c.m || lookupExercise(c.n).muscles || '', weight: c.w || '' });
+        }
+      });
+    });
+    const vol = e => (e.sets || 0) * (parseInt(e.reps, 10) || 0);
+    const sessions = Object.values(sessMap).filter(s => s.exs.length).map(s => Object.assign(s, {
+      totalSets: s.exs.reduce((a, e) => a + (e.sets || 0), 0),
+      totalReps: s.exs.reduce((a, e) => a + (e.unit === 'secs' ? 0 : vol(e)), 0),
+      totalSecs: s.exs.reduce((a, e) => a + (e.unit === 'secs' ? vol(e) : 0), 0)
+    }));
+    if (!sessions.length) return emptyState('workout', 'No workouts logged yet. Tick your exercises in the Upcoming tab and they show up here.');
+    sessions.sort((a, b) => b.date.localeCompare(a.date));
+
+    /* ---- report building blocks (category palette is CVD-validated for the dark surface) ---- */
+    const CAT_COLOR = { Strength: '#6366f1', Cardio: '#f43f5e', Core: '#059669', Mobility: '#d97706', Other: '#0891b2' };
+    const catColor = c => CAT_COLOR[c] || '#0891b2';
+    const statTile = (value, label) => h('div', { style: { flex: '1', minWidth: '64px', background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: '12px', padding: '12px 6px', textAlign: 'center' } },
+      h('div', { style: { fontSize: '21px', fontWeight: '800', lineHeight: '1.1' } }, String(value)),
+      h('div', { style: { fontSize: '10px', color: 'var(--muted)', marginTop: '3px', textTransform: 'uppercase', letterSpacing: '.6px' } }, label));
+    const dot = color => h('span', { style: { width: '9px', height: '9px', borderRadius: '3px', background: color, display: 'inline-block', flex: 'none' } });
+    const bar = (label, value, max, color, suffix) => h('div', { style: { margin: '0 0 9px' } },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', fontSize: '12.5px', marginBottom: '4px', gap: '8px' } },
+        h('span', { style: { fontWeight: '600', display: 'flex', alignItems: 'center', gap: '6px' } }, color ? dot(color) : null, label),
+        h('span', { style: { color: 'var(--muted)', whiteSpace: 'nowrap' } }, value + (suffix || ''))),
+      h('div', { style: { height: '8px', background: 'var(--card-2)', borderRadius: '999px', overflow: 'hidden' } },
+        h('div', { style: { height: '100%', width: Math.max(max > 0 ? value / max * 100 : 0, 2) + '%', background: color || 'var(--accent)', borderRadius: '999px' } })));
+    const stackBar = (byCat, total) => {
+      const row = h('div', { style: { display: 'flex', height: '11px', borderRadius: '999px', overflow: 'hidden', gap: '2px' } });
+      Object.keys(byCat).sort((a, b) => byCat[b] - byCat[a]).forEach(cat => { const w = total > 0 ? byCat[cat] / total * 100 : 0; if (w > 0) row.appendChild(h('div', { style: { width: w + '%', minWidth: '4px', background: catColor(cat) }, title: cat + ' ' + byCat[cat] })); });
+      return row;
+    };
+    const aggByCat = arr => { const o = {}; arr.forEach(s => s.exs.forEach(e => { const k = e.category || 'Other'; o[k] = (o[k] || 0) + (e.sets || 0); })); return o; };
+    const aggByMuscle = arr => { const o = {}; arr.forEach(s => s.exs.forEach(e => (e.muscles || '').split(',').map(canonMuscle).filter(Boolean).forEach(m => { o[m] = (o[m] || 0) + (e.sets || 0); }))); return o; };
+    const sumSets = arr => arr.reduce((a, s) => a + s.totalSets, 0);
+    const sumReps = arr => arr.reduce((a, s) => a + s.totalReps, 0);
+
+    /* ---- year scope ---- */
+    const years = [...new Set(sessions.map(s => s.date.slice(0, 4)))].sort((a, b) => b.localeCompare(a));
+    const year = (selYear && years.includes(selYear)) ? selYear : years[0];
+    const ySess = sessions.filter(s => s.date.slice(0, 4) === year);
     const wrap = h('div', null);
+
+    if (years.length > 1) {
+      const pills = h('div', { style: { display: 'flex', gap: '6px', margin: '0 0 12px', flexWrap: 'wrap' } });
+      years.forEach(y => pills.appendChild(h('button', { class: 'btn small ' + (y === year ? '' : 'secondary'), type: 'button', onclick: () => onYear && onYear(y) }, y)));
+      wrap.appendChild(pills);
+    }
+
+    /* ---- year summary ---- */
+    const yCat = aggByCat(ySess), yMus = aggByMuscle(ySess);
+    const summary = h('div', { class: 'detail-card' },
+      h('div', { style: { fontSize: '18px', fontWeight: '800' } }, year + ' — Workout report'),
+      h('div', { style: { fontSize: '12.5px', color: 'var(--muted)', margin: '2px 0 14px' } }, 'Everything you\'ve completed this year'),
+      h('div', { style: { display: 'flex', gap: '7px', marginBottom: '16px' } },
+        statTile(ySess.length, 'Workouts'), statTile(sumSets(ySess), 'Sets'), statTile(sumReps(ySess), 'Reps'), statTile(new Set(ySess.map(s => s.date)).size, 'Days')));
+    summary.appendChild(h('div', { class: 'section-title', style: { margin: '0 0 8px' } }, 'By category'));
+    const catMax = Math.max(1, ...Object.values(yCat));
+    Object.keys(yCat).sort((a, b) => yCat[b] - yCat[a]).forEach(cat => summary.appendChild(bar(cat, yCat[cat], catMax, catColor(cat), ' sets')));
+    const yTopMus = Object.keys(yMus).sort((a, b) => yMus[b] - yMus[a]).slice(0, 8);
+    if (yTopMus.length) {
+      summary.appendChild(h('div', { class: 'section-title', style: { margin: '16px 0 8px' } }, 'Primary muscles worked'));
+      const mMax = Math.max(1, ...yTopMus.map(m => yMus[m]));
+      yTopMus.forEach(m => summary.appendChild(bar(m, yMus[m], mMax, null, ' sets')));
+    }
+    wrap.appendChild(summary);
+
+    /* =================== INSIGHTS =================== */
+    const localDS = d => localDateStr(d);
+    const weekIdx = ds => { const d = new Date(ds + 'T00:00'); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return Math.round(d.getTime() / 604800000); };
+    const insight = h('div', { class: 'detail-card' }, h('div', { class: 'section-title', style: { marginTop: '0' } }, 'Highlights'));
+    const tileRow = h('div', { style: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' } });
+
+    // Workout streak (consecutive weeks with ≥1 workout, across all data)
+    const activeWeeks = [...new Set(sessions.map(s => weekIdx(s.date)))].sort((a, b) => a - b);
+    let best = 0, run = 0, prev = null;
+    activeWeeks.forEach(w => { run = (prev !== null && w === prev + 1) ? run + 1 : 1; best = Math.max(best, run); prev = w; });
+    let trail = 0; for (let i = activeWeeks.length - 1; i >= 0; i--) { if (i === activeWeeks.length - 1 || activeWeeks[i] === activeWeeks[i + 1] - 1) trail++; else break; }
+    const thisWeek = weekIdx(localDS(new Date()));
+    const curStreak = (activeWeeks.length && activeWeeks[activeWeeks.length - 1] >= thisWeek - 1) ? trail : 0;
+    const miniTile = (big, label, sub) => h('div', { style: { background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: '12px', padding: '11px 12px' } },
+      h('div', { style: { fontSize: '11px', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: '4px' } }, label),
+      h('div', { style: { fontSize: '18px', fontWeight: '800', lineHeight: '1.15' } }, big),
+      sub ? h('div', { style: { fontSize: '11.5px', color: 'var(--muted)', marginTop: '2px' } }, sub) : null);
+    tileRow.appendChild(miniTile('🔥 ' + curStreak + (curStreak === 1 ? ' week' : ' weeks'), 'Workout streak', 'Best: ' + best + (best === 1 ? ' week' : ' weeks')));
+
+    // Most performed exercise (this year, by number of sessions it appears in)
+    const perf = {};
+    ySess.forEach(s => new Set(s.exs.map(e => e.name).filter(Boolean)).forEach(n => { perf[n] = (perf[n] || 0) + 1; }));
+    const topPerf = Object.keys(perf).sort((a, b) => perf[b] - perf[a])[0];
+    tileRow.appendChild(miniTile(topPerf || '—', 'Most performed', topPerf ? perf[topPerf] + ' session' + (perf[topPerf] === 1 ? '' : 's') : 'No data yet'));
+
+    // Strength vs Cardio ratio (this year, by sets)
+    const strSets = yCat.Strength || 0, carSets = yCat.Cardio || 0, scTot = strSets + carSets;
+    const scStr = scTot ? Math.round(strSets / scTot * 100) : 0;
+    tileRow.appendChild(miniTile(scTot ? (scStr + '% / ' + (100 - scStr) + '%') : '—', 'Strength vs Cardio', scTot ? (strSets + ' vs ' + carSets + ' sets') : 'No data yet'));
+
+    // Weekly goal (this week's active days vs goal; editable)
+    const goal = Math.max(1, weeklyGoal || 3);
+    const thisWeekDays = new Set(sessions.filter(s => weekIdx(s.date) === thisWeek).map(s => s.date)).size;
+    const goalTile = h('div', { style: { background: 'var(--bg-2)', border: '1px solid var(--line)', borderRadius: '12px', padding: '11px 12px' } },
+      h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' } },
+        h('div', { style: { fontSize: '11px', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.5px' } }, 'Weekly goal'),
+        h('div', { style: { display: 'flex', gap: '4px' } },
+          h('button', { class: 'iconbtn small', type: 'button', title: 'Lower goal', onclick: () => onGoal && onGoal(goal - 1) }, '−'),
+          h('button', { class: 'iconbtn small', type: 'button', title: 'Raise goal', onclick: () => onGoal && onGoal(goal + 1) }, '+'))),
+      h('div', { style: { fontSize: '18px', fontWeight: '800', margin: '3px 0 5px' } }, thisWeekDays + ' / ' + goal + (thisWeekDays >= goal ? ' ✅' : '')),
+      h('div', { style: { height: '7px', background: 'var(--card-2)', borderRadius: '999px', overflow: 'hidden' } },
+        h('div', { style: { height: '100%', width: Math.min(100, thisWeekDays / goal * 100) + '%', background: thisWeekDays >= goal ? 'var(--green)' : 'var(--accent)', borderRadius: '999px' } })));
+    tileRow.appendChild(goalTile);
+    insight.appendChild(tileRow);
+    wrap.appendChild(insight);
+
+    /* =================== WORKOUT CALENDAR (heatmap) =================== */
+    const perDay = {};
+    ySess.forEach(s => { perDay[s.date] = (perDay[s.date] || 0) + s.totalSets; });
+    const dayMax = Math.max(1, ...Object.values(perDay));
+    const level = n => !n ? 0 : n <= dayMax * 0.25 ? 1 : n <= dayMax * 0.5 ? 2 : n <= dayMax * 0.75 ? 3 : 4;
+    const LVL = ['var(--card-2)', 'rgba(109,99,255,.30)', 'rgba(109,99,255,.55)', 'rgba(109,99,255,.80)', 'rgba(109,99,255,1)'];
+    const heat = h('div', { class: 'detail-card' }, h('div', { class: 'section-title', style: { marginTop: '0' } }, 'Workout calendar'));
+    const start = new Date(year + '-01-01T00:00'); start.setDate(start.getDate() - ((start.getDay() + 6) % 7)); // back to Monday
+    const end = new Date(year + '-12-31T00:00');
+    const cols = h('div', { style: { display: 'flex', gap: '3px' } });
+    const monthLabels = h('div', { style: { display: 'flex', gap: '3px', marginBottom: '3px', paddingLeft: '2px' } });
+    let cur = new Date(start), lastMonth = -1;
+    while (cur <= end) {
+      const col = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '3px' } });
+      const weekStartMonth = cur.getMonth();
+      for (let dowr = 0; dowr < 7; dowr++) {
+        const ds = localDS(cur);
+        const inYear = cur.getFullYear() === Number(year);
+        const n = inYear ? (perDay[ds] || 0) : 0;
+        col.appendChild(h('div', { title: inYear ? (fmtDate(ds) + ' · ' + n + ' sets') : '', style: { width: '11px', height: '11px', borderRadius: '3px', background: inYear ? LVL[level(n)] : 'transparent' } }));
+        cur.setDate(cur.getDate() + 1);
+      }
+      monthLabels.appendChild(h('div', { style: { width: '11px', fontSize: '9px', color: 'var(--muted)', overflow: 'visible', whiteSpace: 'nowrap' } }, weekStartMonth !== lastMonth ? MONTHS[weekStartMonth].slice(0, 3) : ''));
+      lastMonth = weekStartMonth;
+      cols.appendChild(col);
+    }
+    heat.appendChild(h('div', { style: { overflowX: 'auto', paddingBottom: '4px' } }, h('div', null, monthLabels, cols)));
+    const legend = h('div', { style: { display: 'flex', alignItems: 'center', gap: '5px', marginTop: '8px', fontSize: '11px', color: 'var(--muted)' } }, 'Less');
+    LVL.forEach(c => legend.appendChild(h('div', { style: { width: '11px', height: '11px', borderRadius: '3px', background: c } })));
+    legend.appendChild(h('span', null, 'More'));
+    heat.appendChild(legend);
+    wrap.appendChild(heat);
+
+    /* =================== CATEGORY TREND + MUSCLE BALANCE + EXERCISE DISTRIBUTION =================== */
+    const trendCard = h('div', { class: 'detail-card' });
+    // Category trend — a mini stacked bar per month, oldest → newest
+    const mAsc = {};
+    ySess.forEach(s => { const k = s.date.slice(0, 7); (mAsc[k] = mAsc[k] || []).push(s); });
+    const trendKeys = Object.keys(mAsc).sort();
+    if (trendKeys.length) {
+      trendCard.appendChild(h('div', { class: 'section-title', style: { marginTop: '0' } }, 'Category trend'));
+      const trendRow = h('div', { style: { display: 'flex', gap: '8px', alignItems: 'flex-end', overflowX: 'auto', paddingBottom: '2px' } });
+      trendKeys.forEach(k => {
+        const mc = aggByCat(mAsc[k]); const tot = Object.values(mc).reduce((a, b) => a + b, 0);
+        const colBar = h('div', { style: { display: 'flex', flexDirection: 'column-reverse', height: '64px', width: '22px', borderRadius: '5px', overflow: 'hidden', gap: '2px', background: 'var(--card-2)' } });
+        Object.keys(mc).sort((a, b) => mc[a] - mc[b]).forEach(cat => colBar.appendChild(h('div', { style: { height: (tot ? mc[cat] / tot * 100 : 0) + '%', background: catColor(cat) }, title: cat + ' ' + mc[cat] })));
+        trendRow.appendChild(h('div', { style: { textAlign: 'center', flex: 'none' } }, colBar,
+          h('div', { style: { fontSize: '10px', color: 'var(--muted)', marginTop: '4px' } }, MONTHS[parseInt(k.split('-')[1], 10) - 1].slice(0, 3))));
+      });
+      trendCard.appendChild(trendRow);
+    }
+    // Muscle balance — sets grouped into body regions
+    const REGION = { Chest: 'Upper', Back: 'Upper', Shoulders: 'Upper', Biceps: 'Upper', Triceps: 'Upper', Quads: 'Lower', Glutes: 'Lower', Hamstrings: 'Lower', Calves: 'Lower', Legs: 'Lower', Abs: 'Core', Obliques: 'Core', Core: 'Core', 'Hip flexors': 'Core', 'Lower abs': 'Core' };
+    const byRegion = { Upper: 0, Lower: 0, Core: 0 };
+    ySess.forEach(s => s.exs.forEach(e => (e.muscles || '').split(',').map(canonMuscle).filter(Boolean).forEach(m => { const r = REGION[m]; if (r) byRegion[r] += (e.sets || 0); })));
+    const regTot = byRegion.Upper + byRegion.Lower + byRegion.Core;
+    if (regTot) {
+      trendCard.appendChild(h('div', { class: 'section-title', style: { margin: '16px 0 8px' } }, 'Muscle balance'));
+      const REGCOL = { Upper: '#6366f1', Lower: '#059669', Core: '#d97706' };
+      const regMax = Math.max(byRegion.Upper, byRegion.Lower, byRegion.Core);
+      ['Upper', 'Lower', 'Core'].forEach(r => trendCard.appendChild(bar(r + ' body', byRegion[r], regMax, REGCOL[r], ' sets (' + Math.round(byRegion[r] / regTot * 100) + '%)')));
+      const shares = ['Upper', 'Lower', 'Core'].map(r => byRegion[r] / regTot);
+      const spread = Math.max(...shares) - Math.min(...shares);
+      trendCard.appendChild(h('div', { style: { fontSize: '12px', color: 'var(--muted)', marginTop: '4px' } },
+        spread <= 0.2 ? '✅ Nicely balanced across the body.' : ('⚠ Leaning ' + ['Upper', 'Lower', 'Core'][shares.indexOf(Math.max(...shares))].toLowerCase() + '-heavy — mix in the others.')));
+    }
+    if (trendCard.childNodes.length) wrap.appendChild(trendCard);
+
+    // Exercise distribution — top exercises by total sets (this year)
+    const byEx2 = {};
+    ySess.forEach(s => s.exs.forEach(e => { if (e.name) byEx2[e.name] = (byEx2[e.name] || 0) + (e.sets || 0); }));
+    const topExs = Object.keys(byEx2).sort((a, b) => byEx2[b] - byEx2[a]).slice(0, 8);
+    if (topExs.length) {
+      const distCard = h('div', { class: 'detail-card' }, h('div', { class: 'section-title', style: { marginTop: '0' } }, 'Exercise distribution'));
+      const exMax = Math.max(1, ...topExs.map(n => byEx2[n]));
+      topExs.forEach(n => distCard.appendChild(bar(n, byEx2[n], exMax, 'var(--accent-2)', ' sets')));
+      wrap.appendChild(distCard);
+    }
+
+    /* ---- month by month ---- */
+    const months = {};
+    ySess.forEach(s => { const k = s.date.slice(0, 7); (months[k] = months[k] || []).push(s); });
+    wrap.appendChild(h('div', { class: 'section-title', style: { margin: '20px 2px 8px' } }, 'Month by month'));
     Object.keys(months).sort((a, b) => b.localeCompare(a)).forEach(k => {
-      const entries = months[k]; // already newest-first within the month
+      const ss = months[k];
+      const mCat = aggByCat(ss), mMus = aggByMuscle(ss), mSets = sumSets(ss), mReps = sumReps(ss);
       const card = h('div', { class: 'detail-card' });
-      card.appendChild(h('div', { class: 'section-title', style: { marginTop: '0' } },
-        monthName(k) + ' · ' + entries.length + ' workout' + (entries.length === 1 ? '' : 's')));
-      // which workouts, and how many of each, this month
-      const byDay = {};
-      entries.forEach(e => { byDay[e.day] = (byDay[e.day] || 0) + 1; });
-      const tally = Object.keys(byDay).sort().map(lbl => lbl + ' ×' + byDay[lbl]).join('   ·   ');
-      card.appendChild(h('div', { style: { color: 'var(--muted)', fontSize: '12.5px', margin: '2px 0 10px', lineHeight: '1.5' } }, tally));
-      // dated log of exactly what was done, day by day
-      entries.forEach(e => card.appendChild(h('div', { class: 'kv' },
-        h('span', { class: 'k' }, fmtDate(e.ds)), h('span', { class: 'v' }, '✅ ' + e.day))));
+      card.appendChild(h('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '8px', marginBottom: '9px' } },
+        h('div', { style: { fontWeight: '800', fontSize: '15px' } }, MONTHS[parseInt(k.split('-')[1], 10) - 1]),
+        h('div', { style: { fontSize: '11.5px', color: 'var(--muted)', textAlign: 'right' } }, ss.length + ' workout' + (ss.length === 1 ? '' : 's') + ' · ' + mSets + ' sets · ' + mReps + ' reps')));
+      card.appendChild(stackBar(mCat, mSets));
+      const legend = h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '10px', margin: '9px 0 0', fontSize: '11.5px', color: 'var(--muted)' } });
+      Object.keys(mCat).sort((a, b) => mCat[b] - mCat[a]).forEach(cat => legend.appendChild(
+        h('span', { style: { display: 'flex', alignItems: 'center', gap: '5px' } }, dot(catColor(cat)), cat + ' ' + mCat[cat])));
+      card.appendChild(legend);
+      const tm = Object.keys(mMus).sort((a, b) => mMus[b] - mMus[a]).slice(0, 6);
+      if (tm.length) card.appendChild(h('div', { style: { fontSize: '12px', color: 'var(--muted)', marginTop: '9px', lineHeight: '1.5' } },
+        h('span', { style: { fontWeight: '700' } }, 'Muscles: '), tm.map(m => m + ' ' + mMus[m]).join(' · ')));
+      const det = h('details', { style: { marginTop: '10px' } },
+        h('summary', { style: { cursor: 'pointer', fontSize: '12.5px', color: 'var(--accent)', fontWeight: '600' } }, 'View sessions'));
+      ss.forEach(s => {
+        const exText = s.exs.map(e => e.name + (e.sets ? ' (' + e.sets + '×' + (e.reps || '?') + (e.unit === 'secs' ? 's' : '') + (e.weight ? ' @ ' + e.weight : '') + ')' : '')).join(', ');
+        det.appendChild(h('div', { style: { margin: '8px 0 0' } },
+          h('div', { style: { fontWeight: '600', fontSize: '12.5px' } }, fmtDate(s.date) + ' · ' + s.day + ' · ' + s.totalSets + ' sets' + (s.totalReps ? ' · ' + s.totalReps + ' reps' : '') + (s.totalSecs ? ' · ' + s.totalSecs + 's' : '')),
+          h('div', { style: { color: 'var(--muted)', fontSize: '12px', lineHeight: '1.5' } }, exText || '—')));
+      });
+      card.appendChild(det);
       wrap.appendChild(card);
     });
     return wrap;
@@ -3266,20 +4137,31 @@ async function renderWorkoutScreen(listEl, items, sub) {
 
   function draw() {
     tabsEl.innerHTML = '';
-    [['upcoming', 'Upcoming'], ['setup', 'Setup'], ['progress', 'Progress']].forEach(([k, label]) =>
+    [['upcoming', 'Upcoming'], ['schedule', 'Schedule'], ['setup', 'Setup'], ['progress', 'Progress']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => {
         tab = k;
         try { history.replaceState(null, '', k === 'upcoming' ? '#/cat/workout' : '#/cat/workout/' + k); } catch (e) {}
         draw();
       } }, label)));
+    // FAB: Schedule adds a workout day, Setup adds a library exercise, others none
+    if (fab) {
+      if (tab === 'schedule') { fab.style.display = ''; fab.onclick = () => navigate('#/edit/workout'); }
+      else if (tab === 'setup') { fab.style.display = ''; fab.onclick = () => navigate('#/edit/exercise'); }
+      else fab.style.display = 'none';
+    }
     body.innerHTML = '';
     const list = items.slice().sort((a, b) => wkOrder(a.data.weekday) - wkOrder(b.data.weekday));
-    if (tab === 'progress') { body.appendChild(progressList(list, Object.fromEntries(list.map((it, i) => [it.id, i + 1])))); return; }
-    if (!list.length) { body.appendChild(emptyState('workout', 'No workout days yet. Tap + to add one.')); return; }
-    if (tab === 'setup') { list.forEach((it, i) => body.appendChild(scheduleCard(it, i + 1))); return; }
-    // Upcoming = the next full 7 days. Each scheduled day shows on its date until it's completed.
-    // Only today's is interactive (tick + Complete → pop-up); future days are a read-only preview.
-    // Skip today's and it simply rolls off tomorrow as the window slides forward.
+    if (tab === 'progress') { body.appendChild(progressList(list, Object.fromEntries(list.map((it, i) => [it.id, i + 1])), progYear, y => { progYear = y; draw(); }, workoutGoal, setGoal)); return; }
+    if (tab === 'setup') { renderExerciseLibrary(body); return; }
+    if (tab === 'schedule') {
+      if (!list.length) { body.appendChild(emptyState('workout', 'No workout days yet. Tap + to add one.')); return; }
+      list.forEach((it, i) => body.appendChild(scheduleCard(it, i + 1))); return;
+    }
+    if (!list.length) { body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '😌'),
+      h('div', null, 'No workout days yet. Add exercises in Setup, then build your week in Schedule.'))); return; }
+    // Upcoming = the next full 7 days. Today's card is interactive (tick each set; each finished
+    // exercise is logged to Progress on its own). It stays visible all day and simply rolls off
+    // tomorrow as the 7-day window slides forward; future days are read-only previews.
     const dayNumOf = Object.fromEntries(list.map((it, i) => [it.id, i + 1]));
     const base = new Date(); base.setHours(0, 0, 0, 0);
     const occs = [];
@@ -3287,12 +4169,11 @@ async function renderWorkoutScreen(listEl, items, sub) {
       const dt = new Date(base); dt.setDate(base.getDate() + off);
       const w = String(dt.getDay());
       const ds = localDateStr(dt);
-      list.filter(it => String(it.data.weekday) === w)
-        .forEach(it => { if (!(it.data.completions || []).includes(ds)) occs.push({ it, date: dt, ds, off }); });
+      list.filter(it => String(it.data.weekday) === w).forEach(it => occs.push({ it, date: dt, ds, off }));
     }
     if (!occs.length) {
-      body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '✅'),
-        h('div', null, 'You\'re all caught up for the next 7 days. Nice work.')));
+      body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '😌'),
+        h('div', null, 'No workout days scheduled. Add one in Setup.')));
       return;
     }
     occs.forEach(o => body.appendChild(upcomingCard(o.it, dayNumOf[o.it.id], o)));
@@ -3538,6 +4419,7 @@ async function enrichRowDistance(it, row, posP) {
 /* ----- EDITOR ----- */
 async function editScreen(cat, id) {
   await loadFriends(); // so share boxes can offer the saved-friends dropdown
+  if (cat === 'workout') await loadExLibrary(); // the workout-day editor picks exercises from the library
   let item = id ? await DB.getItem(cat, id) : null;
   if (id && !item) { redirectReplace('#/cat/' + cat); return; } // editing a deleted item — skip it for Back
   let currentId = id;
@@ -3554,6 +4436,7 @@ async function editScreen(cat, id) {
   const isQuick = cat === 'quick';
   const hasContent = () => {
     if (cat === 'records' || cat === 'workout') return true;
+    if (cat === 'exercise') return !!(data.name && data.name.trim());
     if (cat === 'vault') return !!(data.platform || data.username || data.password);
     if (isQuick) return !!(data.title || (data.bodyHtml || '').replace(/<[^>]+>/g, '').trim() || (data.strokes && data.strokes.length));
     return !!data.title;
@@ -3966,6 +4849,7 @@ async function settingsScreen() {
   const saveBtn = h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
     const friends = friendsObj.list.map(f => ({ name: (f.name || '').trim(), email: (f.email || '').trim().toLowerCase() })).filter(f => f.email);
     await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), worldcupAlerts: form.wcAlerts, tripReminders: form.tripReminders, friends, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true, hiddenCats: [...hiddenObj.set] });
+    LS.set('mln_hidden_' + ((CURRENT && CURRENT.uid) || 'anon'), [...hiddenObj.set]); // home draws from this mirror instantly
     FRIENDS = friends;
     toast('Settings saved');
     startReminders();
