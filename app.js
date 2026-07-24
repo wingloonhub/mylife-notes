@@ -4330,28 +4330,32 @@ function wcFmtTime(utc) {
     return d.toLocaleString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }) + ' MYT';
   } catch (e) { return ''; }
 }
-function wcMatchRow(m) {
+function wcMatchRow(m, showComp) {
   const [hs, as] = wcScore(m);
   const live = wcIsLive(m.status), fin = m.status === 'FINISHED';
   const right = (live || fin)
     ? h('div', { class: 'wc-score' }, hs + ' – ' + as)
     : h('div', { class: 'wc-time' }, wcFmtTime(m.utcDate));
   const badge = live ? h('span', { class: 'wc-live' }, '● LIVE') : (fin ? h('span', { class: 'wc-ft' }, 'FT') : null);
+  const comp = showComp && m.competition && m.competition.name
+    ? h('div', { style: { fontSize: '10.5px', color: 'var(--muted)', marginTop: '2px' } }, m.competition.name)
+    : null;
   return h('div', { class: 'wc-match' + (live ? ' is-live' : '') },
     h('div', { class: 'wc-teams' },
       h('div', { class: 'wc-tm' }, wcTeam(m.homeTeam)),
-      h('div', { class: 'wc-tm' }, wcTeam(m.awayTeam))),
+      h('div', { class: 'wc-tm' }, wcTeam(m.awayTeam)),
+      comp),
     h('div', { class: 'wc-right' }, badge, right));
 }
-function wcMatchesView(matches) {
+function wcMatchesView(matches, showComp) {
   if (!matches.length) return h('div', { class: 'empty' }, h('div', { class: 'big' }, '⚽'), h('div', null, 'No fixtures published yet.'));
   const wrap = h('div', null);
   const live = matches.filter(m => wcIsLive(m.status));
   const upcoming = matches.filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED').sort((a, b) => (a.utcDate || '').localeCompare(b.utcDate || ''));
   const recent = matches.filter(m => m.status === 'FINISHED').sort((a, b) => (b.utcDate || '').localeCompare(a.utcDate || ''));
-  if (live.length) { wrap.appendChild(h('div', { class: 'wc-h live' }, 'Live now')); live.forEach(m => wrap.appendChild(wcMatchRow(m))); }
-  if (upcoming.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Upcoming' + (upcoming.length > 20 ? ' (next 20)' : ''))); upcoming.slice(0, 20).forEach(m => wrap.appendChild(wcMatchRow(m))); }
-  if (recent.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Results' + (recent.length > 30 ? ' (last 30 of ' + recent.length + ')' : ' (' + recent.length + ')'))); recent.slice(0, 30).forEach(m => wrap.appendChild(wcMatchRow(m))); }
+  if (live.length) { wrap.appendChild(h('div', { class: 'wc-h live' }, 'Live now')); live.forEach(m => wrap.appendChild(wcMatchRow(m, showComp))); }
+  if (upcoming.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Upcoming' + (upcoming.length > 20 ? ' (next 20)' : ''))); upcoming.slice(0, 20).forEach(m => wrap.appendChild(wcMatchRow(m, showComp))); }
+  if (recent.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Results' + (recent.length > 30 ? ' (last 30 of ' + recent.length + ')' : ' (' + recent.length + ')'))); recent.slice(0, 30).forEach(m => wrap.appendChild(wcMatchRow(m, showComp))); }
   return wrap;
 }
 function wcGroupsView(standings) {
@@ -4400,30 +4404,91 @@ async function renderWorldCupScreen(listEl) {
   stopWorldCup();
   let tab = 'matches';
   let matches = null, standings = null, errMsg = null;
+  let teamMatches = null, clStandings = null; // club mode: the club's fixtures (all feed competitions) + CL table
+  let clubId = null, clubName = '';
+  try { const s = await DB.getSettings(); clubId = parseInt(s.plClubId, 10) || null; clubName = s.plClubName || ''; } catch (e) {}
+  const selWrap = h('div', null);
   const tabsEl = h('div', { class: 'tabs' });
   const body = h('div', null);
   listEl.innerHTML = '';
+  listEl.appendChild(selWrap);
   listEl.appendChild(tabsEl);
   listEl.appendChild(body);
 
+  function drawSelector() {
+    selWrap.innerHTML = '';
+    const teams = [];
+    (standings || []).filter(s => s.type === 'TOTAL').forEach(s => (s.table || []).forEach(r => {
+      if (r.team && r.team.id && !teams.some(t => t.id === r.team.id)) teams.push({ id: r.team.id, name: r.team.name });
+    }));
+    if (!teams.length) return;
+    teams.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    const sel = h('select', { onchange: async e => {
+      const v = e.target.value;
+      clubId = v ? parseInt(v, 10) : null;
+      clubName = v ? ((teams.find(t => String(t.id) === v) || {}).name || '') : '';
+      teamMatches = null; clStandings = null;
+      try { const s = await DB.getSettings(); await DB.saveSettings(Object.assign({}, s, { plClubId: clubId || '', plClubName: clubName })); } catch (err) {}
+      render(); load();
+    } },
+      h('option', { value: '', selected: !clubId ? 'selected' : null }, 'All clubs'),
+      ...teams.map(t => h('option', { value: String(t.id), selected: clubId === t.id ? 'selected' : null }, t.name)));
+    selWrap.appendChild(h('div', { class: 'field', style: { margin: '0 0 4px' } }, h('label', null, 'My club'), sel));
+  }
   function drawTabs() {
     tabsEl.innerHTML = '';
     [['matches', 'Matches'], ['groups', 'Table']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
   }
+  function clubTableView() { // Champions League table shown only when the club is in it
+    const wrap = h('div', null);
+    const tables = (clStandings || []).filter(s => s.type === 'TOTAL' && Array.isArray(s.table) && s.table.length);
+    const mine = tables.filter(g => (g.table || []).some(r => r.team && r.team.id === clubId));
+    mine.forEach(g => {
+      wrap.appendChild(h('div', { class: 'wc-h' }, 'Champions League' + (g.group ? ' · ' + g.group.replace('GROUP_', 'Group ') : '')));
+      wrap.appendChild(h('table', { class: 'wc-table' },
+        h('thead', null, h('tr', null,
+          h('th', null, '#'), h('th', { class: 'tl' }, 'Team'), h('th', null, 'P'),
+          h('th', null, 'W'), h('th', null, 'D'), h('th', null, 'L'), h('th', null, 'GD'), h('th', null, 'Pts'))),
+        h('tbody', null, (g.table || []).map(r =>
+          h('tr', { class: (r.team && r.team.id === clubId) ? 'qual' : '' },
+            h('td', null, r.position), h('td', { class: 'tl' }, wcTeam(r.team)),
+            h('td', null, r.playedGames), h('td', null, r.won), h('td', null, r.draw), h('td', null, r.lost),
+            h('td', null, (r.goalDifference > 0 ? '+' : '') + r.goalDifference), h('td', { class: 'pts' }, r.points))))));
+    });
+    return wrap;
+  }
   function render() {
+    drawSelector();
     drawTabs();
     body.innerHTML = '';
     if (matches == null && !errMsg) { body.appendChild(h('div', { class: 'spinner' })); return; }
     if (errMsg) { body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '⚽'), h('div', null, errMsg), h('div', { style: { marginTop: '6px', fontSize: '13px' } }, 'Live Premier League data needs a free API key set up on the server.'))); return; }
-    if (tab === 'matches') body.appendChild(wcMatchesView(matches));
-    else body.appendChild(wcGroupsView(standings));
+    if (tab === 'matches') {
+      if (clubId) {
+        if (teamMatches == null) { body.appendChild(h('div', { class: 'spinner' })); return; }
+        body.appendChild(wcMatchesView(teamMatches, true)); // per-fixture competition labels
+        body.appendChild(h('div', { class: 'hint', style: { margin: '10px 2px' } },
+          clubName + ' fixtures across the competitions in the data feed (Premier League, Champions League…). Domestic cups aren\'t included in the free feed.'));
+      } else body.appendChild(wcMatchesView(matches));
+    } else {
+      body.appendChild(wcGroupsView(standings));
+      if (clubId && clStandings) body.appendChild(clubTableView());
+    }
   }
   async function load() {
     try {
-      const [mj, sj] = await Promise.all([wcFetch('matches'), wcFetch('standings')]);
+      const jobs = [wcFetch('matches'), wcFetch('standings')];
+      if (clubId) { jobs.push(wcFetch('team&id=' + clubId)); jobs.push(wcFetch('clstandings')); }
+      const [mj, sj, tj, cj] = await Promise.all(jobs);
       if (mj && mj.error) { errMsg = mj.message || 'Premier League data is not available right now.'; }
-      else { matches = (mj && mj.matches) || []; standings = (sj && sj.standings) || []; errMsg = null; }
+      else {
+        matches = (mj && mj.matches) || []; standings = (sj && sj.standings) || []; errMsg = null;
+        if (clubId) {
+          teamMatches = (tj && tj.matches) || [];
+          clStandings = (cj && cj.standings) || [];
+        }
+      }
     } catch (e) { errMsg = 'Could not load — check your connection.'; }
     render();
   }

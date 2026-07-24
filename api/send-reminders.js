@@ -162,12 +162,17 @@ async function tg(token, chatId, text) {
   return j;
 }
 
-/* ---- Premier League live-score push ---- */
-async function fetchWcMatches(key) {
-  const r = await fetch('https://api.football-data.org/v4/competitions/PL/matches', { headers: { 'X-Auth-Token': key } });
+/* ---- Premier League (+ Champions League) live-score push ---- */
+async function fetchComp(key, comp) {
+  const r = await fetch('https://api.football-data.org/v4/competitions/' + comp + '/matches', { headers: { 'X-Auth-Token': key } });
   const j = await r.json();
   if (!r.ok) throw new Error((j && j.message) || ('HTTP ' + r.status));
   return j.matches || [];
+}
+async function fetchWcMatches(key) {
+  const pl = await fetchComp(key, 'PL');
+  let cl = []; try { cl = await fetchComp(key, 'CL'); } catch (e) {} // CL is a bonus — never fail the tick over it
+  return { pl, cl };
 }
 function wcStage(stage, group) {
   if (stage === 'GROUP_STAGE') return group ? group.replace('GROUP_', 'Group ') : 'Group stage';
@@ -190,7 +195,12 @@ async function pushWorldCup(matches, stateItem, project, uid, idToken, token, ch
     const prev = seen[m.id];
     if (prev === sig) continue;
     const home = (m.homeTeam && m.homeTeam.name) || 'Home', away = (m.awayTeam && m.awayTeam.name) || 'Away';
-    const stage = wcStage(m.stage, m.group);
+    // label with the competition name; add the round for knockout stages ("Champions League · Semi-final")
+    const stageTxt = wcStage(m.stage, m.group);
+    const compName = (m.competition && m.competition.name) || '';
+    const stage = compName
+      ? (m.stage && m.stage !== 'REGULAR_SEASON' && m.stage !== 'LEAGUE_STAGE' ? compName + ' · ' + stageTxt : compName)
+      : stageTxt;
     const line = `${home} ${hs}–${as} ${away}`;
     let msg = null;
     // Only message for matches we're actually tracking live. A finished match we never
@@ -480,7 +490,7 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
   }
   if (wctest) {
     if (!token || !chat) return { uid, wctest: 'no Telegram token/chat in Settings' };
-    const fin = (wcMatches || []).filter(m => m.status === 'FINISHED').sort((a, b) => (b.utcDate || '').localeCompare(a.utcDate || ''))[0];
+    const fin = ((wcMatches && wcMatches.pl) || []).filter(m => m.status === 'FINISHED').sort((a, b) => (b.utcDate || '').localeCompare(a.utcDate || ''))[0];
     if (!fin) return { uid, wctest: 'no finished match found' };
     const f = (fin.score && fin.score.fullTime) || {};
     const home = (fin.homeTeam && fin.homeTeam.name) || 'Home', away = (fin.awayTeam && fin.awayTeam.name) || 'Away';
@@ -742,10 +752,18 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
     await patchData(project, uid, idToken, it.id, d);
   }
 
-  // Premier League live-score push (only if a key is configured and the user hasn't opted out)
-  if (wcMatches && wcMatches.length && settings.worldcupAlerts !== false && token && chat) {
-    const stateItem = items.find(i => i.id === '_wcstate');
-    sent += await pushWorldCup(wcMatches, stateItem, project, uid, idToken, token, chat);
+  // Football live-score push (only if a key is configured and the user hasn't opted out).
+  // With a club selected in the app, alerts narrow to that club's matches (PL + Champions League);
+  // otherwise every Premier League match alerts.
+  if (wcMatches && settings.worldcupAlerts !== false && token && chat) {
+    const cid = parseInt(settings.plClubId, 10);
+    const ms = cid
+      ? (wcMatches.pl || []).concat(wcMatches.cl || []).filter(m => (m.homeTeam && m.homeTeam.id === cid) || (m.awayTeam && m.awayTeam.id === cid))
+      : (wcMatches.pl || []);
+    if (ms.length) {
+      const stateItem = items.find(i => i.id === '_wcstate');
+      sent += await pushWorldCup(ms, stateItem, project, uid, idToken, token, chat);
+    }
   }
 
   return { uid, sent };
@@ -776,5 +794,5 @@ module.exports = async (req, res) => {
     try { results.push({ email: u.email, ...(await processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches, wctest, triptest)) }); }
     catch (e) { results.push({ email: u.email, error: String((e && e.message) || e) }); }
   }
-  res.status(200).json({ ok: true, ranAt: new Date(now).toISOString(), wcMatches: wcMatches ? wcMatches.length : 0, results });
+  res.status(200).json({ ok: true, ranAt: new Date(now).toISOString(), wcMatches: wcMatches ? ((wcMatches.pl || []).length + (wcMatches.cl || []).length) : 0, results });
 };

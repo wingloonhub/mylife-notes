@@ -22,12 +22,17 @@ module.exports = async (req, res) => {
 
   const key = process.env.FOOTBALL_API_KEY;
   if (!key) {
-    res.status(200).json({ error: 'no-key', message: 'World Cup data is not set up yet.' });
+    res.status(200).json({ error: 'no-key', message: 'Football data is not set up yet.' });
     return;
   }
-  const type = (req.query && req.query.type) === 'standings' ? 'standings' : 'matches';
+  const q = req.query || {};
+  let path;
+  if (q.type === 'standings') path = 'competitions/' + COMP + '/standings';
+  else if (q.type === 'clstandings') path = 'competitions/CL/standings';       // Champions League table
+  else if (q.type === 'team' && /^\d+$/.test(String(q.id || ''))) path = 'teams/' + q.id + '/matches'; // one club, all feed competitions
+  else path = 'competitions/' + COMP + '/matches';
   try {
-    const r = await fetch('https://api.football-data.org/v4/competitions/' + COMP + '/' + type, {
+    const r = await fetch('https://api.football-data.org/v4/' + path, {
       headers: { 'X-Auth-Token': key }
     });
     const j = await r.json();
