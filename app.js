@@ -713,26 +713,9 @@ function buildEditor(cat, data, amOwner) {
         if (!f) return;
         toast('🅿 Saving your spot…');
         try {
-          const dataUrl = await compressImage(f, 1200, 0.6);
-          const imgId = await DB.saveImage(dataUrl);
-          data.images = [imgId]; // the latest snap is the spot
-          const ts = new Date(f.lastModified || Date.now()); // the picture's own timestamp
-          data.when = localDateStr(ts) + 'T' + String(ts.getHours()).padStart(2, '0') + ':' + String(ts.getMinutes()).padStart(2, '0');
-          const pos = await currentPosition();
-          if (pos) {
-            data.lat = pos.lat; data.lng = pos.lon;
-            data.map = pos.lat.toFixed(6) + ',' + pos.lon.toFixed(6);
-            data._coordSrc = data.map;
-            const nearby = await reverseGeo(pos.lat, pos.lon);
-            if (nearby) data.location = nearby;
-          }
-          try { // read the level/zone/pillar off the sign
-            const r = await fetch('/api/scan-schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: dataUrl, kind: 'carpark' }) });
-            const j = await r.json();
-            if (j && j.fields && j.fields.lot) { data.lot = j.fields.lot; if (j.fields.notes && !data.notes) data.notes = j.fields.notes; }
-          } catch (err) {}
+          const res = await readParkingSnap(f, data);
           rerenderEditor('carpark', data);
-          toast(pos ? ('🅿 Spot saved' + (data.lot ? ' — ' + data.lot : '') + ' 📍') : '🅿 Saved — GPS unavailable, allow location access');
+          toast(res.pos ? ('🅿 Spot saved' + (data.lot ? ' — ' + data.lot : '') + ' 📍') : '🅿 Saved — GPS unavailable, allow location access');
         } catch (err) { toast('⚠ Could not process that photo.'); }
         e.target.value = '';
       } });
@@ -2848,6 +2831,29 @@ async function reverseGeo(lat, lng) {
     return [p.name, p.street, p.city || p.district || p.county].filter(Boolean).slice(0, 3).join(', ');
   } catch (e) { return ''; }
 }
+/* Car Park one-tap capture: from a photo File, fill `data` with the saved photo, the picture's
+   own timestamp, the user's GPS position (+ readable place name) and the lot read off the sign. */
+async function readParkingSnap(file, data) {
+  const p2 = n => String(n).padStart(2, '0');
+  const dataUrl = await compressImage(file, 1200, 0.6);
+  const imgId = await DB.saveImage(dataUrl);
+  data.images = [imgId];
+  const ts = new Date(file.lastModified || Date.now());
+  data.when = localDateStr(ts) + 'T' + p2(ts.getHours()) + ':' + p2(ts.getMinutes());
+  const pos = await currentPosition();
+  if (pos) {
+    data.lat = pos.lat; data.lng = pos.lon;
+    data.map = pos.lat.toFixed(6) + ',' + pos.lon.toFixed(6); data._coordSrc = data.map;
+    const nearby = await reverseGeo(pos.lat, pos.lon);
+    if (nearby) data.location = nearby;
+  }
+  try {
+    const r = await fetch('/api/scan-schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: dataUrl, kind: 'carpark' }) });
+    const j = await r.json();
+    if (j && j.fields && j.fields.lot) { data.lot = j.fields.lot; if (j.fields.notes) data.notes = j.fields.notes; }
+  } catch (e) {}
+  return { pos: !!pos };
+}
 /* save last-known location (throttled) so the closed-app scheduler can estimate distance */
 let _lastLocSavedAt = 0;
 async function saveLastLocation(pos) {
@@ -3268,6 +3274,7 @@ async function listScreen(cat, sub) {
 
   if (cat === 'reminder') { renderReminderScreen(listEl, items, sub); return; }
   if (cat === 'workout') { renderWorkoutScreen(listEl, items, fab, sub); return; }
+  if (cat === 'carpark') { renderCarParkScreen(listEl, items, fab); return; }
   if (cat === 'vault') { renderVaultScreen(listEl, items, fab); return; }
   if (cat === 'memberships') { renderMembershipList(listEl, items); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
@@ -4294,6 +4301,56 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
 
 /* Access Vault — password store behind a re-auth gate. Locked by default each time you open it;
    unlock by re-entering your own account password. Passwords are masked until you reveal them. */
+/* Car Park — a single self-updating card. No + button: opening the screen shows your current spot
+   and a big Snap button. Each snap overwrites the one card with a fresh photo/lot/time/GPS. */
+function renderCarParkScreen(listEl, items, fab) {
+  if (fab) fab.style.display = 'none';
+  let item = (items && items[0]) || null;
+  const body = h('div', { class: 'list' });
+  listEl.innerHTML = ''; listEl.appendChild(body);
+  const refresh = async () => { try { items = await DB.listItems('carpark'); item = items[0] || null; } catch (e) {} draw(); };
+  const camInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', style: { display: 'none' }, onchange: async e => {
+    const f = e.target.files && e.target.files[0]; if (!f) return;
+    toast('🅿 Saving your spot…');
+    const data = {}; // fresh card overwrites the previous spot
+    try {
+      const res = await readParkingSnap(f, data);
+      await DB.saveItem({ id: item ? item.id : undefined, cat: 'carpark', data });
+      toast(res.pos ? ('🅿 Spot saved' + (data.lot ? ' — ' + data.lot : '') + ' 📍') : '🅿 Saved — allow location access for GPS');
+      await refresh();
+    } catch (err) { toast('⚠ Could not process that photo.'); }
+    e.target.value = '';
+  } });
+  function draw() {
+    body.innerHTML = '';
+    body.appendChild(camInput);
+    body.appendChild(h('button', { class: 'btn', type: 'button', style: { width: '100%' }, onclick: () => camInput.click() },
+      item ? '📷 Snap a new spot' : '📷 Snap my parking spot'));
+    if (!item) {
+      body.appendChild(h('div', { class: 'empty', style: { paddingTop: '36px' } }, h('div', { class: 'big' }, '🅿️'),
+        h('div', null, 'No parking spot saved yet. Snap the pillar or level sign — the lot, time and your location fill in automatically.')));
+      return;
+    }
+    const d = item.data || {};
+    const card = h('div', { class: 'detail-card', style: { marginTop: '12px' } }, h('h3', null, d.lot || 'My parking spot'),
+      d.when ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Parked at'), h('span', { class: 'v' }, fmtDT(d.when))) : null,
+      d.location ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Location'), h('span', { class: 'v' }, d.location)) : null,
+      d.notes ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Notes'), h('span', { class: 'v' }, d.notes)) : null);
+    (async () => { const s = await DB.getImage((d.images || [])[0]); if (s) card.appendChild(h('img', { class: 'detail-img', src: s, onclick: () => openLightbox(s) })); })();
+    card.appendChild(h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' } },
+      h('button', { class: 'btn small secondary', type: 'button', onclick: () => navigate('#/edit/carpark/' + item.id) }, '✎ Edit details'),
+      h('button', { class: 'btn small secondary', type: 'button', onclick: async () => { if (!confirmDel('Clear this parking spot?')) return; await DB.deleteItem('carpark', item.id); await refresh(); } }, '🗑 Clear')));
+    body.appendChild(card);
+    if (typeof d.lat === 'number') {
+      body.appendChild(h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Find my car'),
+        h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+          h('a', { class: 'btn small', href: 'https://www.google.com/maps/dir/?api=1&destination=' + d.lat + ',' + d.lng + '&travelmode=walking', target: '_blank' }, '🧭 Walk me to my car'),
+          h('a', { class: 'btn small secondary', href: 'https://www.google.com/maps/search/?api=1&query=' + d.lat + ',' + d.lng, target: '_blank' }, '📍 Open in Google Maps'))));
+    }
+  }
+  draw();
+}
+
 function renderVaultScreen(listEl, items, fab) {
   // a labelled value row with a Copy button, and (for secrets) a reveal toggle
   function fieldRow(label, value, secret) {
