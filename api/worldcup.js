@@ -29,6 +29,7 @@ module.exports = async (req, res) => {
   let path;
   if (q.type === 'standings') path = 'competitions/' + COMP + '/standings';
   else if (q.type === 'clstandings') path = 'competitions/CL/standings';       // Champions League table
+  else if (q.type === 'match' && /^\d+$/.test(String(q.id || ''))) path = 'matches/' + q.id; // single match → goal scorers
   else if (q.type === 'team' && /^\d+$/.test(String(q.id || ''))) path = 'teams/' + q.id + '/matches'; // one club, all feed competitions
   else path = 'competitions/' + COMP + '/matches';
   try {
