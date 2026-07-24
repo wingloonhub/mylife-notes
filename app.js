@@ -410,7 +410,7 @@ const CATS = [
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
   { key: 'tax', name: 'Tax Receipts', emoji: '💵' },
   { key: 'party', name: 'Party Planner', emoji: '🎉' },
-  { key: 'trips', name: 'Trip Planner', emoji: '🧳' },
+  { key: 'trips', name: 'Trip Planner', emoji: '🧳', hidden: true }, // retired — trips now live in My Schedule (Type: Trip)
   { key: 'shopping', name: 'Grocery Planner', emoji: '🛒' },
   { key: 'exercise', name: 'Exercise', singular: 'Exercise', emoji: '🏋️', hidden: true },
   { key: 'shopitem', name: 'Saved Item', emoji: '🏷️', hidden: true },
@@ -4872,10 +4872,10 @@ async function settingsScreen() {
   const content = h('div');
   const drawTabs = () => {
     tabsEl.innerHTML = '';
-    [['general', 'General'], ['categories', 'Categories'], ['friends', 'Friends'], ['trips', 'Trip Reminders']].forEach(([k, l]) =>
+    [['general', 'General'], ['categories', 'Categories'], ['friends', 'Friends']].forEach(([k, l]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, l)));
   };
-  const render = () => { drawTabs(); content.innerHTML = ''; content.appendChild(tab === 'general' ? generalTab() : tab === 'categories' ? categoriesTab() : tab === 'friends' ? friendsTab() : tripsTab()); };
+  const render = () => { drawTabs(); content.innerHTML = ''; content.appendChild(tab === 'general' ? generalTab() : tab === 'categories' ? categoriesTab() : friendsTab()); };
   render();
 
   const saveBtn = h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
