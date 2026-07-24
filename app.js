@@ -3085,7 +3085,7 @@ async function listScreen(cat, sub) {
   if (cat === 'vault') { renderVaultScreen(listEl, items, fab); return; }
   if (cat === 'memberships') { renderMembershipList(listEl, items); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
-  if (cat === 'mysched') { renderMySchedScreen(listEl, items); return; }
+  if (cat === 'mysched') { renderMySchedScreen(listEl, items, sub); return; }
   if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past', reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'appointments') { renderArchiveList(listEl, 'appointments', items, eventIsArchived, { distance: true, archiveLabel: 'Past', duplicateAll: true, reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'schedule') { renderScheduleScreen(listEl, items, fab, sub === 'def' ? 'schedule' : 'upcoming'); return; }
@@ -3499,8 +3499,27 @@ async function migrateToMySched() {
   } catch (e) { console.error('mysched migration failed', e); }
   return changed;
 }
-async function renderMySchedScreen(listEl, items) {
+/* the local date a card's life ended: one-time → its event date; recurring → its until date or the
+   last counted occurrence. null = still active or never ends. */
+function myschedEndedOn(d) {
+  if (d.schedType !== 'recur') { const w = d.when || d.eventDate; return w ? w.slice(0, 10) : null; }
+  normMySched(d);
+  if (d.repeatMode === 'until' && d.until) return d.until;
+  if (d.repeatMode === 'count') {
+    const cnt = Math.max(1, parseInt(d.count, 10) || 1);
+    let cur = new Date(d.startDate + 'T00:00'), seen = 0;
+    for (let i = 0; i < 3700; i++) { if (myschedOccursOn(d, cur)) { seen++; if (seen === cnt) return localDateStr(cur); } cur.setDate(cur.getDate() + 1); }
+  }
+  return null;
+}
+async function renderMySchedScreen(listEl, items, sub) {
   if (await migrateToMySched()) { try { items = await DB.listItems('mysched'); } catch (e) {} }
+  // housekeeping: cards sitting in Past for over 3 months are deleted automatically
+  const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 3);
+  const cutStr = localDateStr(cutoff);
+  const stale = items.filter(it => { if (!myschedIsArchived(it)) return false; const e = myschedEndedOn(it.data || {}); return !!(e && e < cutStr); });
+  for (const s of stale) { try { await DB.deleteItem('mysched', s.id); } catch (e) {} }
+  if (stale.length) items = items.filter(it => !stale.includes(it));
   // chronological: sort by next occurrence (recurring) / event time (one-time)
   const nextMs = it => {
     const d = it.data || {};
@@ -3508,7 +3527,54 @@ async function renderMySchedScreen(listEl, items) {
     const t = new Date(d.when || '').getTime(); return isNaN(t) ? Infinity : t;
   };
   items.sort((a, b) => nextMs(a) - nextMs(b));
-  renderArchiveList(listEl, 'mysched', items, myschedIsArchived, { distance: true, archiveLabel: 'Past', reminderOff: true, duplicateAll: true });
+  let tab = (sub === 'schedule' || sub === 'past') ? sub : 'upcoming';
+  const tabsEl = h('div', { class: 'tabs' });
+  const body = h('div', { class: 'list' });
+  listEl.appendChild(tabsEl); listEl.appendChild(body);
+  const posP = currentPosition(); // for distance on upcoming rows
+  const lists = () => ({
+    upcoming: items.filter(it => !myschedIsArchived(it)),          // everything coming up (one-time + recurring)
+    schedule: items.filter(it => (it.data || {}).schedType === 'recur'), // manage the recurring set-up
+    past: items.filter(myschedIsArchived)
+  });
+  function render() {
+    const L = lists();
+    tabsEl.innerHTML = '';
+    [['upcoming', 'Upcoming (' + L.upcoming.length + ')'], ['schedule', 'Schedule (' + L.schedule.length + ')'], ['past', 'Past (' + L.past.length + ')']].forEach(([k, label]) =>
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => {
+        tab = k;
+        try { history.replaceState(null, '', k === 'upcoming' ? '#/cat/mysched' : '#/cat/mysched/' + k); } catch (e) {}
+        render();
+      } }, label)));
+    body.innerHTML = '';
+    const list = L[tab];
+    if (!list.length) {
+      body.appendChild(emptyState('mysched', tab === 'upcoming' ? 'Nothing coming up. Tap + to add one.'
+        : tab === 'schedule' ? 'No recurring schedules yet. Tap + and pick "Recurring".' : 'Nothing in past yet.'));
+      return;
+    }
+    for (const it of list) {
+      const btns = [];
+      if (tab !== 'past') {
+        const done = it.data && it.data.done;
+        btns.push(h('button', { class: 'btn small ' + (done ? '' : 'secondary'), type: 'button', onclick: async (e) => {
+          e.stopPropagation();
+          it.data.done = !it.data.done;
+          try { await DB.saveItem(it); } catch (x) {}
+          toast(it.data.done ? 'Reminders turned off' : 'Reminders back on');
+          render();
+        } }, done ? '🔔 Turn on' : '🔕 Turn off'));
+      }
+      const action = btns.length ? h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...btns) : null;
+      try { // one bad card must not blank the rest of the list
+        const row = buildRow('mysched', it, { action });
+        if (it.data && it.data.done) row.classList.add('cancelled-row');
+        body.appendChild(row);
+        if (tab === 'upcoming' && posP) enrichRowDistance(it, row, posP);
+      } catch (err) { console.error('row render failed mysched', it.id, err); }
+    }
+  }
+  render();
 }
 
 async function duplicateItem(cat, it) {
