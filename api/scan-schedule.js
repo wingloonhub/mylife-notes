@@ -63,10 +63,16 @@ module.exports = async (req, res) => {
   try { if (typeof body === 'string') body = JSON.parse(body); } catch (e) { body = null; }
   const image = ((body && body.image) || '').replace(/^data:image\/\w+;base64,/, '');
   if (!image) { res.status(200).json({ error: 'no-image' }); return; }
+  const kind = (body && body.kind) || 'schedule';
   // today's date in Malaysia time, so "this Saturday" style dates resolve correctly
   const off = parseInt(process.env.TZ_OFFSET_MIN || '480', 10);
   const today = new Date(Date.now() + off * 60000).toISOString().slice(0, 10);
-  const prompt = buildPrompt(today);
+  const prompt = kind === 'carpark'
+    ? ('You are reading a photo taken in a car park — a pillar / level / zone sign, a bay marking, or the parked car with signage around it. '
+      + 'Extract the parking spot identifier. Reply with ONLY a JSON object, no markdown, exactly these keys: {"lot":"","notes":""}. '
+      + 'lot = the full spot identifier joining everything visible, e.g. "Level B2 · Zone C · Pillar 34" (use " · " between parts). '
+      + 'notes = any other wayfinding detail (nearest lift/entrance, section colour), one short line. Empty strings if unreadable.')
+    : buildPrompt(today);
   try {
     const text = claudeKey ? await askClaude(claudeKey, image, prompt) : await askGemini(geminiKey, image, prompt);
     const m = text.match(/\{[\s\S]*\}/); // tolerate ```json fences or chatter around the object
@@ -74,6 +80,7 @@ module.exports = async (req, res) => {
     let fields;
     try { fields = JSON.parse(m[0]); } catch (e) { res.status(200).json({ error: 'bad-json' }); return; }
     const clean = s => String(s == null ? '' : s).trim();
+    if (kind === 'carpark') { res.status(200).json({ fields: { lot: clean(fields.lot), notes: clean(fields.notes) } }); return; }
     // The app's date/time inputs silently reject anything but strict YYYY-MM-DD / HH:MM —
     // normalise whatever shape the model produced ("3/8/26", "9.30am", "2026-8-3", …).
     const p2 = n => String(n).padStart(2, '0');

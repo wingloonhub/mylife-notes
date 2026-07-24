@@ -405,6 +405,7 @@ const CATS = [
   { key: 'reminder', name: 'Reminder', singular: 'Reminder', emoji: '⏰' },
   { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒', hidden: true },
   { key: 'workout', name: 'Workout', singular: 'Workout Day', emoji: '💪' },
+  { key: 'carpark', name: 'Car Park', singular: 'Parking Spot', emoji: '🅿️' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'vault', name: 'Access Vault', singular: 'Login', emoji: '🔑' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
@@ -435,6 +436,7 @@ const CAT_GUIDE = {
   reminder: { what: 'Standalone recurring reminders. Choose Once, Weekly, Every 2 weeks or Monthly, and how often it should repeat once it goes off.', unique: 'It nags — keeps pinging every couple of hours until you actually turn it off, so nothing slips.', reminders: 'This is the whole point of the category: it fires to Telegram on the due date/time and keeps nudging (e.g. every 2 or 4 hours) until you tap "Turn off". A card only shows under the Due tab while it\'s actually going off.' },
   schedule: { what: 'Recurring weekly sessions (e.g. Piano every Tue 4–5pm). The app auto-creates the upcoming dates for you.', unique: 'Set the weekly pattern once and it rolls out the actual dates itself — plus a "before it ends" reminder for pick-ups.', reminders: 'Up to two Telegram reminders before each session starts, plus an optional reminder before it ends — handy for pick-ups.' },
   workout: { what: 'Plan workout days by weekday, each with exercises (sets × reps or seconds) and an optional video link. The Upcoming tab shows the next 7 days; tick exercises and tap Complete to log the day, tracked in Progress.', unique: 'A full training tracker: attach a demo video to each exercise and keep a completion history of every day you trained.', reminders: 'No Telegram reminders — it\'s an in-app tracker you open when you train.' },
+  carpark: { what: 'Remember where you parked. Snap the pillar or level sign and the card saves the photo, reads the lot number, and records the time and your GPS position.', unique: 'One tap captures everything — photo, lot, time, location — and later walks you back to your car with Google Maps.', reminders: null },
   records: { what: 'Store bank account details and addresses so they\'re easy to copy and share when needed.', unique: 'One tap copies the full bank/address details, ready to paste or WhatsApp — no retyping.', reminders: null },
   vault: { what: 'A password store — platform, username, password — kept behind your account password, which it asks for every time you open it.', unique: 'The only category locked behind your password on every open, with passwords masked until you reveal them.', reminders: null },
   memberships: { what: 'Keep membership cards and numbers with a photo of the card, and reorder them by priority.', unique: 'Snap the physical card and drag your most-used ones to the top.', reminders: null },
@@ -702,6 +704,59 @@ function buildEditor(cat, data, amOwner) {
       a(whereToBuyEditor(data));
       a(h('div', { class: 'section-title' }, 'Notes'));
       a(field('My notes', data, 'notes', { type: 'textarea', placeholder: 'Anything you want to remember…' }));
+      break;
+    }
+    case 'carpark': {
+      // one tap: photo + read the lot sign + timestamp of the picture + GPS position
+      const snapInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', style: { display: 'none' }, onchange: async e => {
+        const f = e.target.files && e.target.files[0];
+        if (!f) return;
+        toast('🅿 Saving your spot…');
+        try {
+          const dataUrl = await compressImage(f, 1200, 0.6);
+          const imgId = await DB.saveImage(dataUrl);
+          data.images = [imgId]; // the latest snap is the spot
+          const ts = new Date(f.lastModified || Date.now()); // the picture's own timestamp
+          data.when = localDateStr(ts) + 'T' + String(ts.getHours()).padStart(2, '0') + ':' + String(ts.getMinutes()).padStart(2, '0');
+          const pos = await currentPosition();
+          if (pos) {
+            data.lat = pos.lat; data.lng = pos.lon;
+            data.map = pos.lat.toFixed(6) + ',' + pos.lon.toFixed(6);
+            data._coordSrc = data.map;
+            const nearby = await reverseGeo(pos.lat, pos.lon);
+            if (nearby) data.location = nearby;
+          }
+          try { // read the level/zone/pillar off the sign
+            const r = await fetch('/api/scan-schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: dataUrl, kind: 'carpark' }) });
+            const j = await r.json();
+            if (j && j.fields && j.fields.lot) { data.lot = j.fields.lot; if (j.fields.notes && !data.notes) data.notes = j.fields.notes; }
+          } catch (err) {}
+          rerenderEditor('carpark', data);
+          toast(pos ? ('🅿 Spot saved' + (data.lot ? ' — ' + data.lot : '') + ' 📍') : '🅿 Saved — GPS unavailable, allow location access');
+        } catch (err) { toast('⚠ Could not process that photo.'); }
+        e.target.value = '';
+      } });
+      a(h('div', { class: 'field' }, snapInput,
+        h('button', { class: 'btn', type: 'button', style: { width: '100%' }, onclick: () => snapInput.click() }, '📷 Snap my parking spot'),
+        h('div', { class: 'hint', style: { marginTop: '6px' } }, 'One tap saves the photo, reads the lot sign, and records the time and your GPS position.')));
+      a(field('Lot / spot', data, 'lot', { placeholder: 'e.g. Level B2 · Zone C · Pillar 34' }));
+      a(field('Parked at', data, 'when', { type: 'datetime-local' }));
+      a(h('div', { class: 'field' }, h('label', null, 'Location'),
+        h('div', { class: 'hint', style: { margin: '2px 0 6px' } },
+          (typeof data.lat === 'number') ? ('📍 ' + (data.location ? data.location + ' — ' : '') + data.lat.toFixed(5) + ', ' + data.lng.toFixed(5)) : 'No GPS position yet.'),
+        h('button', { class: 'btn small secondary', type: 'button', onclick: async e => {
+          const b = e.target; b.disabled = true; b.textContent = 'Locating…';
+          const pos = await currentPosition();
+          if (pos) {
+            data.lat = pos.lat; data.lng = pos.lon;
+            data.map = pos.lat.toFixed(6) + ',' + pos.lon.toFixed(6); data._coordSrc = data.map;
+            data.location = (await reverseGeo(pos.lat, pos.lon)) || data.location || '';
+            rerenderEditor('carpark', data); toast('📍 Location updated');
+          } else { b.disabled = false; b.textContent = '📍 Use my current location'; toast('⚠ GPS unavailable — allow location access'); }
+        } }, '📍 Use my current location')));
+      a(h('div', { class: 'section-title' }, 'Photo'));
+      a(imagePicker(data, 'images'));
+      a(field('Notes', data, 'notes', { type: 'textarea', placeholder: 'e.g. near lift lobby A' }));
       break;
     }
     case 'records': {
@@ -2038,6 +2093,21 @@ async function renderDetail(cat, item) {
         } }, '⧉ Duplicate this recipe')));
       break;
     }
+    case 'carpark': {
+      const card = h('div', { class: 'detail-card' }, h('h3', null, data.lot || 'My parking spot'),
+        kv('Parked at', data.when ? fmtDT(data.when) : null),
+        kv('Location', data.location),
+        kv('Notes', data.notes));
+      for (const im of await imgs(data.images)) card.appendChild(im);
+      a(card);
+      if (typeof data.lat === 'number') {
+        a(h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Find my car'),
+          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+            h('a', { class: 'btn small', href: 'https://www.google.com/maps/dir/?api=1&destination=' + data.lat + ',' + data.lng + '&travelmode=walking', target: '_blank' }, '🧭 Walk me to my car'),
+            h('a', { class: 'btn small secondary', href: 'https://www.google.com/maps/search/?api=1&query=' + data.lat + ',' + data.lng, target: '_blank' }, '📍 Open in Google Maps'))));
+      }
+      break;
+    }
     case 'records': {
       const lines = data.recType === 'address'
         ? [['Name', data.recipient], ['Address', data.address], ['Phone', data.phone]]
@@ -2290,6 +2360,7 @@ function summary(cat, data) {
       const thumb = (data.images || [])[0]; // only the finished-dish photo, never ingredient/step photos
       return { title: data.title || 'Recipe', meta: ingCount + ' ingredients · ' + (data.steps || []).length + ' steps', thumb, fav: data.fav };
     }
+    case 'carpark': return { title: data.lot || 'Parking spot', meta: [data.when ? fmtDT(data.when) : '', data.location].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
     case 'records': return { title: data.title || 'Record', meta: data.recType === 'address' ? (data.recipient || 'Address') : (data.bank || 'Bank account') };
     case 'vault': return { title: data.platform || 'Login', meta: data.username || '' };
     case 'memberships': return { title: data.title || 'Membership', meta: data.member || data.number || '', thumb: (data.images || [])[0] };
@@ -2769,6 +2840,14 @@ function currentPosition() {
       () => res(null), { timeout: 10000, enableHighAccuracy: true });
   });
 }
+/* human-readable "where am I" from coordinates (free OSM reverse geocode; best-effort) */
+async function reverseGeo(lat, lng) {
+  try {
+    const r = await fetch('https://photon.komoot.io/reverse?lon=' + lng + '&lat=' + lat).then(x => x.json());
+    const p = (((r || {}).features || [])[0] || {}).properties || {};
+    return [p.name, p.street, p.city || p.district || p.county].filter(Boolean).slice(0, 3).join(', ');
+  } catch (e) { return ''; }
+}
 /* save last-known location (throttled) so the closed-app scheduler can estimate distance */
 let _lastLocSavedAt = 0;
 async function saveLastLocation(pos) {
@@ -3116,6 +3195,7 @@ function homeCount(cat, items) {
     case 'schedule': return plural(items.filter(it => !scheduleIsCompleted(it)).length, 'activity', 'activities');
     case 'workout': return plural(items.length, 'workout day');
     case 'records': return plural(items.length, 'record');
+    case 'carpark': { const l = items[0]; return (l && l.data) ? ('Last: ' + (l.data.lot || 'photo saved')) : 'No spot saved'; }
     case 'vault': return plural(items.length, 'saved login');
     case 'memberships': return plural(items.length, 'membership');
     case 'tax': { const y = String(new Date().getFullYear()); return plural(items.filter(it => String(d(it).year || '') === y).length, 'receipt') + ' (' + y + ')'; }
@@ -4533,6 +4613,7 @@ async function editScreen(cat, id) {
   const isQuick = cat === 'quick';
   const hasContent = () => {
     if (cat === 'records' || cat === 'workout') return true;
+    if (cat === 'carpark') return !!(data.lot || (data.images || []).length || data.when);
     if (cat === 'exercise') return !!(data.name && data.name.trim());
     if (cat === 'vault') return !!(data.platform || data.username || data.password);
     if (isQuick) return !!(data.title || (data.bodyHtml || '').replace(/<[^>]+>/g, '').trim() || (data.strokes && data.strokes.length));
@@ -4843,9 +4924,15 @@ function telegramSection(form) {
   return h('div', null,
     h('div', { class: 'section-title' }, 'Telegram reminders'),
     help,
-    h('div', { class: 'field' }, h('label', null, 'Bot token'),
-      h('input', { value: form.telegramToken, placeholder: '123456:ABC-DEF…', oninput: e => form.telegramToken = e.target.value, autocapitalize: 'none' }),
-      h('div', { class: 'hint' }, 'From @BotFather (see guide above). Saved in your account only.')),
+    (() => { // masked like a password — tap Show to reveal while editing
+      const tok = h('input', { type: 'password', value: form.telegramToken, placeholder: '123456:ABC-DEF…',
+        oninput: e => form.telegramToken = e.target.value, autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', style: { flex: '1', minWidth: '0' } });
+      const eye = h('button', { class: 'btn small secondary', type: 'button', style: { flex: 'none' },
+        onclick: () => { const show = tok.type === 'password'; tok.type = show ? 'text' : 'password'; eye.textContent = show ? 'Hide' : 'Show'; } }, 'Show');
+      return h('div', { class: 'field' }, h('label', null, 'Bot token'),
+        h('div', { style: { display: 'flex', gap: '6px' } }, tok, eye),
+        h('div', { class: 'hint' }, 'From @BotFather (see guide above). Saved in your account only.'));
+    })(),
     h('div', { class: 'field' }, h('label', null, 'Chat ID'), chatInput,
       h('div', { class: 'hint' }, 'Message your bot once, then tap “Find my chat ID”.')),
     h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } }, findBtn, testBtn),
