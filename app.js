@@ -974,6 +974,34 @@ function buildEditor(cat, data, amOwner) {
     case 'mysched': {
       if (data.schedType == null) data.schedType = 'once';
       normMySched(data);
+      // 📷 snap a flyer / ticket / appointment card → Gemini reads it → form fills itself
+      const camInput = h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, onchange: async e => {
+        const f = e.target.files && e.target.files[0];
+        if (!f) return;
+        toast('📷 Reading the photo…');
+        try {
+          const dataUrl = await compressImage(f, 1200, 0.6);
+          const r = await fetch('/api/scan-schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: dataUrl }) });
+          const j = await r.json();
+          const fl = j && j.fields;
+          if (fl && (fl.title || fl.date || fl.location)) {
+            if (fl.title) data.title = fl.title;
+            if (fl.date) data.startDate = fl.date;
+            if (fl.time) data.time = fl.time;
+            if (fl.endDate) data.endDate = fl.endDate;
+            if (fl.endTime) data.end = fl.endTime;
+            if (fl.location) { data.location = titleCaseWords(fl.location); if (!data.map) data.map = fl.location; }
+            if (fl.notes && !data.notes) data.notes = fl.notes;
+            normMySched(data);
+            rerenderEditor('mysched', data);
+            toast('Filled in from your photo — give it a quick check ✏');
+          } else toast('⚠ ' + ((j && j.message) || 'Couldn\'t read details from that photo.'));
+        } catch (err) { toast('⚠ Photo reading works on the live site only.'); }
+        e.target.value = '';
+      } });
+      a(h('div', { class: 'field' }, camInput,
+        h('button', { class: 'btn secondary', type: 'button', style: { width: '100%' }, onclick: () => camInput.click() }, '📷 Fill from a photo'),
+        h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Snap a flyer, ticket, invite or appointment card and the details fill themselves in.')));
       a(h('div', { class: 'section-title' }, 'Basic information'));
       a(field('Title', data, 'title', { placeholder: 'e.g. School concert / Dentist / Piano class' }));
       a(h('div', { class: 'field' }, h('label', null, 'Location name'),
@@ -1112,11 +1140,25 @@ function mapFieldBlock(data) {
   };
   async function search(q) {
     sug.innerHTML = '<div class="sug-load">Searching…</div>'; sug.style.display = '';
+    // Google Places first (via our /api/places proxy — real Google Maps data)…
+    try {
+      const g = await fetch('/api/places?q=' + encodeURIComponent(q)).then(x => x.json());
+      if (g && Array.isArray(g.places) && g.places.length) {
+        sug.innerHTML = '';
+        g.places.forEach(p => {
+          sug.appendChild(h('div', { class: 'sug', onclick: () => pick([p.name, p.address].filter(Boolean).join(', '), p.lat, p.lng) },
+            h('div', { class: 'sug-name' }, p.name || p.address),
+            h('div', { class: 'sug-sub' }, p.address)));
+        });
+        return;
+      }
+    } catch (e) {} // offline preview / key missing → fall through to the free search
+    // …falling back to the free OSM search
     try {
       const r = await fetch('https://photon.komoot.io/api/?limit=6&lang=en&q=' + encodeURIComponent(q)).then(x => x.json());
       const feats = (r && r.features) || [];
       sug.innerHTML = '';
-      if (!feats.length) { sug.innerHTML = '<div class="sug-load">No matches — try a different name.</div>'; return; }
+      if (!feats.length) { sug.innerHTML = '<div class="sug-load">No matches — try a different name, or paste a Google Maps link.</div>'; return; }
       feats.forEach(f => {
         const p = f.properties || {}, c = (f.geometry || {}).coordinates || [];
         if (typeof c[1] !== 'number') return;
