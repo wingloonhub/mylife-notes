@@ -14,6 +14,7 @@
 function buildPrompt(today) {
   return 'You are reading a photo of a flyer, invitation, appointment card, ticket or message screenshot. '
     + 'Extract the event details. Today is ' + today + ' (use it to resolve relative or partial dates; assume the NEXT future occurrence). '
+    + 'IMPORTANT: slash/dot dates in the image are Malaysian DAY/MONTH order — "3/8/26" means 3 August 2026, never March 8. '
     + 'Reply with ONLY a JSON object, no markdown, exactly these keys: '
     + '{"title":"","date":"YYYY-MM-DD","time":"HH:MM","endDate":"YYYY-MM-DD","endTime":"HH:MM","location":"","notes":""}. '
     + 'time/endTime are 24-hour. Leave a value as an empty string if it is not in the image. '
