@@ -399,10 +399,11 @@ const DB = {
 const CATS = [
   { key: 'quick', name: 'Quick Note', emoji: '📝' },
   { key: 'todo', name: 'To-Do List', emoji: '✅' },
-  { key: 'events', name: 'Events', singular: 'Event', emoji: '📅' },
-  { key: 'appointments', name: 'Appointments', singular: 'Appointment', emoji: '🗓️' },
+  { key: 'mysched', name: 'My Schedule', singular: 'Schedule', emoji: '📅' },
+  { key: 'events', name: 'Events', singular: 'Event', emoji: '📅', hidden: true },
+  { key: 'appointments', name: 'Appointments', singular: 'Appointment', emoji: '🗓️', hidden: true },
   { key: 'reminder', name: 'Reminder', singular: 'Reminder', emoji: '⏰' },
-  { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒' },
+  { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒', hidden: true },
   { key: 'workout', name: 'Workout', singular: 'Workout Day', emoji: '💪' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'vault', name: 'Access Vault', singular: 'Login', emoji: '🔑' },
@@ -428,6 +429,7 @@ const catSingular = k => { const c = CATS.find(c => c.key === k) || {}; return c
 const CAT_GUIDE = {
   quick: { what: 'Freeform notes with rich text and a sketch pad — for quick jots, lists or a doodle.', unique: 'The only category with a built-in drawing pad — you can sketch, not just type.', reminders: null },
   todo: { what: 'Checklists where each item can carry its own due date; tick things off as you go.', unique: 'Every item can have its own due date and reminder — not one deadline for the whole list.', reminders: 'You set one time per list ("Remind me at"). On each item\'s due date, a nudge is sent to your Telegram at that time.' },
+  mysched: { what: 'All your events, appointments and recurring activities in one place. Each card is one-time or recurring (daily, weekly, monthly or yearly), with a date/time, location and map link. One-time cards move to the Past tab the day after.', unique: 'One category for everything scheduled — a dentist visit, a birthday every year, piano class every Tuesday — with reminders that repeat automatically for recurring cards.', reminders: 'Up to two Telegram reminders before it starts (per occurrence for recurring cards), plus an optional before-it-ends reminder for pick-ups. Location-aware: includes distance and drive time. Tap 🔕 on a card to silence it.' },
   events: { what: 'One-off events with a date, time and location (with a map link). An event moves to the Past tab the day after it happens.', unique: 'Reminders are location-aware — they tell you how far away you are and the drive time so you leave on time.', reminders: 'Up to two Telegram reminders before it starts. If you added a location, the reminder also tells you how far away you are and the drive time. In the list, tap "I\'m here" once you arrive to stop them.' },
   appointments: { what: 'Same as Events, worded for appointments — date, time, location and map link, with a Past tab.', unique: 'Re-book in seconds: duplicate a past appointment to make the same one again.', reminders: 'Up to two Telegram reminders before it starts, including distance and drive time when a location is set. Tap "I\'m here" in the list to stop them once you arrive.' },
   reminder: { what: 'Standalone recurring reminders. Choose Once, Weekly, Every 2 weeks or Monthly, and how often it should repeat once it goes off.', unique: 'It nags — keeps pinging every couple of hours until you actually turn it off, so nothing slips.', reminders: 'This is the whole point of the category: it fires to Telegram on the due date/time and keeps nudging (e.g. every 2 or 4 hours) until you tap "Turn off". A card only shows under the Due tab while it\'s actually going off.' },
@@ -500,6 +502,37 @@ function remindRow(data, onKey, minKey, label, hint, defMin, defOn) {
   const b = h('button', { class: 'btn small ' + (on() ? '' : 'secondary'), type: 'button' }, lbl());
   b.onclick = () => { data[onKey] = !on(); b.className = 'btn small ' + (on() ? '' : 'secondary'); b.textContent = lbl(); minRow.style.display = on() ? '' : 'none'; };
   return h('div', null, h('div', { class: 'field', style: { marginTop: '8px' } }, b), minRow);
+}
+/* reminder row with a value + unit (minutes/hours/days). Canonical total-minutes is kept in minKey
+   so the reminder engine stays unchanged; valKey/unitKey remember what the user typed. */
+function remindUnitRow(data, onKey, valKey, unitKey, minKey, label, suffix, defVal, defUnit, defOn, units) {
+  units = units || ['minutes', 'hours', 'days'];
+  const FACTOR = { minutes: 1, hours: 60, days: 1440 };
+  if (data[onKey] == null) data[onKey] = !!defOn;
+  if (data[valKey] == null || data[valKey] === '') {
+    // adopt a legacy minutes-only value if one exists, else the default
+    const legacy = parseInt(data[minKey], 10);
+    if (legacy > 0) {
+      if (legacy % 1440 === 0 && units.includes('days')) { data[valKey] = legacy / 1440; data[unitKey] = 'days'; }
+      else if (legacy % 60 === 0 && legacy >= 60) { data[valKey] = legacy / 60; data[unitKey] = 'hours'; }
+      else { data[valKey] = legacy; data[unitKey] = 'minutes'; }
+    } else { data[valKey] = defVal; data[unitKey] = data[unitKey] || defUnit; }
+  }
+  if (!units.includes(data[unitKey])) data[unitKey] = units[0];
+  const sync = () => { const v = parseInt(data[valKey], 10); data[minKey] = (v > 0) ? v * (FACTOR[data[unitKey]] || 1) : ''; };
+  sync();
+  const on = () => data[onKey] !== false;
+  const row = h('div', { class: 'field', style: { marginTop: '6px', display: on() ? '' : 'none' } },
+    h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+      h('input', { type: 'number', inputmode: 'numeric', min: '1', step: '1', style: { flex: '1', minWidth: '0' }, value: data[valKey],
+        oninput: e => { const v = parseInt(e.target.value, 10); data[valKey] = (isNaN(v) || v < 1) ? '' : v; sync(); } }),
+      h('select', { style: { width: '110px', flex: 'none' }, onchange: e => { data[unitKey] = e.target.value; sync(); } },
+        ...units.map(u => h('option', { value: u, selected: data[unitKey] === u ? 'selected' : null }, u))),
+      h('span', { style: { fontSize: '12.5px', color: 'var(--muted)', flex: 'none' } }, suffix)));
+  const lbl = () => (on() ? '✓ ' : '') + label;
+  const b = h('button', { class: 'btn small ' + (on() ? '' : 'secondary'), type: 'button' }, lbl());
+  b.onclick = () => { data[onKey] = !on(); b.className = 'btn small ' + (on() ? '' : 'secondary'); b.textContent = lbl(); row.style.display = on() ? '' : 'none'; };
+  return h('div', null, h('div', { class: 'field', style: { marginTop: '8px' } }, b), row);
 }
 
 /* editable list of simple strings */
@@ -936,6 +969,86 @@ function buildEditor(cat, data, amOwner) {
       a(selectField('Category', data, 'category', [{ value: '', label: 'Auto-detect' }, ...WORKOUT_CATS.map(ct => ({ value: ct, label: ct }))]));
       a(h('div', { class: 'field' }, h('label', null, 'Primary muscles'), musInput));
       a(field('YouTube video link (optional)', data, 'video', { type: 'url', placeholder: 'e.g. https://youtube.com/…' }));
+      break;
+    }
+    case 'mysched': {
+      if (data.schedType == null) data.schedType = 'once';
+      normMySched(data);
+      a(h('div', { class: 'section-title' }, 'Basic information'));
+      a(field('Title', data, 'title', { placeholder: 'e.g. School concert / Dentist / Piano class' }));
+      a(field('Location name', data, 'location', { placeholder: 'e.g. Sunway Lagoon' }));
+      a(mapFieldBlock(data));
+      a(field('Notes', data, 'notes', { type: 'textarea' }));
+      a(h('div', { class: 'section-title' }, 'Date and time'));
+      const dtInput = (key, type, sync) => h('input', { type, value: data[key] || '', oninput: e => { data[key] = e.target.value; if (sync) normMySched(data); } });
+      a(h('div', { class: 'row2' },
+        h('div', { class: 'field' }, h('label', null, data.schedType === 'recur' ? 'Start date (first occurrence)' : 'Start date'), dtInput('startDate', 'date', true)),
+        h('div', { class: 'field' }, h('label', null, 'Start time'), dtInput('time', 'time', true))));
+      a(h('div', { class: 'row2' },
+        data.schedType === 'once'
+          ? h('div', { class: 'field' }, h('label', null, 'End date (optional)'), dtInput('endDate', 'date'))
+          : h('div', { class: 'field' }, h('label', null, ' '), h('div', { class: 'hint', style: { marginTop: '10px' } }, 'Ends the same day each time.')),
+        h('div', { class: 'field' }, h('label', null, 'End time (optional)'), dtInput('end', 'time'))));
+      a(h('div', { class: 'section-title' }, 'Schedule type'));
+      a(selectField('Schedule type', data, 'schedType',
+        [{ value: 'once', label: 'One-time' }, { value: 'recur', label: 'Recurring' }],
+        () => { normMySched(data); rerenderEditor('mysched', data); }));
+      if (data.schedType === 'recur') {
+        a(h('div', { class: 'section-title' }, 'Recurring schedule'));
+        a(selectField('Repeat', data, 'repeatSel',
+          [{ value: 'daily', label: 'Daily' }, { value: 'weekly', label: 'Weekly' }, { value: 'monthly', label: 'Monthly' }, { value: 'yearly', label: 'Yearly' }, { value: 'custom', label: 'Custom' }],
+          () => { if (data.repeatSel !== 'custom') data.interval = 1; rerenderEditor('mysched', data); }));
+        if (data.repeatSel === 'custom') {
+          a(h('div', { class: 'row2' },
+            h('div', { class: 'field' }, h('label', null, 'Repeat every'),
+              h('input', { type: 'number', inputmode: 'numeric', min: '1', value: data.interval || 1, oninput: e => { const v = parseInt(e.target.value, 10); data.interval = (v > 0) ? v : 1; } })),
+            h('div', { class: 'field' }, h('label', null, ' '),
+              h('select', { onchange: e => { data.customUnit = e.target.value; rerenderEditor('mysched', data); } },
+                ...['days', 'weeks', 'months', 'years'].map(u => h('option', { value: u, selected: data.customUnit === u ? 'selected' : null }, u))))));
+        }
+        if (myschedFreq(data) === 'weekly') {
+          const chips = h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } });
+          [1, 2, 3, 4, 5, 6, 0].forEach(w => {
+            const onW = () => (data.weekdays || []).includes(String(w));
+            const c = h('button', { class: 'btn small ' + (onW() ? '' : 'secondary'), type: 'button' }, DOW_SHORT[w]);
+            c.onclick = () => {
+              data.weekdays = Array.isArray(data.weekdays) ? data.weekdays : [];
+              if (onW()) { if (data.weekdays.length > 1) data.weekdays = data.weekdays.filter(x => x !== String(w)); }
+              else data.weekdays.push(String(w));
+              c.className = 'btn small ' + (onW() ? '' : 'secondary');
+            };
+            chips.appendChild(c);
+          });
+          a(h('div', { class: 'field' }, h('label', null, 'Repeat on'), chips));
+        } else if (myschedFreq(data) === 'monthly') {
+          a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Repeats on day ' + (data.startDate ? new Date(data.startDate + 'T00:00').getDate() : '…') + ' of the month (from the start date; shorter months clamp to their last day).'));
+        } else if (myschedFreq(data) === 'yearly') {
+          a(h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Repeats every year on the start date\'s day and month.'));
+        }
+        if (data.repeatMode == null) data.repeatMode = 'forever';
+        a(selectField('When does this schedule end?', data, 'repeatMode',
+          [{ value: 'forever', label: 'No end date' }, { value: 'until', label: 'End on a specific date' }, { value: 'count', label: 'End after a number of occurrences' }],
+          () => rerenderEditor('mysched', data)));
+        if (data.repeatMode === 'until') a(field('End date', data, 'until', { type: 'date', hint: 'The schedule (and its reminders) stop after this date.' }));
+        if (data.repeatMode === 'count') a(field('Number of occurrences', data, 'count', { type: 'number', inputmode: 'numeric', placeholder: 'e.g. 10' }));
+      }
+      a(h('div', { class: 'section-title' }, 'Reminder settings'));
+      if (data.remWhen == null) data.remWhen = 'start';
+      a(selectField('When should reminders be sent?', data, 'remWhen',
+        [{ value: 'start', label: 'Before the event starts' }, { value: 'end', label: 'Before the event ends' }, { value: 'both', label: 'Both' }],
+        () => rerenderEditor('mysched', data)));
+      a(h('div', { class: 'hint', style: { margin: '-4px 2px 6px' } }, 'Sent to your Telegram' + (data.schedType === 'recur' ? ', for every occurrence.' : '.')));
+      if (data.remWhen !== 'end') {
+        a(h('div', { class: 'section-title' }, 'Before the event starts'));
+        a(remindUnitRow(data, 'startReminder', 'startRemindVal', 'startRemindUnit', 'startRemindMin', 'First reminder', 'before start', 60, 'minutes', true, ['minutes', 'hours', 'days']));
+        a(remindUnitRow(data, 'startReminder2', 'startRemind2Val', 'startRemind2Unit', 'startRemind2Min', 'Second reminder (optional)', 'before start', 15, 'minutes', false, ['minutes', 'hours', 'days']));
+      }
+      if (data.remWhen !== 'start') {
+        a(h('div', { class: 'section-title' }, 'Before the event ends'));
+        if (!data.end) a(h('div', { class: 'hint', style: { margin: '-2px 2px 6px' } }, '⚠ Set an End time above or these can\'t fire.'));
+        a(remindUnitRow(data, 'endReminder', 'endRemindVal', 'endRemindUnit', 'endRemindMin', 'First reminder', 'before end', 20, 'minutes', true, ['minutes', 'hours']));
+        a(remindUnitRow(data, 'endReminder2', 'endRemind2Val', 'endRemind2Unit', 'endRemind2Min', 'Second reminder (optional)', 'before end', 10, 'minutes', false, ['minutes', 'hours']));
+      }
       break;
     }
     case 'events':
@@ -1994,6 +2107,17 @@ async function renderDetail(cat, item) {
       a(card);
       break;
     }
+    case 'mysched': {
+      const n = data.schedType === 'recur' ? myschedNextOccur(data) : null;
+      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Schedule'),
+        data.schedType === 'recur'
+          ? kv('Repeats', myschedFreqLabel(data) + (data.time ? ' · ' + fmtHM(data.time) : '') + (data.end ? '–' + fmtHM(data.end) : ''))
+          : kv('When', fmtDT(data.when)),
+        n ? kv('Next', fmtDate(localDateStr(n))) : null,
+        kv('Location', data.location), kv('Notes', data.notes)));
+      if (data.map || data.location) a(mapCard(item));
+      break;
+    }
     case 'events':
     case 'appointments': {
       a(h('div', { class: 'detail-card' }, h('h3', null, data.title || (cat === 'appointments' ? 'Appointment' : 'Event')),
@@ -2105,6 +2229,13 @@ function summary(cat, data) {
     case 'quick': {
       const txt = ((data.bodyHtml || '').replace(/<[^>]+>/g, ' ').trim() || data.body || '').slice(0, 60);
       return { title: data.title || 'Note', meta: txt || ((data.strokes && data.strokes.length) ? '✍️ Handwritten note' : '') };
+    }
+    case 'mysched': {
+      if (data.schedType === 'recur') {
+        const n = myschedNextOccur(data);
+        return { title: data.title || 'Schedule', meta: ['🔁 ' + myschedFreqLabel(data) + (data.time ? ' · ' + fmtHM(data.time) : ''), n ? 'next ' + fmtDate(localDateStr(n)) : '', data.location].filter(Boolean).join(' · ') };
+      }
+      return { title: data.title || 'Schedule', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
     }
     case 'events': return { title: data.title || 'Event', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
     case 'appointments': return { title: data.title || 'Appointment', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
@@ -2884,6 +3015,7 @@ function homeCount(cat, items) {
   const d = it => it.data || {};
   switch (cat) {
     case 'todo': return plural(items.filter(it => (d(it).items || []).some(t => !t.checked)).length, 'list');
+    case 'mysched': return plural(items.filter(it => !myschedIsArchived(it)).length, 'upcoming schedule');
     case 'events': return plural(items.filter(it => !eventIsArchived(it)).length, 'upcoming event');
     case 'appointments': return plural(items.filter(it => !eventIsArchived(it)).length, 'upcoming appointment');
     case 'reminder': return plural(items.filter(it => (it.data || {}).active !== false).length, 'active reminder');
@@ -2953,6 +3085,7 @@ async function listScreen(cat, sub) {
   if (cat === 'vault') { renderVaultScreen(listEl, items, fab); return; }
   if (cat === 'memberships') { renderMembershipList(listEl, items); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
+  if (cat === 'mysched') { renderMySchedScreen(listEl, items); return; }
   if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past', reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'appointments') { renderArchiveList(listEl, 'appointments', items, eventIsArchived, { distance: true, archiveLabel: 'Past', duplicateAll: true, reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'schedule') { renderScheduleScreen(listEl, items, fab, sub === 'def' ? 'schedule' : 'upcoming'); return; }
@@ -3209,6 +3342,175 @@ function eventIsArchived(it) {
   return Date.now() > t + 3600000; // 1 hour after the event time
 }
 
+/* ---------------- MY SCHEDULE (events + appointments + weekly schedule, unified) ---------------- */
+/* Normalise a card: sync `when` ⇄ startDate/time for one-time cards; fill recurrence defaults.
+   Recurrence model: repeatSel daily|weekly|monthly|yearly|custom (custom = interval + customUnit),
+   weekdays[] (weekly, multi), anchor = startDate (drives monthly day / yearly date / interval math),
+   repeatMode forever|until|count (+ until date / count N). */
+function normMySched(d) {
+  if (!d || typeof d !== 'object') return d;
+  if (d.schedType === 'recur') {
+    if (!d.repeatSel) d.repeatSel = (parseInt(d.interval, 10) > 1) ? 'custom' : (d.freq || 'weekly');
+    if (!d.customUnit) d.customUnit = { daily: 'days', weekly: 'weeks', monthly: 'months', yearly: 'years' }[d.freq] || 'weeks';
+    d.interval = Math.max(1, parseInt(d.interval, 10) || 1);
+    if (!Array.isArray(d.weekdays) || !d.weekdays.length) d.weekdays = (d.weekday != null && d.weekday !== '') ? [String(d.weekday)] : [];
+    if (!d.startDate) {
+      // anchor the series: old monthly/yearly fields, else today
+      const t = new Date();
+      if (d.freq === 'monthly' && d.monthDay) { const day = Math.min(parseInt(d.monthDay, 10) || 1, new Date(t.getFullYear(), t.getMonth() + 1, 0).getDate()); d.startDate = localDateStr(new Date(t.getFullYear(), t.getMonth(), day)); }
+      else if (d.freq === 'yearly' && d.yearDate) d.startDate = t.getFullYear() + d.yearDate.slice(4);
+      else d.startDate = localDateStr(t);
+    }
+    if (!d.weekdays.length && myschedFreq(d) === 'weekly') d.weekdays = [String(new Date(d.startDate + 'T00:00').getDay())];
+    if (!d.repeatMode) d.repeatMode = 'forever';
+  } else {
+    if (d.when && !d.startDate) { d.startDate = d.when.slice(0, 10); d.time = d.time || d.when.slice(11, 16); }
+    if (d.startDate && d.time) d.when = d.startDate + 'T' + d.time;
+  }
+  return d;
+}
+/* effective frequency: 'custom' resolves through its unit */
+function myschedFreq(d) {
+  if (d.repeatSel === 'custom') return { days: 'daily', weeks: 'weekly', months: 'monthly', years: 'yearly' }[d.customUnit] || 'weekly';
+  return d.repeatSel || d.freq || 'weekly';
+}
+/* does the series occur on this local calendar date? (ignores until/count caps) */
+function myschedOccursOn(d, dt) {
+  const anchor = d.startDate ? new Date(d.startDate + 'T00:00') : null;
+  const day0 = new Date(dt); day0.setHours(0, 0, 0, 0);
+  if (anchor && day0 < anchor) return false;
+  const iv = Math.max(1, parseInt(d.interval, 10) || 1);
+  const freq = myschedFreq(d);
+  if (freq === 'daily') {
+    if (!anchor) return true;
+    return Math.round((day0 - anchor) / 86400000) % iv === 0;
+  }
+  if (freq === 'weekly') {
+    const wds = (Array.isArray(d.weekdays) && d.weekdays.length) ? d.weekdays.map(Number) : (anchor ? [anchor.getDay()] : []);
+    if (!wds.includes(day0.getDay())) return false;
+    if (!anchor || iv === 1) return true;
+    const monday = x => { const m = new Date(x); m.setDate(m.getDate() - ((m.getDay() + 6) % 7)); m.setHours(0, 0, 0, 0); return m; };
+    return Math.round((monday(day0) - monday(anchor)) / 604800000) % iv === 0;
+  }
+  if (freq === 'monthly') {
+    const want = anchor ? anchor.getDate() : 1;
+    const dim = new Date(day0.getFullYear(), day0.getMonth() + 1, 0).getDate();
+    if (day0.getDate() !== Math.min(want, dim)) return false;
+    if (!anchor || iv === 1) return true;
+    return ((day0.getFullYear() - anchor.getFullYear()) * 12 + (day0.getMonth() - anchor.getMonth())) % iv === 0;
+  }
+  if (freq === 'yearly') {
+    if (!anchor) return false;
+    const dim = new Date(day0.getFullYear(), anchor.getMonth() + 1, 0).getDate();
+    if (day0.getMonth() !== anchor.getMonth() || day0.getDate() !== Math.min(anchor.getDate(), dim)) return false;
+    return (day0.getFullYear() - anchor.getFullYear()) % iv === 0;
+  }
+  return false;
+}
+/* next occurrence as a local Date, honouring until/count endings; null when the series is over.
+   Scans day-by-day (bounded) — simple and identical in spirit to the serverless copy. */
+function myschedNextOccur(d, from) {
+  if (d.schedType !== 'recur') { const t = new Date(d.when || ''); return isNaN(t) ? null : t; }
+  normMySched(d);
+  const base = from ? new Date(from) : new Date();
+  const [hh, mm] = String(d.time || '09:00').split(':').map(Number);
+  const at = x => { const c = new Date(x); c.setHours(hh || 0, mm || 0, 0, 0); return c; };
+  const cnt = (d.repeatMode === 'count') ? Math.max(1, parseInt(d.count, 10) || 1) : null;
+  let cursor = new Date(d.startDate + 'T00:00');
+  const today = new Date(base); today.setHours(0, 0, 0, 0);
+  if (!cnt && cursor < today) cursor = new Date(today); // no counting needed → start scanning from today
+  let seen = 0;
+  for (let i = 0; i < 3700; i++) {
+    if (myschedOccursOn(d, cursor)) {
+      seen++;
+      if (cnt && seen > cnt) return null;                       // series exhausted
+      if (d.repeatMode === 'until' && d.until && localDateStr(cursor) > d.until) return null;
+      const c = at(cursor);
+      if (c > base) return c;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return null;
+}
+function myschedFreqLabel(d) {
+  normMySched(d);
+  const freq = myschedFreq(d), iv = Math.max(1, parseInt(d.interval, 10) || 1);
+  const unit = { daily: 'day', weekly: 'week', monthly: 'month', yearly: 'year' }[freq];
+  let lbl = iv === 1 ? ('Every ' + unit) : ('Every ' + iv + ' ' + unit + 's');
+  if (freq === 'weekly' && Array.isArray(d.weekdays) && d.weekdays.length) lbl += ' · ' + d.weekdays.slice().sort((a, b) => ((a + 6) % 7) - ((b + 6) % 7)).map(w => DOW_SHORT[Number(w)]).join(', ');
+  if (freq === 'monthly' && d.startDate) lbl += ' · day ' + new Date(d.startDate + 'T00:00').getDate();
+  if (freq === 'yearly' && d.startDate) { const a = new Date(d.startDate + 'T00:00'); lbl += ' · ' + ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][a.getMonth()] + ' ' + a.getDate(); }
+  if (d.repeatMode === 'until' && d.until) lbl += ' · until ' + fmtDate(d.until);
+  if (d.repeatMode === 'count' && d.count) lbl += ' · ' + d.count + '×';
+  return lbl;
+}
+/* one-time cards archive like events; recurring cards archive when their series is over */
+function myschedIsArchived(it) {
+  const d = it.data || {};
+  if (d.schedType === 'recur') return myschedNextOccur(d) === null;
+  return eventIsArchived(it);
+}
+/* One-time migration: fold existing Events, Appointments and Weekly Schedules into My Schedule.
+   Events/appointments → one-time cards (fields carried verbatim). Each weekly-schedule session →
+   a recurring-weekly card (title, place, times and all three reminders preserved). Originals are
+   deleted afterwards so the old reminder loops don't double-fire. Runs once (settings flag). */
+async function migrateToMySched() {
+  let s = {}; try { s = await DB.getSettings(); } catch (e) {}
+  if (s.myschedMigrated) return false;
+  let changed = false;
+  try {
+    const evs = await DB.listItems('events');
+    const apps = await DB.listItems('appointments');
+    for (const it of [...evs, ...apps]) {
+      if (it._shared && !it._amOwner) continue; // never migrate someone else's shared card
+      const d = JSON.parse(JSON.stringify(it.data || {}));
+      delete d.sharedWith;
+      d.schedType = 'once';
+      d.remWhen = 'start';
+      await DB.saveItem({ cat: 'mysched', data: d });
+      await DB.deleteItem(it.cat, it.id);
+      changed = true;
+    }
+    const scheds = await DB.listItems('schedule');
+    for (const sc of scheds) {
+      const d = sc.data || {};
+      const slots = (d.slots || []).filter(sl => sl.day !== undefined && sl.start);
+      if (!scheduleIsCompleted(sc)) for (const sl of slots) {
+        await DB.saveItem({ cat: 'mysched', data: {
+          title: d.title || 'Activity', schedType: 'recur', repeatSel: 'weekly', freq: 'weekly', interval: 1,
+          weekdays: [String(sl.day)], time: sl.start, end: sl.end || '',
+          startDate: localDateStr(new Date()),
+          repeatMode: (d.repeatMode === 'until' && d.until) ? 'until' : 'forever', until: d.until || '',
+          location: d.location || '', map: d.map || '', lat: d.lat, lng: d.lng, _coordSrc: d._coordSrc,
+          notes: d.notes || '',
+          remWhen: d.endReminder ? (d.startReminder !== false ? 'both' : 'end') : 'start',
+          startReminder: d.startReminder, startRemindMin: d.startRemindMin,
+          startReminder2: d.startReminder2, startRemind2Min: d.startRemind2Min,
+          endReminder: d.endReminder, endRemindMin: d.endRemindMin
+        } });
+      }
+      await DB.deleteItem('schedule', sc.id);
+      changed = true;
+    }
+    // clear generated activity instances — reminders now come from the recurring cards
+    const acts = await DB.listItems('activity');
+    for (const a of acts) { await DB.deleteItem('activity', a.id); changed = true; }
+    await DB.saveSettings(Object.assign({}, s, { myschedMigrated: true }));
+  } catch (e) { console.error('mysched migration failed', e); }
+  return changed;
+}
+async function renderMySchedScreen(listEl, items) {
+  if (await migrateToMySched()) { try { items = await DB.listItems('mysched'); } catch (e) {} }
+  // chronological: sort by next occurrence (recurring) / event time (one-time)
+  const nextMs = it => {
+    const d = it.data || {};
+    if (d.schedType === 'recur') { const n = myschedNextOccur(d); return n ? n.getTime() : Infinity; }
+    const t = new Date(d.when || '').getTime(); return isNaN(t) ? Infinity : t;
+  };
+  items.sort((a, b) => nextMs(a) - nextMs(b));
+  renderArchiveList(listEl, 'mysched', items, myschedIsArchived, { distance: true, archiveLabel: 'Past', reminderOff: true, duplicateAll: true });
+}
+
 async function duplicateItem(cat, it) {
   const data = JSON.parse(JSON.stringify(it.data || {}));
   data.archived = false;
@@ -3251,10 +3553,12 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
       const canDup = opts.duplicateAll || (tab === 'archive' && opts.duplicate);
       if (canDup) btns.push(h('button', { class: 'btn small secondary', type: 'button', onclick: async (e) => { e.stopPropagation(); await duplicateItem(cat, it); toast('Duplicated to Upcoming'); navigate('#/cat/' + cat); } }, 'Duplicate'));
       const action = btns.length ? h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...btns) : null;
-      const row = buildRow(cat, it, { action });
-      if (it.data && it.data.done) row.classList.add('cancelled-row');
-      body.appendChild(row);
-      if (posP) enrichRowDistance(it, row, posP);
+      try { // one bad card must not blank the rest of the list
+        const row = buildRow(cat, it, { action });
+        if (it.data && it.data.done) row.classList.add('cancelled-row');
+        body.appendChild(row);
+        if (posP) enrichRowDistance(it, row, posP);
+      } catch (err) { console.error('row render failed', cat, it.id, err); }
     }
   }
   listEl.appendChild(tabsEl);

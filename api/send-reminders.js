@@ -378,6 +378,91 @@ function remMessage(d, first) {
   return `Love, this is still not done yet — ${title}.\n\nNo pressure, I'll just keep reminding you until you switch this off.`;
 }
 
+/* ---- My Schedule occurrence math (all in the user's local wall-clock) ----
+   Model: repeatSel daily|weekly|monthly|yearly|custom (custom = interval N of customUnit),
+   weekdays[] multi-select for weekly, anchor = startDate (drives monthly day / yearly date and
+   interval counting), repeatMode forever|until|count. Mirrors the client implementation. */
+function msDateStr(ms) { return new Date(ms).toISOString().slice(0, 10); }
+function msFreq(d) {
+  if (d.repeatSel === 'custom') return { days: 'daily', weeks: 'weekly', months: 'monthly', years: 'yearly' }[d.customUnit] || 'weekly';
+  return d.repeatSel || d.freq || 'weekly';
+}
+function msOccursOn(d, dayMs) { // dayMs = UTC ms at local midnight of the date in question
+  const anchorMs = d.startDate ? Date.UTC(+d.startDate.slice(0, 4), +d.startDate.slice(5, 7) - 1, +d.startDate.slice(8, 10)) : null;
+  if (anchorMs != null && dayMs < anchorMs) return false;
+  const iv = Math.max(1, parseInt(d.interval, 10) || 1);
+  const freq = msFreq(d);
+  const dt = new Date(dayMs);
+  if (freq === 'daily') return anchorMs == null ? true : Math.round((dayMs - anchorMs) / 86400000) % iv === 0;
+  if (freq === 'weekly') {
+    const wds = (Array.isArray(d.weekdays) && d.weekdays.length) ? d.weekdays.map(Number)
+      : (d.weekday != null && d.weekday !== '' ? [Number(d.weekday)] : (anchorMs != null ? [new Date(anchorMs).getUTCDay()] : []));
+    if (!wds.includes(dt.getUTCDay())) return false;
+    if (anchorMs == null || iv === 1) return true;
+    const monday = ms => ms - ((new Date(ms).getUTCDay() + 6) % 7) * 86400000;
+    return Math.round((monday(dayMs) - monday(anchorMs)) / 604800000) % iv === 0;
+  }
+  if (freq === 'monthly') {
+    const a = anchorMs != null ? new Date(anchorMs) : null;
+    const want = a ? a.getUTCDate() : Math.max(1, Math.min(31, parseInt(d.monthDay, 10) || 1));
+    const dim = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() + 1, 0)).getUTCDate();
+    if (dt.getUTCDate() !== Math.min(want, dim)) return false;
+    if (a == null || iv === 1) return true;
+    return ((dt.getUTCFullYear() - a.getUTCFullYear()) * 12 + (dt.getUTCMonth() - a.getUTCMonth())) % iv === 0;
+  }
+  if (freq === 'yearly') {
+    let am, ad, ay = null;
+    if (anchorMs != null) { const a = new Date(anchorMs); am = a.getUTCMonth(); ad = a.getUTCDate(); ay = a.getUTCFullYear(); }
+    else if (d.yearDate) { am = +d.yearDate.slice(5, 7) - 1; ad = +d.yearDate.slice(8, 10); }
+    else return false;
+    const dim = new Date(Date.UTC(dt.getUTCFullYear(), am + 1, 0)).getUTCDate();
+    if (dt.getUTCMonth() !== am || dt.getUTCDate() !== Math.min(ad, dim)) return false;
+    return ay == null ? true : (dt.getUTCFullYear() - ay) % iv === 0;
+  }
+  return false;
+}
+/* next FUTURE start as { when: 'YYYY-MM-DDTHH:MM', key } — for one-time cards that's just d.when.
+   Honours until/count endings; bounded day scan (~10 years). */
+function myschedOccur(d, now, userOff) {
+  if (d.schedType !== 'recur') return d.when ? { when: d.when, key: d.when } : null;
+  const time = /^\d\d:\d\d$/.test(d.time || '') ? d.time : '09:00';
+  const local = new Date(now + userOff * 60000);
+  const todayMs = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate());
+  const nowNaive = local.toISOString().slice(0, 16);
+  const cnt = (d.repeatMode === 'count') ? Math.max(1, parseInt(d.count, 10) || 1) : null;
+  let cur = d.startDate ? Date.UTC(+d.startDate.slice(0, 4), +d.startDate.slice(5, 7) - 1, +d.startDate.slice(8, 10)) : todayMs;
+  if (!cnt && cur < todayMs) cur = todayMs; // no counting needed → scan from today
+  let seen = 0;
+  for (let i = 0; i < 3700; i++) {
+    if (msOccursOn(d, cur)) {
+      seen++;
+      if (cnt && seen > cnt) return null;
+      const ds = msDateStr(cur);
+      if (d.repeatMode === 'until' && d.until && ds > d.until) return null;
+      const whenN = ds + 'T' + time;
+      if (whenN > nowNaive) return { when: whenN, key: ds };
+    }
+    cur += 86400000;
+  }
+  return null;
+}
+/* today's date string if the series occurs today (within until/count caps) — drives end reminders */
+function myschedTodayOccur(d, now, userOff) {
+  const local = new Date(now + userOff * 60000);
+  const todayMs = Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate());
+  const todayStr = msDateStr(todayMs);
+  if (d.repeatMode === 'until' && d.until && todayStr > d.until) return null;
+  if (!msOccursOn(d, todayMs)) return null;
+  if (d.repeatMode === 'count') {
+    const cnt = Math.max(1, parseInt(d.count, 10) || 1);
+    let cur = d.startDate ? Date.UTC(+d.startDate.slice(0, 4), +d.startDate.slice(5, 7) - 1, +d.startDate.slice(8, 10)) : todayMs;
+    let seen = 0;
+    for (let i = 0; i < 3700 && cur <= todayMs; i++) { if (msOccursOn(d, cur)) seen++; cur += 86400000; }
+    if (seen > cnt) return null;
+  }
+  return todayStr;
+}
+
 async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMatches, wctest, triptest) {
   const { idToken, uid } = await signIn(u.email, u.password, apiKey);
   const email = (u.email || '').trim().toLowerCase();
@@ -424,6 +509,7 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
       uid, nowLocal: new Date(now + userOff * 60000).toISOString().slice(0, 16).replace('T', ' '),
       tzOffset: userOff, telegramSet: !!(token && chat),
       events: items.filter(i => i.cat === 'events' || i.cat === 'appointments').map(it => { const d = it.data || {}; const t = naiveToUTC(d.when, userOff); return { cat: it.cat, title: d.title, when: d.when, leadMin: leadMsOf(d) / 60000, dueNow: !isNaN(t) && d.startReminder !== false && now >= t - leadMsOf(d) && now < t, alreadyNotified: d._notifiedFor || null }; }),
+      mysched: items.filter(i => i.cat === 'mysched').map(it => { const d = it.data || {}; const occ = myschedOccur(d, now, userOff); const t = occ ? naiveToUTC(occ.when, userOff) : NaN; return { title: d.title, type: d.schedType, freq: d.freq || null, nextOccur: occ ? occ.when : null, off: !!d.done, leadMin: leadMsOf(d) / 60000, dueNow: !isNaN(t) && d.startReminder !== false && now >= t - leadMsOf(d) && now < t, alreadyNotified: d._notifiedFor || null }; }),
       activities: activities.map(it => { const d = it.data || {}; const t = naiveToUTC(d.date + 'T' + d.start, userOff); return { title: d.title, date: d.date, start: d.start, leadMin: leadMsOf(d) / 60000, cancelled: !!d.cancelled, dueNow: !isNaN(t) && d.startReminder !== false && now >= t - leadMsOf(d) && now < t, alreadyNotified: d._notifiedFor || null }; })
     };
   }
@@ -460,6 +546,70 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
     if (it._shared) await putShared(project, idToken, it.id, { data: d });
     else await patchData(project, uid, idToken, it.id, d);
     sent++;
+  }
+
+  // My Schedule — one-time or recurring (daily/weekly/monthly/yearly).
+  // remWhen picks which reminders fire: 'start' (default) | 'end' | 'both'; each side has a 1st + optional 2nd.
+  for (const it of items.filter(i => i.cat === 'mysched')) {
+    const d = it.data || {};
+    if (d.done) continue; // 🔕 turned off
+    const wantStart = d.remWhen !== 'end';
+    const wantEnd = (d.remWhen === 'end' || d.remWhen === 'both') && d.end;
+    const title = d.title || 'your schedule';
+    const travel = (typeof d.lat === 'number') ? await travelLine(loc, d.lat, d.lng, now, userOff) : '';
+    let changed = false;
+    // "before the event ends" (1st + optional 2nd) — uses TODAY's occurrence so it still fires mid-session
+    if (wantEnd) {
+      const endDate = d.schedType === 'recur'
+        ? myschedTodayOccur(d, now, userOff)
+        : (d.endDate || (d.when ? d.when.slice(0, 10) : null));
+      const endT = endDate ? naiveToUTC(endDate + 'T' + d.end, userOff) : NaN;
+      if (!isNaN(endT)) {
+        const sendEnd = async () => {
+          const em = Math.max(1, Math.round((endT - now) / 60000));
+          let endMsg = `${title} will end at ${fmtHM12(d.end)} — about ${em} minute${em === 1 ? '' : 's'} from now.`;
+          const tm = (typeof d.lat === 'number') ? await travelMins(loc, d.lat, d.lng, now, userOff) : null;
+          if (tm != null) endMsg += `\n\nYou're around ${tm} minute${tm === 1 ? '' : 's'} away, so you still have some time. Maybe start wrapping up and head over soon.`;
+          await tg(token, chat, endMsg);
+        };
+        const endLead1 = (parseInt(d.endRemindMin, 10) > 0 ? parseInt(d.endRemindMin, 10) : 20) * 60000;
+        const endLead2 = (parseInt(d.endRemind2Min, 10) > 0 ? parseInt(d.endRemind2Min, 10) : 10) * 60000;
+        if (d.endReminder !== false && now >= endT - endLead1 && now < endT && d._notifiedEnd !== endDate) {
+          await sendEnd(); d._notifiedEnd = endDate; changed = true; sent++;
+        }
+        if (d.endReminder2 === true && now >= endT - endLead2 && now < endT && d._notifiedEnd2 !== endDate) {
+          await sendEnd(); d._notifiedEnd2 = endDate; changed = true; sent++;
+        }
+      }
+    }
+    // "before the event starts" (1st + optional 2nd) for the next occurrence
+    const occ = wantStart ? myschedOccur(d, now, userOff) : null;
+    if (occ) {
+      const t = naiveToUTC(occ.when, userOff);
+      if (!isNaN(t) && now < t) {
+        const lead1 = leadMsOf(d);
+        const lead2 = (parseInt(d.startRemind2Min, 10) > 0 ? parseInt(d.startRemind2Min, 10) : 15) * 60000;
+        const mainDue = d.startReminder !== false && now >= t - lead1 && d._notifiedFor !== occ.key;
+        const secondDue = d.startReminder2 === true && now >= t - lead2 && d._notifiedHalf !== occ.key;
+        if (mainDue || secondDue) {
+          const mins = Math.round((t - now) / 60000);
+          const at = fmtTime(t, userOff);
+          if (mainDue) {
+            const msg = mins > 0
+              ? (`Hey, ${title} is coming up in ${mins} minute${mins === 1 ? '' : 's'}. ` + (d.location ? `Don't forget to be at ${d.location} by ${at}.` : `It starts at ${at}.`))
+              : (`Hey, ${title} is starting now${d.location ? ` at ${d.location}` : ''}.`);
+            await tg(token, chat, msg + travel);
+            d._notifiedFor = occ.key;
+          }
+          if (secondDue) {
+            await tg(token, chat, `Hey, are you on your way to ${title}? It's at ${at}.` + travel);
+            d._notifiedHalf = occ.key;
+          }
+          changed = true; sent++;
+        }
+      }
+    }
+    if (changed) await patchData(project, uid, idToken, it.id, d);
   }
 
   // to-dos (per-item due dates)
