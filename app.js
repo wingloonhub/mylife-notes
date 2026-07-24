@@ -1018,6 +1018,11 @@ function buildEditor(cat, data, amOwner) {
       a(h('div', { class: 'field' }, camInput,
         h('button', { class: 'btn secondary', type: 'button', style: { width: '100%' }, onclick: () => camInput.click() }, '📷 Fill from a photo'),
         h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Snap a flyer, ticket, invite or appointment card and the details fill themselves in.')));
+      if (data.cardType == null) data.cardType = 'event';
+      a(selectField('Type', data, 'cardType',
+        [{ value: 'event', label: 'Event' }, { value: 'trip', label: 'Trip' }],
+        () => { if (data.cardType === 'trip') data.schedType = 'once'; normMySched(data); rerenderEditor('mysched', data); }));
+      const isTrip = data.cardType === 'trip';
       a(h('div', { class: 'section-title' }, 'Basic information'));
       a(field('Title', data, 'title', { placeholder: 'e.g. School concert / Dentist / Piano class' }));
       a(h('div', { class: 'field' }, h('label', null, 'Location name'),
@@ -1026,20 +1031,22 @@ function buildEditor(cat, data, amOwner) {
           onblur: e => { const v = titleCaseWords(e.target.value); data.location = v; e.target.value = v; } })));
       a(mapFieldBlock(data));
       a(field('Notes', data, 'notes', { type: 'textarea' }));
-      a(h('div', { class: 'section-title' }, 'Date and time'));
+      a(h('div', { class: 'section-title' }, isTrip ? 'Check-in and check-out' : 'Date and time'));
       const dtInput = (key, type, sync) => h('input', { type, value: data[key] || '', oninput: e => { data[key] = e.target.value; if (sync) normMySched(data); } });
       a(h('div', { class: 'row2' },
-        h('div', { class: 'field' }, h('label', null, data.schedType === 'recur' ? 'Start date (first occurrence)' : 'Start date'), dtInput('startDate', 'date', true)),
-        h('div', { class: 'field' }, h('label', null, 'Start time'), dtInput('time', 'time', true))));
+        h('div', { class: 'field' }, h('label', null, isTrip ? 'Check-in date' : (data.schedType === 'recur' ? 'Start date (first occurrence)' : 'Start date')), dtInput('startDate', 'date', true)),
+        h('div', { class: 'field' }, h('label', null, isTrip ? 'Check-in time' : 'Start time'), dtInput('time', 'time', true))));
       a(h('div', { class: 'row2' },
         data.schedType === 'once'
-          ? h('div', { class: 'field' }, h('label', null, 'End date (optional)'), dtInput('endDate', 'date'))
+          ? h('div', { class: 'field' }, h('label', null, isTrip ? 'Check-out date' : 'End date (optional)'), dtInput('endDate', 'date'))
           : h('div', { class: 'field' }, h('label', null, ' '), h('div', { class: 'hint', style: { marginTop: '10px' } }, 'Ends the same day each time.')),
-        h('div', { class: 'field' }, h('label', null, 'End time (optional)'), dtInput('end', 'time'))));
-      a(h('div', { class: 'section-title' }, 'Schedule type'));
-      a(selectField('Schedule type', data, 'schedType',
-        [{ value: 'once', label: 'One-time' }, { value: 'recur', label: 'Recurring' }],
-        () => { normMySched(data); rerenderEditor('mysched', data); }));
+        h('div', { class: 'field' }, h('label', null, isTrip ? 'Check-out time' : 'End time (optional)'), dtInput('end', 'time'))));
+      if (!isTrip) {
+        a(h('div', { class: 'section-title' }, 'Schedule type'));
+        a(selectField('Schedule type', data, 'schedType',
+          [{ value: 'once', label: 'One-time' }, { value: 'recur', label: 'Recurring' }],
+          () => { normMySched(data); rerenderEditor('mysched', data); }));
+      }
       if (data.schedType === 'recur') {
         a(h('div', { class: 'section-title' }, 'Recurring schedule'));
         a(selectField('Repeat', data, 'repeatSel',
@@ -1082,19 +1089,21 @@ function buildEditor(cat, data, amOwner) {
       a(h('div', { class: 'section-title' }, 'Reminder settings'));
       if (data.remWhen == null) data.remWhen = 'start';
       a(selectField('When should reminders be sent?', data, 'remWhen',
-        [{ value: 'start', label: 'Before the event starts' }, { value: 'end', label: 'Before the event ends' }, { value: 'both', label: 'Both' }],
+        isTrip
+          ? [{ value: 'start', label: 'Before check-in' }, { value: 'end', label: 'Before check-out' }, { value: 'both', label: 'Both' }]
+          : [{ value: 'start', label: 'Before the event starts' }, { value: 'end', label: 'Before the event ends' }, { value: 'both', label: 'Both' }],
         () => rerenderEditor('mysched', data)));
       a(h('div', { class: 'hint', style: { margin: '-4px 2px 6px' } }, 'Sent to your Telegram' + (data.schedType === 'recur' ? ', for every occurrence.' : '.')));
       if (data.remWhen !== 'end') {
-        a(h('div', { class: 'section-title' }, 'Before the event starts'));
-        a(remindUnitRow(data, 'startReminder', 'startRemindVal', 'startRemindUnit', 'startRemindMin', 'First reminder', 'before start', 60, 'minutes', true, ['minutes', 'hours', 'days']));
-        a(remindUnitRow(data, 'startReminder2', 'startRemind2Val', 'startRemind2Unit', 'startRemind2Min', 'Second reminder (optional)', 'before start', 15, 'minutes', false, ['minutes', 'hours', 'days']));
+        a(h('div', { class: 'section-title' }, isTrip ? 'Before check-in' : 'Before the event starts'));
+        a(remindUnitRow(data, 'startReminder', 'startRemindVal', 'startRemindUnit', 'startRemindMin', 'First reminder', isTrip ? 'before check-in' : 'before start', 60, 'minutes', true, ['minutes', 'hours', 'days']));
+        a(remindUnitRow(data, 'startReminder2', 'startRemind2Val', 'startRemind2Unit', 'startRemind2Min', 'Second reminder (optional)', isTrip ? 'before check-in' : 'before start', 15, 'minutes', false, ['minutes', 'hours', 'days']));
       }
       if (data.remWhen !== 'start') {
-        a(h('div', { class: 'section-title' }, 'Before the event ends'));
-        if (!data.end) a(h('div', { class: 'hint', style: { margin: '-2px 2px 6px' } }, '⚠ Set an End time above or these can\'t fire.'));
-        a(remindUnitRow(data, 'endReminder', 'endRemindVal', 'endRemindUnit', 'endRemindMin', 'First reminder', 'before end', 20, 'minutes', true, ['minutes', 'hours']));
-        a(remindUnitRow(data, 'endReminder2', 'endRemind2Val', 'endRemind2Unit', 'endRemind2Min', 'Second reminder (optional)', 'before end', 10, 'minutes', false, ['minutes', 'hours']));
+        a(h('div', { class: 'section-title' }, isTrip ? 'Before check-out' : 'Before the event ends'));
+        if (!data.end) a(h('div', { class: 'hint', style: { margin: '-2px 2px 6px' } }, '⚠ Set ' + (isTrip ? 'a check-out time' : 'an End time') + ' above or these can\'t fire.'));
+        a(remindUnitRow(data, 'endReminder', 'endRemindVal', 'endRemindUnit', 'endRemindMin', 'First reminder', isTrip ? 'before check-out' : 'before end', 20, 'minutes', true, ['minutes', 'hours']));
+        a(remindUnitRow(data, 'endReminder2', 'endRemind2Val', 'endRemind2Unit', 'endRemind2Min', 'Second reminder (optional)', isTrip ? 'before check-out' : 'before end', 10, 'minutes', false, ['minutes', 'hours']));
       }
       break;
     }
@@ -2188,10 +2197,12 @@ async function renderDetail(cat, item) {
     }
     case 'mysched': {
       const n = data.schedType === 'recur' ? myschedNextOccur(data) : null;
-      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || 'Schedule'),
+      const isTrip = data.cardType === 'trip';
+      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || (isTrip ? 'Trip' : 'Schedule')),
         data.schedType === 'recur'
           ? kv('Repeats', myschedFreqLabel(data) + (data.time ? ' · ' + fmtHM(data.time) : '') + (data.end ? '–' + fmtHM(data.end) : ''))
-          : kv('When', fmtDT(data.when)),
+          : kv(isTrip ? 'Check-in' : 'When', fmtDT(data.when)),
+        isTrip && data.endDate ? kv('Check-out', fmtDate(data.endDate) + (data.end ? ', ' + fmtHM(data.end) : '')) : null,
         n ? kv('Next', fmtDate(localDateStr(n))) : null,
         kv('Location', data.location), kv('Notes', data.notes)));
       if (data.map || data.location) a(mapCard(item));
@@ -2313,6 +2324,9 @@ function summary(cat, data) {
       if (data.schedType === 'recur') {
         const n = myschedNextOccur(data);
         return { title: data.title || 'Schedule', meta: ['🔁 ' + myschedFreqLabel(data) + (data.time ? ' · ' + fmtHM(data.time) : ''), n ? 'next ' + fmtDate(localDateStr(n)) : '', data.location].filter(Boolean).join(' · ') };
+      }
+      if (data.cardType === 'trip') {
+        return { title: data.title || 'Trip', meta: ['🧳 In ' + fmtDT(data.when), data.endDate ? 'Out ' + fmtDate(data.endDate) + (data.end ? ', ' + fmtHM(data.end) : '') : '', data.location].filter(Boolean).join(' · ') };
       }
       return { title: data.title || 'Schedule', meta: [fmtDT(data.when), data.location].filter(Boolean).join(' · ') };
     }
@@ -3540,6 +3554,7 @@ function myschedFreqLabel(d) {
 function myschedIsArchived(it) {
   const d = it.data || {};
   if (d.schedType === 'recur') return myschedNextOccur(d) === null;
+  if (d.endDate) return localDateStr(new Date()) > d.endDate; // multi-day (trips): stays until check-out passes
   return eventIsArchived(it);
 }
 /* One-time migration: fold existing Events, Appointments and Weekly Schedules into My Schedule.
@@ -3594,7 +3609,7 @@ async function migrateToMySched() {
 /* the local date a card's life ended: one-time → its event date; recurring → its until date or the
    last counted occurrence. null = still active or never ends. */
 function myschedEndedOn(d) {
-  if (d.schedType !== 'recur') { const w = d.when || d.eventDate; return w ? w.slice(0, 10) : null; }
+  if (d.schedType !== 'recur') { const w = d.endDate || d.when || d.eventDate; return w ? w.slice(0, 10) : null; }
   normMySched(d);
   if (d.repeatMode === 'until' && d.until) return d.until;
   if (d.repeatMode === 'count') {
