@@ -3068,23 +3068,35 @@ async function homeScreen() {
     h('div', { class: 'hello' }, h('h2', null, 'Hello 👋'), h('p', null, 'Pick a notebook to open.')),
     grid);
   mount(screen(bar, body));
-  // categories the user has hidden in Settings → Categories
-  let hidden = new Set();
-  try { const s = await DB.getSettings(); hidden = new Set(Array.isArray(s.hiddenCats) ? s.hiddenCats : []); } catch (e) {}
-  // counts
-  for (const c of CATS.filter(c => !c.hidden && !hidden.has(c.key))) {
-    const card = h('div', { class: 'cat-card', onclick: () => navigate('#/cat/' + c.key) },
-      h('div', { class: 'emoji' }, c.emoji),
-      h('div', null, h('div', { class: 'name' }, c.name), h('div', { class: 'count' }, '…')));
-    grid.appendChild(card);
-    if (c.key === 'worldcup') {
-      card.querySelector('.count').textContent = 'Live scores & tables';
-    } else if (c.key === 'schedule') {
-      (async () => { try { await generateActivities(); } catch (e) {} const today = localDateStr(new Date()); const n = (await DB.listItems('activity')).filter(a => !a.data.cancelled && (a.data.date || '') >= today && activityActive(a.data)).length; card.querySelector('.count').textContent = n + ' upcoming ' + (n === 1 ? 'activity' : 'activities'); })();
-    } else {
-      DB.listItems(c.key).then(items => { card.querySelector('.count').textContent = homeCount(c.key, items); });
+  // INSTANT paint: draw the tiles from a local snapshot (hidden set + last-known counts) with zero
+  // network waits, then refresh both in the background. This is why the hub no longer "hangs" on open.
+  const uid = (CURRENT && CURRENT.uid) || 'anon';
+  const hiddenKey = 'mln_hidden_' + uid, countKey = 'mln_homecounts_' + uid;
+  const countCache = LS.get(countKey, {});
+  let drawnHidden = null;
+  function buildTiles(hiddenArr) {
+    drawnHidden = (hiddenArr || []).slice().sort().join(',');
+    grid.innerHTML = '';
+    for (const c of CATS.filter(x => !x.hidden && !(hiddenArr || []).includes(x.key))) {
+      const card = h('div', { class: 'cat-card', onclick: () => navigate('#/cat/' + c.key) },
+        h('div', { class: 'emoji' }, c.emoji),
+        h('div', null, h('div', { class: 'name' }, c.name), h('div', { class: 'count' }, countCache[c.key] || '…')));
+      grid.appendChild(card);
+      if (c.key === 'worldcup') { card.querySelector('.count').textContent = 'Live scores & tables'; continue; }
+      DB.listItems(c.key).then(items => {
+        const txt = homeCount(c.key, items);
+        card.querySelector('.count').textContent = txt;
+        countCache[c.key] = txt; LS.set(countKey, countCache);
+      }).catch(() => {});
     }
   }
+  buildTiles(LS.get(hiddenKey, []));
+  // background: reconcile the hidden set with real Settings (only rebuilds if it actually changed)
+  DB.getSettings().then(s => {
+    const hs = Array.isArray(s.hiddenCats) ? s.hiddenCats : [];
+    LS.set(hiddenKey, hs);
+    if (hs.slice().sort().join(',') !== drawnHidden) buildTiles(hs);
+  }).catch(() => {});
 }
 
 /* ----- CATEGORY LIST ----- */
@@ -4795,6 +4807,7 @@ async function settingsScreen() {
   const saveBtn = h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: async () => {
     const friends = friendsObj.list.map(f => ({ name: (f.name || '').trim(), email: (f.email || '').trim().toLowerCase() })).filter(f => f.email);
     await DB.saveSettings({ telegramChatId: form.telegramChatId.trim(), telegramToken: form.telegramToken.trim(), worldcupAlerts: form.wcAlerts, tripReminders: form.tripReminders, friends, groceryShare: cleanEmails(gShareObj.sharedWith), groceryShareSet: true, hiddenCats: [...hiddenObj.set] });
+    LS.set('mln_hidden_' + ((CURRENT && CURRENT.uid) || 'anon'), [...hiddenObj.set]); // home draws from this mirror instantly
     FRIENDS = friends;
     toast('Settings saved');
     startReminders();
