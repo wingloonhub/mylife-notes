@@ -407,8 +407,8 @@ const CATS = [
   { key: 'workout', name: 'Workout', singular: 'Workout Day', emoji: '💪' },
   { key: 'carpark', name: 'Car Park', singular: 'Parking Spot', emoji: '🅿️' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
-  { key: 'vault', name: 'Access Vault', singular: 'Login', emoji: '🔑' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
+  { key: 'vault', name: 'Access Vault', singular: 'Login', emoji: '🔑' },
   { key: 'tax', name: 'Tax Receipts', emoji: '💵' },
   { key: 'party', name: 'Party Planner', emoji: '🎉' },
   { key: 'trips', name: 'Trip Planner', emoji: '🧳', hidden: true }, // retired — trips now live in My Schedule (Type: Trip)
