@@ -1,5 +1,5 @@
 // ============================================================
-//  MyLife Hub — FIFA World Cup 2026 proxy (Vercel serverless)
+//  MyLife Hub — Premier League proxy (Vercel serverless)
 // ============================================================
 //  Fetches matches / standings from football-data.org and returns the raw JSON.
 //  Keeps the API token server-side (never exposed to the browser) and adds a
@@ -13,7 +13,7 @@
 //    FOOTBALL_API_KEY  (required) free token from https://www.football-data.org/client/register
 // ============================================================
 
-const COMP = 'WC'; // football-data.org competition code for the FIFA World Cup
+const COMP = 'PL'; // football-data.org competition code for the English Premier League
 
 module.exports = async (req, res) => {
   res.setHeader('Content-Type', 'application/json');

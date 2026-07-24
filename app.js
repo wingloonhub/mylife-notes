@@ -418,7 +418,7 @@ const CATS = [
   { key: 'activity', name: 'Activity', emoji: '📌', hidden: true },
   { key: 'recipes', name: 'Recipes', emoji: '🍳' },
   { key: 'warranty', name: 'Warranty Tracker', emoji: '🧾' },
-  { key: 'worldcup', name: 'FIFA World Cup 2026', emoji: '⚽' }
+  { key: 'worldcup', name: 'Premier League', emoji: '⚽' }
 ];
 const catName = k => (CATS.find(c => c.key === k) || {}).name || k;
 /* singular label for editor/detail titles — uses an explicit `singular` if set, else drops a trailing "s" */
@@ -444,7 +444,7 @@ const CAT_GUIDE = {
   shopping: { what: 'A shared grocery list for the household — whoever adds an item, everyone sees it. You can also save regular items with prices by shop.', unique: 'One list the whole household updates live, plus price-per-shop so you know where it\'s cheaper.', reminders: 'No timed reminders. It\'s a live shared list; set who it\'s shared with in Settings.' },
   recipes: { what: 'Save recipes with ingredients, step-by-step method and photos; share any recipe to WhatsApp neatly formatted.', unique: 'Shares to WhatsApp as a clean, formatted recipe — not a wall of plain text.', reminders: null },
   warranty: { what: 'Track what you bought, where, and when the warranty expires, with the receipt photo. Cards flag Active / Expiring soon / Expired.', unique: 'Works out the warranty status for you and flags anything expiring soon.', reminders: 'No Telegram push — it shows the expiry status visually in the app.' },
-  worldcup: { what: 'Live scores, group tables and the knockout bracket for the 2026 World Cup. Read-only.', unique: 'The only category that fills itself in — live tournament data pulled in automatically, nothing to enter.', reminders: 'Turn on "World Cup score alerts" in Settings for live goal and full-time updates pushed to Telegram.' }
+  worldcup: { what: 'Live Premier League scores, fixtures and the league table. Read-only.', unique: 'The only category that fills itself in — live match data pulled in automatically, nothing to enter.', reminders: 'Turn on "Premier League score alerts" in Settings for live goal and full-time updates pushed to Telegram.' }
 };
 
 /* ---------------- generic form widgets ---------------- */
@@ -4318,7 +4318,7 @@ function wcScore(m) { const f = (m.score && m.score.fullTime) || {}; return [f.h
 function wcTeam(t) { return (t && t.name) || 'TBD'; }
 function wcStageLabel(stage, group) {
   if (stage === 'GROUP_STAGE') return group ? group.replace('GROUP_', 'Group ') : 'Group stage';
-  return ({ LEAGUE_STAGE: 'League stage', PLAYOFFS: 'Play-offs', LAST_32: 'Round of 32', LAST_16: 'Round of 16',
+  return ({ REGULAR_SEASON: 'Premier League', LEAGUE_STAGE: 'League stage', PLAYOFFS: 'Play-offs', LAST_32: 'Round of 32', LAST_16: 'Round of 16',
     QUARTER_FINALS: 'Quarter-final', SEMI_FINALS: 'Semi-final', THIRD_PLACE: 'Third place', FINAL: 'Final' }[stage]
     || (stage ? stage.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, c => c.toUpperCase()) : ''));
 }
@@ -4350,22 +4350,24 @@ function wcMatchesView(matches) {
   const upcoming = matches.filter(m => m.status === 'SCHEDULED' || m.status === 'TIMED').sort((a, b) => (a.utcDate || '').localeCompare(b.utcDate || ''));
   const recent = matches.filter(m => m.status === 'FINISHED').sort((a, b) => (b.utcDate || '').localeCompare(a.utcDate || ''));
   if (live.length) { wrap.appendChild(h('div', { class: 'wc-h live' }, 'Live now')); live.forEach(m => wrap.appendChild(wcMatchRow(m))); }
-  if (upcoming.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Upcoming')); upcoming.forEach(m => wrap.appendChild(wcMatchRow(m))); }
-  if (recent.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Results (' + recent.length + ')')); recent.forEach(m => wrap.appendChild(wcMatchRow(m))); }
+  if (upcoming.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Upcoming' + (upcoming.length > 20 ? ' (next 20)' : ''))); upcoming.slice(0, 20).forEach(m => wrap.appendChild(wcMatchRow(m))); }
+  if (recent.length) { wrap.appendChild(h('div', { class: 'wc-h' }, 'Results' + (recent.length > 30 ? ' (last 30 of ' + recent.length + ')' : ' (' + recent.length + ')'))); recent.slice(0, 30).forEach(m => wrap.appendChild(wcMatchRow(m))); }
   return wrap;
 }
 function wcGroupsView(standings) {
-  const groups = (standings || []).filter(s => s.type === 'TOTAL' && (s.stage === 'GROUP_STAGE' || s.group));
-  if (!groups.length) return h('div', { class: 'empty' }, h('div', { class: 'big' }, '📊'), h('div', null, 'Group tables appear once the group stage starts.'));
+  // league (one TOTAL table, e.g. Premier League) or tournament groups — render whichever the feed gives
+  const tables = (standings || []).filter(s => s.type === 'TOTAL' && Array.isArray(s.table) && s.table.length);
+  if (!tables.length) return h('div', { class: 'empty' }, h('div', { class: 'big' }, '📊'), h('div', null, 'The table appears once the season starts.'));
   const wrap = h('div', null);
-  groups.forEach(g => {
-    wrap.appendChild(h('div', { class: 'wc-h' }, (g.group || '').replace('GROUP_', 'Group ')));
+  tables.forEach(g => {
+    const qualN = g.group ? 2 : 4; // groups: top 2 qualify · league: top 4 (Champions League spots)
+    wrap.appendChild(h('div', { class: 'wc-h' }, g.group ? g.group.replace('GROUP_', 'Group ') : 'League table'));
     wrap.appendChild(h('table', { class: 'wc-table' },
       h('thead', null, h('tr', null,
         h('th', null, '#'), h('th', { class: 'tl' }, 'Team'), h('th', null, 'P'),
         h('th', null, 'W'), h('th', null, 'D'), h('th', null, 'L'), h('th', null, 'GD'), h('th', null, 'Pts'))),
       h('tbody', null, (g.table || []).map(r =>
-        h('tr', { class: r.position <= 2 ? 'qual' : '' },
+        h('tr', { class: r.position <= qualN ? 'qual' : '' },
           h('td', null, r.position), h('td', { class: 'tl' }, wcTeam(r.team)),
           h('td', null, r.playedGames), h('td', null, r.won), h('td', null, r.draw), h('td', null, r.lost),
           h('td', null, (r.goalDifference > 0 ? '+' : '') + r.goalDifference), h('td', { class: 'pts' }, r.points))))));
@@ -4406,22 +4408,21 @@ async function renderWorldCupScreen(listEl) {
 
   function drawTabs() {
     tabsEl.innerHTML = '';
-    [['matches', 'Matches'], ['groups', 'Groups'], ['knockout', 'Knockout']].forEach(([k, label]) =>
+    [['matches', 'Matches'], ['groups', 'Table']].forEach(([k, label]) =>
       tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
   }
   function render() {
     drawTabs();
     body.innerHTML = '';
     if (matches == null && !errMsg) { body.appendChild(h('div', { class: 'spinner' })); return; }
-    if (errMsg) { body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '⚽'), h('div', null, errMsg), h('div', { style: { marginTop: '6px', fontSize: '13px' } }, 'Live World Cup data needs a free API key set up on the server.'))); return; }
+    if (errMsg) { body.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '⚽'), h('div', null, errMsg), h('div', { style: { marginTop: '6px', fontSize: '13px' } }, 'Live Premier League data needs a free API key set up on the server.'))); return; }
     if (tab === 'matches') body.appendChild(wcMatchesView(matches));
-    else if (tab === 'groups') body.appendChild(wcGroupsView(standings));
-    else body.appendChild(wcKnockoutView(matches));
+    else body.appendChild(wcGroupsView(standings));
   }
   async function load() {
     try {
       const [mj, sj] = await Promise.all([wcFetch('matches'), wcFetch('standings')]);
-      if (mj && mj.error) { errMsg = mj.message || 'World Cup data is not available right now.'; }
+      if (mj && mj.error) { errMsg = mj.message || 'Premier League data is not available right now.'; }
       else { matches = (mj && mj.matches) || []; standings = (sj && sj.standings) || []; errMsg = null; }
     } catch (e) { errMsg = 'Could not load — check your connection.'; }
     render();
@@ -4810,7 +4811,7 @@ async function settingsScreen() {
     return wrap;
   };
   const wcToggle = (() => {
-    const lbl = () => (form.wcAlerts ? '✓ World Cup score alerts on' : 'World Cup score alerts off');
+    const lbl = () => (form.wcAlerts ? '✓ Premier League score alerts on' : 'Premier League score alerts off');
     const b = h('button', { class: 'btn small ' + (form.wcAlerts ? '' : 'secondary'), type: 'button' }, lbl());
     b.onclick = () => { form.wcAlerts = !form.wcAlerts; b.className = 'btn small ' + (form.wcAlerts ? '' : 'secondary'); b.textContent = lbl(); };
     return b;
@@ -4821,7 +4822,7 @@ async function settingsScreen() {
     h('div', { class: 'section-title' }, 'Grocery list sharing'),
     h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Add the login email of anyone in your household. You\'ll all share ONE grocery list — whoever adds an item, everyone sees it. Stays on until you remove them here.'),
     shareWithEditor(gShareObj),
-    h('div', { class: 'section-title' }, 'FIFA World Cup 2026'),
+    h('div', { class: 'section-title' }, 'Premier League'),
     h('div', { class: 'hint', style: { margin: '2px 2px 8px' } }, 'Get live goal & full-time score updates pushed to your Telegram during matches.'),
     h('div', { class: 'field' }, wcToggle),
     telegramSection(form));

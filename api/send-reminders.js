@@ -162,16 +162,16 @@ async function tg(token, chatId, text) {
   return j;
 }
 
-/* ---- FIFA World Cup live-score push ---- */
+/* ---- Premier League live-score push ---- */
 async function fetchWcMatches(key) {
-  const r = await fetch('https://api.football-data.org/v4/competitions/WC/matches', { headers: { 'X-Auth-Token': key } });
+  const r = await fetch('https://api.football-data.org/v4/competitions/PL/matches', { headers: { 'X-Auth-Token': key } });
   const j = await r.json();
   if (!r.ok) throw new Error((j && j.message) || ('HTTP ' + r.status));
   return j.matches || [];
 }
 function wcStage(stage, group) {
   if (stage === 'GROUP_STAGE') return group ? group.replace('GROUP_', 'Group ') : 'Group stage';
-  return ({ LAST_32: 'Round of 32', LAST_16: 'Round of 16', QUARTER_FINALS: 'Quarter-final',
+  return ({ REGULAR_SEASON: 'Premier League', LAST_32: 'Round of 32', LAST_16: 'Round of 16', QUARTER_FINALS: 'Quarter-final',
     SEMI_FINALS: 'Semi-final', THIRD_PLACE: 'Third place', FINAL: 'Final' }[stage]
     || (stage ? stage.replace(/_/g, ' ') : ''));
 }
@@ -481,10 +481,10 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
   if (wctest) {
     if (!token || !chat) return { uid, wctest: 'no Telegram token/chat in Settings' };
     const fin = (wcMatches || []).filter(m => m.status === 'FINISHED').sort((a, b) => (b.utcDate || '').localeCompare(a.utcDate || ''))[0];
-    if (!fin) return { uid, wctest: 'no finished World Cup match found' };
+    if (!fin) return { uid, wctest: 'no finished match found' };
     const f = (fin.score && fin.score.fullTime) || {};
     const home = (fin.homeTeam && fin.homeTeam.name) || 'Home', away = (fin.awayTeam && fin.awayTeam.name) || 'Away';
-    const sample = `🏁 FULL-TIME — ${wcStage(fin.stage, fin.group)}\n${home} ${f.home == null ? 0 : f.home}–${f.away == null ? 0 : f.away} ${away}\n\n(test message — World Cup score alerts are working ✅)`;
+    const sample = `🏁 FULL-TIME — ${wcStage(fin.stage, fin.group)}\n${home} ${f.home == null ? 0 : f.home}–${f.away == null ? 0 : f.away} ${away}\n\n(test message — Premier League score alerts are working ✅)`;
     try { await tg(token, chat, sample); return { uid, wctest: 'SENT OK' }; }
     catch (e) { return { uid, wctest: 'FAILED', error: String((e && e.message) || e) }; }
   }
@@ -742,7 +742,7 @@ async function processUser(u, apiKey, project, offMin, now, debug, tgtest, wcMat
     await patchData(project, uid, idToken, it.id, d);
   }
 
-  // FIFA World Cup live-score push (only if a key is configured and the user hasn't opted out)
+  // Premier League live-score push (only if a key is configured and the user hasn't opted out)
   if (wcMatches && wcMatches.length && settings.worldcupAlerts !== false && token && chat) {
     const stateItem = items.find(i => i.id === '_wcstate');
     sent += await pushWorldCup(wcMatches, stateItem, project, uid, idToken, token, chat);
@@ -767,7 +767,7 @@ module.exports = async (req, res) => {
   const tgtest = (req.query && req.query.tgtest) === '1';
   const wctest = (req.query && req.query.wctest) === '1';
   const triptest = (req.query && req.query.triptest) === '1';
-  // fetch World Cup matches ONCE per tick (shared across all users) if a key is configured
+  // fetch Premier League matches ONCE per tick (shared across all users) if a key is configured
   let wcMatches = null;
   const footballKey = process.env.FOOTBALL_API_KEY;
   if (footballKey && !tgtest && !triptest) { try { wcMatches = await fetchWcMatches(footballKey); } catch (e) {} }
