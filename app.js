@@ -976,7 +976,10 @@ function buildEditor(cat, data, amOwner) {
       normMySched(data);
       a(h('div', { class: 'section-title' }, 'Basic information'));
       a(field('Title', data, 'title', { placeholder: 'e.g. School concert / Dentist / Piano class' }));
-      a(field('Location name', data, 'location', { placeholder: 'e.g. Sunway Lagoon' }));
+      a(h('div', { class: 'field' }, h('label', null, 'Location name'),
+        h('input', { placeholder: 'e.g. Sunway Lagoon', autocapitalize: 'words', value: data.location || '',
+          oninput: e => data.location = e.target.value,
+          onblur: e => { const v = titleCaseWords(e.target.value); data.location = v; e.target.value = v; } })));
       a(mapFieldBlock(data));
       a(field('Notes', data, 'notes', { type: 'textarea' }));
       a(h('div', { class: 'section-title' }, 'Date and time'));
@@ -1090,6 +1093,9 @@ function buildEditor(cat, data, amOwner) {
 /* Google Maps field with live coordinate lookup (shared by Events + Weekly Schedule) */
 /* Location search: type a place name → live suggestions → pick one → coordinates auto-filled.
    Uses a free OpenStreetMap-based geocoder (Photon). Also accepts pasted coordinates / a Maps link. */
+/* "sunway lagoon" → "Sunway Lagoon" (leaves the rest of each word as typed, so "KLCC" stays) */
+function titleCaseWords(s) { return String(s || '').replace(/\S+/g, w => w.charAt(0).toUpperCase() + w.slice(1)); }
+
 function mapFieldBlock(data) {
   const frag = h('div');
   const status = h('div', { class: 'hint', style: { margin: '4px 2px 12px' } },
@@ -1126,6 +1132,14 @@ function mapFieldBlock(data) {
     clearTimeout(timer);
     const coords = parseLatLng(q); // still accept pasted "lat,lng"
     if (coords) { data.lat = coords[0]; data.lng = coords[1]; data._coordSrc = q; setStatus('', coords[0], coords[1]); sug.style.display = 'none'; return; }
+    // pasted Google Maps link (fallback when search can't find the place)
+    if (/^https?:\/\/|^maps\.app\.goo\.gl|goo\.gl\/maps|google\.[^\s]+\/maps/i.test(q)) {
+      sug.style.display = 'none';
+      const m = q.match(/@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/) || q.match(/[?&]q=(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/) || q.match(/!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)/);
+      if (m) { data.lat = parseFloat(m[1]); data.lng = parseFloat(m[2]); data._coordSrc = q; setStatus(data.location || 'From your link', data.lat, data.lng); }
+      else { delete data.lat; delete data.lng; data._coordSrc = ''; status.textContent = '🔗 Google Maps link saved — directions will open from it. (No pin found in the link, so distance can\'t be shown.)'; }
+      return;
+    }
     if (q.length < 2) { sug.style.display = 'none'; return; }
     timer = setTimeout(() => search(q), 350);
   });
@@ -2519,12 +2533,12 @@ function buildActivityRow(act, rerender) {
   const dt = new Date(d.date + 'T00:00:00');
   const dayLabel = (isNaN(dt) ? d.date : (DOW_SHORT[dt.getDay()] + ', ' + fmtDate(d.date)));
   const timeLabel = d.start ? (fmtHM(d.start) + (d.end ? '–' + fmtHM(d.end) : '')) : '';
-  const offBtn = h('button', { class: 'btn small ' + (d.done ? '' : 'secondary'), type: 'button', onclick: async (e) => {
+  const offBtn = h('button', { class: 'iconbtn small', type: 'button', title: d.done ? 'Turn reminders on' : 'Turn reminders off', onclick: async (e) => {
     e.stopPropagation();
     d.done = !d.done;
     await DB.saveItem(act);
     rerender();
-  } }, d.done ? '🔔 Turn on' : '🔕 Turn off');
+  } }, d.done ? '🔔' : '🔕');
   const cancelBtn = h('button', { class: 'btn small ' + (d.cancelled ? '' : 'secondary'), type: 'button', onclick: async (e) => {
     e.stopPropagation();
     d.cancelled = !d.cancelled;
@@ -2569,7 +2583,8 @@ function mapCard(item) {
   const enc = encodeURIComponent(q);
   const isUrl = /^https?:\/\//i.test(q);
   const openHref = isUrl ? q : 'https://www.google.com/maps/search/?api=1&query=' + enc;
-  const dirHref = 'https://www.google.com/maps/dir/?api=1&destination=' + enc;
+  // a pasted Google link IS the directions target; coords beat text when we have them
+  const dirHref = isUrl ? q : ('https://www.google.com/maps/dir/?api=1&destination=' + ((typeof d.lat === 'number') ? (d.lat + ',' + d.lng) : enc));
   const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Getting there'));
   if (d.location) card.appendChild(h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Location'), h('span', { class: 'v' }, d.location)));
   const info = h('div');
@@ -3557,13 +3572,13 @@ async function renderMySchedScreen(listEl, items, sub) {
       const btns = [];
       if (tab !== 'past') {
         const done = it.data && it.data.done;
-        btns.push(h('button', { class: 'btn small ' + (done ? '' : 'secondary'), type: 'button', onclick: async (e) => {
+        btns.push(h('button', { class: 'iconbtn small', type: 'button', title: done ? 'Turn reminders on' : 'Turn reminders off', onclick: async (e) => {
           e.stopPropagation();
           it.data.done = !it.data.done;
           try { await DB.saveItem(it); } catch (x) {}
           toast(it.data.done ? 'Reminders turned off' : 'Reminders back on');
           render();
-        } }, done ? '🔔 Turn on' : '🔕 Turn off'));
+        } }, done ? '🔔' : '🔕'));
       }
       const action = btns.length ? h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...btns) : null;
       try { // one bad card must not blank the rest of the list
@@ -3608,13 +3623,13 @@ function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
       const btns = [];
       if (tab === 'upcoming' && opts.reminderOff) {
         const done = it.data && it.data.done;
-        btns.push(h('button', { class: 'btn small ' + (done ? '' : 'secondary'), type: 'button', onclick: async (e) => {
+        btns.push(h('button', { class: 'iconbtn small', type: 'button', title: done ? 'Turn reminders on' : 'Turn reminders off', onclick: async (e) => {
           e.stopPropagation();
           it.data.done = !it.data.done;
           try { await DB.saveItem(it); } catch (x) {}
           toast(it.data.done ? 'Reminders turned off' : 'Reminders back on');
           render();
-        } }, done ? '🔔 Turn on' : '🔕 Turn off'));
+        } }, done ? '🔔' : '🔕'));
       }
       const canDup = opts.duplicateAll || (tab === 'archive' && opts.duplicate);
       if (canDup) btns.push(h('button', { class: 'btn small secondary', type: 'button', onclick: async (e) => { e.stopPropagation(); await duplicateItem(cat, it); toast('Duplicated to Upcoming'); navigate('#/cat/' + cat); } }, 'Duplicate'));
