@@ -992,9 +992,25 @@ function buildEditor(cat, data, amOwner) {
             if (fl.endTime) data.end = fl.endTime;
             if (fl.location) { data.location = titleCaseWords(fl.location); if (!data.map) data.map = fl.location; }
             if (fl.notes && !data.notes) data.notes = fl.notes;
+            // pin the scanned location on the map (Google Places) so distance + drive-time reminders work
+            let pinned = false;
+            if (fl.location) {
+              try {
+                const g = await fetch('/api/places?q=' + encodeURIComponent(fl.location)).then(x => x.json());
+                const p = g && Array.isArray(g.places) && g.places[0];
+                if (p && typeof p.lat === 'number') {
+                  data.lat = p.lat; data.lng = p.lng;
+                  data.map = [p.name, p.address].filter(Boolean).join(', ');
+                  data._coordSrc = data.map;
+                  if (p.name) data.location = titleCaseWords(p.name);
+                  pinned = true;
+                }
+              } catch (e) {}
+            }
             normMySched(data);
             rerenderEditor('mysched', data);
-            toast('Filled in from your photo — give it a quick check ✏');
+            toast(pinned ? 'Filled in from your photo — location pinned 📍 Give it a quick check ✏'
+              : 'Filled in from your photo — give it a quick check ✏');
           } else toast('⚠ ' + ((j && j.message) || 'Couldn\'t read details from that photo.'));
         } catch (err) { toast('⚠ Photo reading works on the live site only.'); }
         e.target.value = '';
