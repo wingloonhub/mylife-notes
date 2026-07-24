@@ -1132,12 +1132,19 @@ function mapFieldBlock(data) {
     clearTimeout(timer);
     const coords = parseLatLng(q); // still accept pasted "lat,lng"
     if (coords) { data.lat = coords[0]; data.lng = coords[1]; data._coordSrc = q; setStatus('', coords[0], coords[1]); sug.style.display = 'none'; return; }
-    // pasted Google Maps link (fallback when search can't find the place)
+    // pasted Google Maps link — incl. shared routes / short links (maps.app.goo.gl)
     if (/^https?:\/\/|^maps\.app\.goo\.gl|goo\.gl\/maps|google\.[^\s]+\/maps/i.test(q)) {
       sug.style.display = 'none';
       const m = q.match(/@(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/) || q.match(/[?&]q=(-?\d{1,2}\.\d+),(-?\d{1,3}\.\d+)/) || q.match(/!3d(-?\d{1,2}\.\d+)!4d(-?\d{1,3}\.\d+)/);
-      if (m) { data.lat = parseFloat(m[1]); data.lng = parseFloat(m[2]); data._coordSrc = q; setStatus(data.location || 'From your link', data.lat, data.lng); }
-      else { delete data.lat; delete data.lng; data._coordSrc = ''; status.textContent = '🔗 Google Maps link saved — directions will open from it. (No pin found in the link, so distance can\'t be shown.)'; }
+      if (m) { data.lat = parseFloat(m[1]); data.lng = parseFloat(m[2]); data._coordSrc = q; setStatus(data.location || 'From your link', data.lat, data.lng); return; }
+      // short/share links hide the pin — let the server unshorten it and read the coordinates
+      delete data.lat; delete data.lng; data._coordSrc = '';
+      status.textContent = '🔗 Reading your Google Maps link…';
+      fetch('/api/resolve?url=' + encodeURIComponent(q)).then(r => r.json()).then(j => {
+        if (data.map !== q) return; // the box changed while we were resolving
+        if (j && typeof j.lat === 'number') { data.lat = j.lat; data.lng = j.lng; data._coordSrc = q; setStatus(data.location || 'From your link', j.lat, j.lng); }
+        else status.textContent = '🔗 Google Maps link saved — directions will open from it. (Couldn\'t read a pin from it, so distance can\'t be shown.)';
+      }).catch(() => { if (data.map === q) status.textContent = '🔗 Google Maps link saved — directions will open from it.'; });
       return;
     }
     if (q.length < 2) { sug.style.display = 'none'; return; }
