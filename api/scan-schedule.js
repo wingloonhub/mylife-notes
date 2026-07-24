@@ -73,9 +73,30 @@ module.exports = async (req, res) => {
     let fields;
     try { fields = JSON.parse(m[0]); } catch (e) { res.status(200).json({ error: 'bad-json' }); return; }
     const clean = s => String(s == null ? '' : s).trim();
+    // The app's date/time inputs silently reject anything but strict YYYY-MM-DD / HH:MM —
+    // normalise whatever shape the model produced ("3/8/26", "9.30am", "2026-8-3", …).
+    const p2 = n => String(n).padStart(2, '0');
+    const normDate = s => {
+      s = clean(s);
+      let m = s.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);                 // YYYY-M-D
+      if (m) return m[1] + '-' + p2(m[2]) + '-' + p2(m[3]);
+      m = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);       // D/M/YYYY or D/M/YY (Malaysia style)
+      if (m) { let y = m[3].length === 2 ? '20' + m[3] : m[3]; return y + '-' + p2(m[2]) + '-' + p2(m[1]); }
+      return '';
+    };
+    const normTime = s => {
+      s = clean(s).toLowerCase().replace(/\./g, ':');                 // "9.30am" → "9:30am"
+      const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
+      if (!m) return '';
+      let hh = parseInt(m[1], 10); const mm = m[2] || '00';
+      if (m[3] === 'pm' && hh < 12) hh += 12;
+      if (m[3] === 'am' && hh === 12) hh = 0;
+      if (hh > 23) return '';
+      return p2(hh) + ':' + mm;
+    };
     res.status(200).json({ fields: {
-      title: clean(fields.title), date: clean(fields.date), time: clean(fields.time),
-      endDate: clean(fields.endDate), endTime: clean(fields.endTime),
+      title: clean(fields.title), date: normDate(fields.date), time: normTime(fields.time),
+      endDate: normDate(fields.endDate), endTime: normTime(fields.endTime),
       location: clean(fields.location), notes: clean(fields.notes)
     } });
   } catch (e) {
