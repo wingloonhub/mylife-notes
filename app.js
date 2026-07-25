@@ -1012,8 +1012,8 @@ function buildEditor(cat, data, amOwner) {
     case 'mysched': {
       if (data.schedType == null) data.schedType = 'once';
       normMySched(data);
-      // 📷 snap a flyer / ticket / appointment card → Gemini reads it → form fills itself
-      const camInput = h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, onchange: async e => {
+      // 📷 photograph OR upload a flyer / ticket / appointment card → AI reads it → form fills itself
+      const onSchedPhoto = async e => {
         const f = e.target.files && e.target.files[0];
         if (!f) return;
         toast('📷 Reading the photo…');
@@ -1052,10 +1052,14 @@ function buildEditor(cat, data, amOwner) {
           } else toast('⚠ ' + ((j && j.message) || 'Couldn\'t read details from that photo.'));
         } catch (err) { toast('⚠ Photo reading works on the live site only.'); }
         e.target.value = '';
-      } });
-      a(h('div', { class: 'field' }, camInput,
-        h('button', { class: 'btn secondary', type: 'button', style: { width: '100%' }, onclick: () => camInput.click() }, '📷 Fill from a photo'),
-        h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Snap a flyer, ticket, invite or appointment card and the details fill themselves in.')));
+      };
+      const camInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', style: { display: 'none' }, onchange: onSchedPhoto });
+      const upInput = h('input', { type: 'file', accept: 'image/*', style: { display: 'none' }, onchange: onSchedPhoto });
+      a(h('div', { class: 'field' }, camInput, upInput,
+        h('div', { style: { display: 'flex', gap: '8px' } },
+          h('button', { class: 'btn secondary', type: 'button', style: { flex: '1' }, onclick: () => camInput.click() }, '📷 Take a photo'),
+          h('button', { class: 'btn secondary', type: 'button', style: { flex: '1' }, onclick: () => upInput.click() }, '🖼 Upload a photo')),
+        h('div', { class: 'hint', style: { marginTop: '6px' } }, 'Photograph or upload a flyer, ticket, invite or appointment card and the details fill themselves in.')));
       if (data.cardType == null) data.cardType = 'event';
       a(selectField('Type', data, 'cardType',
         [{ value: 'event', label: 'Event' }, { value: 'trip', label: 'Trip' }],
