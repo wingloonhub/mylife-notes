@@ -951,7 +951,14 @@ function buildEditor(cat, data, amOwner) {
          { value: 'monthly', label: 'Monthly — a date each month' }],
         () => rerenderEditor('reminder', data)));
       if (data.schedule === 'once') {
-        a(field('Remind me on', data, 'when', { type: 'datetime-local' }));
+        // calendar date + time, kept in sync in `when` (YYYY-MM-DDTHH:MM)
+        const curDate = () => (data.when && data.when.split('T')[0]) || '';
+        const curTime = () => (data.when && data.when.split('T')[1]) || '09:00';
+        a(h('div', { class: 'row2' },
+          h('div', { class: 'field' }, h('label', null, 'Date'),
+            h('input', { type: 'date', value: curDate(), oninput: e => { data.when = (e.target.value || '') + 'T' + curTime(); } })),
+          h('div', { class: 'field' }, h('label', null, 'Time'),
+            h('input', { type: 'time', value: curTime(), oninput: e => { data.when = (curDate() || localDateStr(new Date())) + 'T' + (e.target.value || '09:00'); } }))));
       } else if (data.schedule === 'weekly' || data.schedule === 'fortnightly') {
         if (data.weekday == null) data.weekday = '1'; // Monday
         const wdOpts = [1, 2, 3, 4, 5, 6, 0].map(i => ({ value: String(i), label: DOW[i] })); // Monday → Sunday
@@ -2555,6 +2562,11 @@ async function renderReminderScreen(listEl, items, sub) {
   listEl.innerHTML = '';
   listEl.appendChild(tabsEl);
   listEl.appendChild(body);
+  const REM_KEEP = 86400000; // a turned-off one-off reminder lingers 24h, then auto-deletes
+  // housekeeping: remove one-off reminders that were turned off over 24h ago
+  const stale = items.filter(it => { const d = it.data || {}; return remSched(d) === 'once' && d.active === false && d.offAt && (Date.now() - d.offAt > REM_KEEP); });
+  for (const s of stale) { try { await DB.deleteItem('reminder', s.id); } catch (e) {} }
+  if (stale.length) items = items.filter(it => !stale.includes(it));
   const refresh = async () => { try { items = await DB.listItems('reminder'); } catch (e) {} draw(); };
 
   function reminderCard(it, inSetup) {
@@ -2562,9 +2574,13 @@ async function renderReminderScreen(listEl, items, sub) {
     const now = Date.now();
     const nagging = remNagging(d, now);
     const { next } = remOccur(d, now);
+    const offMeta = () => { // one-off reminders show a countdown to auto-removal
+      if (remSched(d) === 'once' && d.offAt) { const left = Math.max(0, Math.ceil((d.offAt + 86400000 - Date.now()) / 3600000)); return '🔕 Off · clears in ' + left + 'h'; }
+      return '🔕 Off';
+    };
     const meta = h('div', { class: 'meta' },
       nagging ? '🔔 Reminding now — ' + remFreqTxt(d.freq)
-        : (d.active === false ? '🔕 Off'
+        : (d.active === false ? offMeta()
           : (next ? ('Next: ' + fmtMs(next) + (d.freq !== 'once' ? ' · ' + remFreqTxt(d.freq) : '')) : remSummary(d))));
     const actions = h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' } });
     if (nagging) {
@@ -2572,9 +2588,9 @@ async function renderReminderScreen(listEl, items, sub) {
         e.stopPropagation();
         const cur = remOccur(d, Date.now()).cur;
         if (cur) d._ackKey = cur.key;
-        if (remSched(d) === 'once') d.active = false; // one-time: done for good
+        if (remSched(d) === 'once') { d.active = false; d.offAt = Date.now(); } // one-time: done — clears in 24h
         try { await DB.saveItem(it); } catch (x) {}
-        toast('Turned off until next time'); refresh();
+        toast(remSched(d) === 'once' ? 'Turned off — clears in 24h' : 'Turned off until next time'); refresh();
       } }, '⏹ Turn off');
       actions.appendChild(off);
     }
@@ -2582,7 +2598,8 @@ async function renderReminderScreen(listEl, items, sub) {
       const toggle = h('button', { class: 'btn small ' + (d.active === false ? 'secondary' : ''), type: 'button', onclick: async (e) => {
         e.stopPropagation();
         d.active = d.active === false ? true : false;
-        if (d.active) delete d._ackKey; // re-enabling clears any prior stop
+        if (d.active) { delete d._ackKey; delete d.offAt; } // re-enabling clears the stop + the 24h timer
+        else if (remSched(d) === 'once') d.offAt = Date.now(); // turned off → start the 24h auto-clear
         try { await DB.saveItem(it); } catch (x) {}
         refresh();
       } }, d.active === false ? '🔕 Off — tap to enable' : '🔔 On');
