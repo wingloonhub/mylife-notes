@@ -1759,7 +1759,7 @@ function pricesEditor(data) {
 function shoppingEditor(data) {
   if (!Array.isArray(data.items)) data.items = [];
   const cart = h('div');
-  const addPanel = h('div');
+  const addPanel = h('div', null, h('div', { class: 'hint' }, 'Loading…'));
 
   function drawCart() {
     cart.innerHTML = '';
@@ -1774,60 +1774,9 @@ function shoppingEditor(data) {
     });
   }
 
-  async function drawAddPanel(selectedCat) {
-    addPanel.innerHTML = '';
-    addPanel.appendChild(h('div', { class: 'hint' }, 'Loading…'));
-    const [cats, saved] = await Promise.all([DB.getShopCats(), DB.listItems('shopitem')]);
-    addPanel.innerHTML = '';
-    // optional category filter to narrow the saved list
-    if (cats.length) {
-      const catSel = h('select', { onchange: e => drawAddPanel(e.target.value) },
-        h('option', { value: '' }, 'All categories'),
-        ...cats.map(c => h('option', { value: c }, c)));
-      catSel.value = selectedCat || '';
-      addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Category'), catSel));
-    }
-    const filtered = saved.filter(s => !selectedCat || (s.data || {}).category === selectedCat);
-    const itemSel = h('select', { class: 'grow', style: { minWidth: '0' } },
-      h('option', { value: '' }, '— Choose an item —'),
-      h('option', { value: '__new' }, '➕ Create new item'),
-      ...filtered.map(s => { const d = s.data || {}; const c = cheapestPrice(d.prices); return h('option', { value: s.id }, (d.title || 'Item') + (c ? ('  —  ' + fmtMYR(c.price) + ' @ ' + c.shop) : '')); }));
-    const nameField = h('div', { class: 'field', style: { display: 'none' } },
-      h('input', { placeholder: 'New item name', autocapitalize: 'words' }));
-    const nameInput = nameField.querySelector('input');
-    const qtyInput = h('input', { placeholder: 'e.g. 2, 1kg, 500ml' });
-    const info = h('div', { class: 'hint', style: { marginTop: '6px' } }, '');
-    itemSel.onchange = () => {
-      if (itemSel.value === '__new') { nameField.style.display = ''; info.textContent = ''; nameInput.focus(); return; }
-      nameField.style.display = 'none';
-      const s = filtered.find(x => x.id === itemSel.value); const c = s ? cheapestPrice(s.data.prices) : null;
-      info.textContent = c ? ('Cheapest: ' + fmtMYR(c.price) + ' @ ' + c.shop) : (s ? 'No saved price for this item yet' : '');
-    };
-    const addBtn = h('button', { class: 'btn small', type: 'button', onclick: () => {
-      if (itemSel.value === '__new') {
-        const nm = (nameInput.value || '').trim();
-        if (!nm) { toast('Enter the item name'); return; }
-        data.items.push({ name: nm, qty: (qtyInput.value || '').trim(), category: selectedCat || '', remarks: '', checked: false });
-        toast('Added');
-      } else {
-        const s = filtered.find(x => x.id === itemSel.value);
-        if (!s) { toast('Choose an item or create a new one'); return; }
-        const d = s.data || {}; const c = cheapestPrice(d.prices);
-        const remark = c ? ('Cheapest at ' + c.shop + ' — ' + fmtMYR(c.price)) : '';
-        data.items.push({ name: d.title || '', qty: (qtyInput.value || '').trim(), category: d.category || '', remarks: remark, checked: false });
-        toast(c ? ('💡 Cheapest at ' + c.shop + ' — ' + fmtMYR(c.price)) : 'Added');
-      }
-      drawCart();
-      itemSel.value = ''; nameInput.value = ''; nameField.style.display = 'none'; qtyInput.value = ''; info.textContent = '';
-    } }, '+ Add');
-    addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Item'), itemSel));
-    addPanel.appendChild(nameField);
-    addPanel.appendChild(h('div', { class: 'field' }, h('label', null, 'Quantity'), qtyInput));
-    addPanel.appendChild(h('div', null, addBtn, info));
-  }
-
   drawCart();
-  drawAddPanel('');
+  buildShoppingAddPanel(async obj => { data.items.push(obj); drawCart(); })
+    .then(p => { addPanel.innerHTML = ''; addPanel.appendChild(p); });
   return h('div', null,
     h('div', { class: 'section-title', style: { marginTop: '4px' } }, 'Add item'),
     addPanel,
@@ -1835,7 +1784,8 @@ function shoppingEditor(data) {
     cart);
 }
 
-/* shared "add item" panel: pick a saved item or create new, enter only quantity. onAdd(itemObj). */
+/* shared "add item" panel. First choose how to add: "New item" (type the name) or a category
+   (then Item becomes a dropdown of that category's saved items). Enter quantity. onAdd(itemObj). */
 async function buildShoppingAddPanel(onAdd) {
   const panel = h('div');
   async function draw(selectedCat) {
@@ -1843,49 +1793,51 @@ async function buildShoppingAddPanel(onAdd) {
     panel.appendChild(h('div', { class: 'hint' }, 'Loading…'));
     const [cats, saved] = await Promise.all([DB.getShopCats(), DB.listItems('shopitem')]);
     panel.innerHTML = '';
-    if (cats.length) {
-      const catSel = h('select', { onchange: e => draw(e.target.value) },
-        h('option', { value: '' }, 'All categories'),
-        ...cats.map(c => h('option', { value: c }, c)));
-      catSel.value = selectedCat || '';
-      panel.appendChild(h('div', { class: 'field' }, h('label', null, 'Category'), catSel));
-    }
-    const filtered = saved.filter(s => !selectedCat || (s.data || {}).category === selectedCat);
-    const itemSel = h('select', { class: 'grow', style: { minWidth: '0' } },
-      h('option', { value: '' }, '— Choose an item —'),
-      h('option', { value: '__new' }, '➕ Create new item'),
-      ...filtered.map(s => { const d = s.data || {}; const c = cheapestPrice(d.prices); return h('option', { value: s.id }, (d.title || 'Item') + (c ? ('  —  ' + fmtMYR(c.price) + ' / ' + unitOf(d) + ' @ ' + c.shop) : '')); }));
-    const nameField = h('div', { class: 'field', style: { display: 'none' } }, h('input', { placeholder: 'New item name', autocapitalize: 'words' }));
-    const nameInput = nameField.querySelector('input');
+    // mode selector: New item, or one of your categories
+    const catSel = h('select', { onchange: e => draw(e.target.value) },
+      h('option', { value: '', selected: !selectedCat ? 'selected' : null }, '➕ New item'),
+      ...cats.map(c => h('option', { value: c, selected: selectedCat === c ? 'selected' : null }, c)));
+    panel.appendChild(h('div', { class: 'field' }, h('label', null, 'Add from'), catSel));
+
     const qtyInput = h('input', { placeholder: 'e.g. 2, 1kg, 500ml' });
     const info = h('div', { class: 'hint', style: { marginTop: '6px' } }, '');
-    itemSel.onchange = () => {
-      if (itemSel.value === '__new') { nameField.style.display = ''; info.textContent = ''; nameInput.focus(); return; }
-      nameField.style.display = 'none';
-      const s = filtered.find(x => x.id === itemSel.value); const c = s ? cheapestPrice(s.data.prices) : null;
-      info.textContent = c ? ('Cheapest: ' + fmtMYR(c.price) + ' / ' + unitOf(s.data) + ' @ ' + c.shop) : (s ? 'No saved price for this item yet' : '');
-    };
-    const addBtn = h('button', { class: 'btn small', type: 'button', onclick: async () => {
-      let obj;
-      if (itemSel.value === '__new') {
-        const nm = (nameInput.value || '').trim();
-        if (!nm) { toast('Enter the item name'); return; }
-        obj = { name: nm, qty: (qtyInput.value || '').trim(), category: selectedCat || '', remarks: '', checked: false };
-        toast('Added');
+    let nameInput = null, itemSel = null, getObj;
+
+    if (!selectedCat) {
+      // NEW ITEM → free-text placeholder to key in
+      nameInput = h('input', { placeholder: 'Type the item name', autocapitalize: 'words' });
+      panel.appendChild(h('div', { class: 'field' }, h('label', null, 'Item'), nameInput));
+      getObj = () => { const nm = (nameInput.value || '').trim(); if (!nm) { toast('Type the item name'); return null; }
+        toast('Added'); return { name: nm, qty: (qtyInput.value || '').trim(), category: '', remarks: '', checked: false }; };
+    } else {
+      // CATEGORY → dropdown of that category's saved items
+      const filtered = saved.filter(s => (s.data || {}).category === selectedCat);
+      if (!filtered.length) {
+        panel.appendChild(h('div', { class: 'field' }, h('label', null, 'Item'),
+          h('div', { class: 'hint' }, 'No saved items in “' + selectedCat + '” yet. Add them in the Saved items tab, or choose “➕ New item” above.')));
+        getObj = () => { toast('No saved items in this category yet'); return null; };
       } else {
-        const s = filtered.find(x => x.id === itemSel.value);
-        if (!s) { toast('Choose an item or create a new one'); return; }
-        const d = s.data || {}; const c = cheapestPrice(d.prices);
-        const cheapTxt = c ? ('Cheapest at ' + c.shop + ' — ' + fmtMYR(c.price) + ' / ' + unitOf(d)) : '';
-        obj = { name: d.title || '', qty: (qtyInput.value || '').trim(), category: d.category || '', remarks: cheapTxt, savedId: s.id, savedImg: (d.images || [])[0] || '', checked: false };
-        toast(c ? ('💡 ' + cheapTxt) : 'Added');
+        itemSel = h('select', { class: 'grow', style: { minWidth: '0' }, onchange: () => {
+          const s = filtered.find(x => x.id === itemSel.value); const c = s ? cheapestPrice(s.data.prices) : null;
+          info.textContent = c ? ('Cheapest: ' + fmtMYR(c.price) + ' / ' + unitOf(s.data) + ' @ ' + c.shop) : (s ? 'No saved price yet' : '');
+        } },
+          h('option', { value: '' }, '— Choose an item —'),
+          ...filtered.map(s => { const d = s.data || {}; const c = cheapestPrice(d.prices); return h('option', { value: s.id }, (d.title || 'Item') + (c ? ('  —  ' + fmtMYR(c.price) + ' / ' + unitOf(d) + ' @ ' + c.shop) : '')); }));
+        panel.appendChild(h('div', { class: 'field' }, h('label', null, 'Item'), itemSel));
+        getObj = () => { const s = filtered.find(x => x.id === itemSel.value); if (!s) { toast('Choose an item'); return null; }
+          const d = s.data || {}; const c = cheapestPrice(d.prices); const cheapTxt = c ? ('Cheapest at ' + c.shop + ' — ' + fmtMYR(c.price) + ' / ' + unitOf(d)) : '';
+          toast(c ? ('💡 ' + cheapTxt) : 'Added');
+          return { name: d.title || '', qty: (qtyInput.value || '').trim(), category: d.category || '', remarks: cheapTxt, savedId: s.id, savedImg: (d.images || [])[0] || '', checked: false }; };
       }
-      await onAdd(obj);
-      itemSel.value = ''; nameInput.value = ''; nameField.style.display = 'none'; qtyInput.value = ''; info.textContent = '';
-    } }, '+ Add');
-    panel.appendChild(h('div', { class: 'field' }, h('label', null, 'Item'), itemSel));
-    panel.appendChild(nameField);
+    }
     panel.appendChild(h('div', { class: 'field' }, h('label', null, 'Quantity'), qtyInput));
+    const addBtn = h('button', { class: 'btn small', type: 'button', onclick: async () => {
+      const obj = getObj(); if (!obj) return;
+      await onAdd(obj);
+      qtyInput.value = ''; info.textContent = '';
+      if (nameInput) { nameInput.value = ''; nameInput.focus(); }
+      if (itemSel) itemSel.value = '';
+    } }, '+ Add');
     panel.appendChild(h('div', null, addBtn, info));
   }
   await draw('');
