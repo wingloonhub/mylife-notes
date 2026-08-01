@@ -159,6 +159,10 @@ body {
 /* Quick Note sticky toolbar — stays under the app bar while the note scrolls */
 .qn-bar { position: sticky; top: calc(var(--safe-top) + 52px); z-index: 15;
   background: var(--bg); margin: 8px -16px 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.qn-title { width: 100%; margin-bottom: 8px; font-size: 18px; font-weight: 700;
+  background: var(--card); border: 1px solid var(--line); color: var(--text);
+  border-radius: 12px; padding: 11px 13px; outline: none; }
+.qn-title:focus { border-color: var(--accent); }
 .qn-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .qn-tools .rte-toolbar { margin: 0; }
 .qn-sep { width: 1px; align-self: stretch; min-height: 30px; background: var(--line); margin: 0 2px; }
@@ -168,6 +172,16 @@ body {
 .qn-modebtn:active, .qn-share:active { transform: scale(.95); }
 .qn-modebtn.on { border-color: var(--accent); background: rgba(109,99,255,.18); }
 .qn-share { border-color: rgba(37,211,102,.55); background: rgba(37,211,102,.14); }
+/* on phones the header must stay slim — icons only, tighter chips */
+@media (max-width: 520px) {
+  .qn-modebtn span, .qn-share span, .qn-tools .hl-label, .qn-tools .btn-label { display: none; }
+  .qn-modebtn, .qn-share { padding: 7px 10px; font-size: 16px; }
+  .qn-tools { gap: 6px; }
+  .qn-tools .rte-toolbar { gap: 6px; }
+  .qn-tools .rte-btn { min-width: 38px; padding: 7px 0; font-size: 14px; }
+  .qn-title { font-size: 16px; padding: 9px 12px; margin-bottom: 7px; }
+  .qn-sep { min-height: 26px; }
+}
 .note-pad { margin-top: 4px; }
 .pad-toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px;
   position: sticky; top: 0; background: var(--bg); padding: 4px 0; z-index: 5; }

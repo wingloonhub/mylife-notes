@@ -912,7 +912,9 @@ function buildEditor(cat, data, amOwner) {
       break;
     }
     case 'quick': {
-      a(field('Title', data, 'title', { placeholder: 'Title' }));
+      // title lives inside the sticky header (below) so it stays visible while scrolling
+      const titleInput = h('input', { class: 'title-input qn-title', placeholder: 'Title',
+        value: data.title || '', oninput: e => data.title = e.target.value });
       // rich-text editor: lift its formatting toolbars out so they can live in the sticky bar
       const rte = richTextEditor(data, 'bodyHtml', data.body);
       const fmtBar = rte._toolbar, hiBar = rte._hiBar, ed = rte._ed;
@@ -936,8 +938,9 @@ function buildEditor(cat, data, amOwner) {
       tDraw.onclick = () => setMode('draw');
       const waBtn = h('button', { class: 'qn-share', type: 'button', title: 'Share to WhatsApp' }, '📲', h('span', null, 'WhatsApp'));
       waBtn.onclick = () => shareNoteToWhatsApp(data);
-      // sticky header — stays on screen while the note scrolls, so every tool is one tap away
+      // sticky header — title + every tool stay on screen while the note scrolls
       const bar = h('div', { class: 'qn-bar' },
+        titleInput,
         h('div', { class: 'qn-tools' },
           tType, tDraw,
           h('span', { class: 'qn-sep' }),
@@ -2922,7 +2925,8 @@ function richTextEditor(data, key, legacyPlain) {
     document.execCommand('insertHTML', false, '<div class="chk">' + CB_INNER + '</div>');
     sync();
   };
-  const checkBtn = h('button', { class: 'rte-btn', type: 'button', onmousedown: e => { e.preventDefault(); insertCheck(); } }, '☑ Checkbox');
+  const checkBtn = h('button', { class: 'rte-btn', type: 'button', title: 'Checkbox',
+    onmousedown: e => { e.preventDefault(); insertCheck(); } }, '☑', h('span', { class: 'btn-label' }, ' Checkbox'));
   ed.addEventListener('click', e => {
     const cb = e.target.closest && e.target.closest('.cb');
     if (!cb || !ed.contains(cb)) return;
@@ -2965,7 +2969,7 @@ function richTextEditor(data, key, legacyPlain) {
     btn(h('b', null, 'B'), 'bold'),
     btn(h('i', null, 'I'), 'italic'),
     btn(h('u', null, 'U'), 'underline'),
-    btn('• List', 'insertUnorderedList'),
+    btn(h('span', null, '•', h('span', { class: 'btn-label' }, ' List')), 'insertUnorderedList'),
     checkBtn);
   const hiBar = h('div', { class: 'rte-toolbar hilites' },
     h('span', { class: 'hl-label' }, 'Highlight:'),
