@@ -2899,6 +2899,22 @@ function richTextEditor(data, key, legacyPlain) {
   ed.addEventListener('input', () => data[key] = ed.innerHTML);
   const exec = (c, val) => { document.execCommand(c, false, val == null ? null : val); ed.focus(); data[key] = ed.innerHTML; };
   const btn = (content, c) => h('button', { class: 'rte-btn', type: 'button', onmousedown: e => { e.preventDefault(); exec(c); } }, content);
+  // checkbox line: insert a ☐ you can tap to tick. The box is contenteditable=false so tapping toggles it.
+  const insertCheck = () => {
+    ed.focus();
+    document.execCommand('insertHTML', false, '<div class="chk"><span class="cb" contenteditable="false" style="cursor:pointer;user-select:none;margin-right:2px">☐</span>&nbsp;</div>');
+    sync();
+  };
+  const checkBtn = h('button', { class: 'rte-btn', type: 'button', onmousedown: e => { e.preventDefault(); insertCheck(); } }, '☑ Checkbox');
+  ed.addEventListener('click', e => {
+    const cb = e.target.closest && e.target.closest('.cb');
+    if (!cb || !ed.contains(cb)) return;
+    const ticked = cb.textContent.trim() === '☑';
+    cb.textContent = ticked ? '☐' : '☑';
+    const line = cb.parentElement;
+    if (line) { line.style.textDecoration = ticked ? '' : 'line-through'; line.style.opacity = ticked ? '' : '.55'; }
+    sync(); // marks the note dirty → auto-save
+  });
   // highlight swatches (and a "clear highlight")
   const hilite = (color) => h('button', { class: 'rte-btn hl' + (color ? '' : ' none'), type: 'button',
     style: color ? { background: color } : {}, title: color ? 'Highlight' : 'No highlight',
@@ -2912,7 +2928,8 @@ function richTextEditor(data, key, legacyPlain) {
     btn(h('b', null, 'B'), 'bold'),
     btn(h('i', null, 'I'), 'italic'),
     btn(h('u', null, 'U'), 'underline'),
-    btn('• List', 'insertUnorderedList'));
+    btn('• List', 'insertUnorderedList'),
+    checkBtn);
   const hiBar = h('div', { class: 'rte-toolbar hilites' },
     h('span', { class: 'hl-label' }, 'Highlight:'),
     hilite('#fff59d'), hilite('#a5d6a7'), hilite('#f48fb1'), hilite('#90caf9'), hilite(''));
