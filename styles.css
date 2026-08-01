@@ -157,8 +157,11 @@ body {
 .draw-canvas { flex: 1; width: 100%; background: #fff; border-radius: 12px; touch-action: none; cursor: crosshair; }
 .mode-toggle { display: flex; gap: 8px; margin-bottom: 10px; }
 /* Quick Note sticky toolbar — stays under the app bar while the note scrolls */
-.qn-bar { position: sticky; top: calc(var(--safe-top) + 52px); z-index: 15;
-  background: var(--bg); margin: 8px -16px 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+/* fixed (not sticky) so it can never scroll away; .qn-bar-spacer reserves its height in the flow */
+.qn-bar { position: fixed; top: 0; left: 0; right: 0; z-index: 15;
+  width: 100%; max-width: 640px; margin: 0 auto;
+  background: var(--bg); padding: 8px 16px 10px; border-bottom: 1px solid var(--line); }
+.qn-bar-spacer { margin-bottom: 12px; }
 .qn-title { width: 100%; margin-bottom: 8px; font-size: 18px; font-weight: 700;
   background: var(--card); border: 1px solid var(--line); color: var(--text);
   border-radius: 12px; padding: 11px 13px; outline: none; }

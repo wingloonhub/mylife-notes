@@ -947,9 +947,29 @@ function buildEditor(cat, data, amOwner) {
           fmtBar, hiBar,
           h('span', { class: 'qn-sep' }),
           waBtn));
-      // sit the sticky bar flush under the (dynamically sized) app bar
-      setTimeout(() => { const ab = document.querySelector('.appbar'); if (ab) bar.style.top = ab.offsetHeight + 'px'; }, 0);
-      a(bar);
+      // The bar is FIXED, not sticky: a sticky bar can only stay pinned inside its own block,
+      // so it slid out of view once you typed to the end of a long note. A spacer holds its
+      // place in the flow, and we follow visualViewport so the phone keyboard can't push it off.
+      const spacer = h('div', { class: 'qn-bar-spacer' });
+      const vv = window.visualViewport;
+      const place = () => {
+        if (!bar.isConnected) return; // navigated away — nothing to position
+        const ab = document.querySelector('.appbar');
+        const abH = ab ? ab.offsetHeight : 60;
+        const off = vv ? vv.offsetTop : 0;
+        // keyboard open (viewport shifted) → sit at the top of what's visible; otherwise under the app bar
+        bar.style.top = (off > 1 ? off : abH) + 'px';
+        spacer.style.height = bar.offsetHeight + 'px';
+      };
+      let queued = false;
+      const placeSoon = () => { if (queued) return; queued = true; requestAnimationFrame(() => { queued = false; place(); }); };
+      setTimeout(place, 0);
+      if (window.ResizeObserver) new ResizeObserver(placeSoon).observe(bar);
+      if (vv) { vv.addEventListener('resize', placeSoon); vv.addEventListener('scroll', placeSoon); }
+      window.addEventListener('resize', placeSoon);
+      window.addEventListener('scroll', placeSoon, { passive: true });
+      ed.addEventListener('focus', placeSoon);
+      a(bar, spacer);
       a(textWrap);
       a(drawWrap);
       // open in whichever mode the note already uses
