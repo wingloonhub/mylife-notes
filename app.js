@@ -2900,9 +2900,12 @@ function richTextEditor(data, key, legacyPlain) {
   const exec = (c, val) => { document.execCommand(c, false, val == null ? null : val); ed.focus(); data[key] = ed.innerHTML; };
   const btn = (content, c) => h('button', { class: 'rte-btn', type: 'button', onmousedown: e => { e.preventDefault(); exec(c); } }, content);
   // checkbox line: insert a ☐ you can tap to tick. The box is contenteditable=false so tapping toggles it.
+  const CB_INNER = '<span class="cb" contenteditable="false" style="cursor:pointer;user-select:none;margin-right:2px">☐</span>&nbsp;';
+  const newCheckLine = () => { const d = document.createElement('div'); d.className = 'chk'; d.innerHTML = CB_INNER; return d; };
+  const caretToEnd = node => { const r = document.createRange(); r.selectNodeContents(node); r.collapse(false); const s = window.getSelection(); s.removeAllRanges(); s.addRange(r); };
   const insertCheck = () => {
     ed.focus();
-    document.execCommand('insertHTML', false, '<div class="chk"><span class="cb" contenteditable="false" style="cursor:pointer;user-select:none;margin-right:2px">☐</span>&nbsp;</div>');
+    document.execCommand('insertHTML', false, '<div class="chk">' + CB_INNER + '</div>');
     sync();
   };
   const checkBtn = h('button', { class: 'rte-btn', type: 'button', onmousedown: e => { e.preventDefault(); insertCheck(); } }, '☑ Checkbox');
@@ -2914,6 +2917,26 @@ function richTextEditor(data, key, legacyPlain) {
     const line = cb.parentElement;
     if (line) { line.style.textDecoration = ticked ? '' : 'line-through'; line.style.opacity = ticked ? '' : '.55'; }
     sync(); // marks the note dirty → auto-save
+  });
+  // Enter inside a checkbox line → start a fresh checkbox on the next line; Enter on an EMPTY
+  // checkbox line ends the checklist (turns it back into a plain line).
+  ed.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    const sel = window.getSelection();
+    if (!sel.rangeCount) return;
+    const n = sel.anchorNode;
+    const chk = (n.nodeType === 1 ? n : n.parentElement) && (n.nodeType === 1 ? n : n.parentElement).closest('.chk');
+    if (!chk || !ed.contains(chk)) return;
+    e.preventDefault();
+    const text = (chk.textContent || '').replace(/[☐☑ ]/g, '').trim();
+    if (!text) {
+      const plain = document.createElement('div'); plain.innerHTML = '<br>';
+      chk.replaceWith(plain);
+      const r = document.createRange(); r.setStart(plain, 0); r.collapse(true); sel.removeAllRanges(); sel.addRange(r);
+    } else {
+      const nl = newCheckLine(); chk.after(nl); caretToEnd(nl);
+    }
+    sync();
   });
   // highlight swatches (and a "clear highlight")
   const hilite = (color) => h('button', { class: 'rte-btn hl' + (color ? '' : ' none'), type: 'button',
