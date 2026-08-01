@@ -913,26 +913,40 @@ function buildEditor(cat, data, amOwner) {
     }
     case 'quick': {
       a(field('Title', data, 'title', { placeholder: 'Title' }));
-      const textWrap = h('div', null, richTextEditor(data, 'bodyHtml', data.body));
+      // rich-text editor: lift its formatting toolbars out so they can live in the sticky bar
+      const rte = richTextEditor(data, 'bodyHtml', data.body);
+      const fmtBar = rte._toolbar, hiBar = rte._hiBar, ed = rte._ed;
+      const textWrap = h('div', null, ed);
       const drawWrap = h('div');
       let drawBuilt = false;
-      const tType = h('button', { class: 'btn small', type: 'button' }, '⌨️ Type');
-      const tDraw = h('button', { class: 'btn small secondary', type: 'button' }, '✍️ Write / draw');
+      // mode buttons: Type vs Write/draw, shown as tappable icon chips
+      const tType = h('button', { class: 'qn-modebtn on', type: 'button', title: 'Type' }, '⌨️', h('span', null, 'Type'));
+      const tDraw = h('button', { class: 'qn-modebtn', type: 'button', title: 'Write / draw' }, '✍️', h('span', null, 'Draw'));
       const setMode = (m) => {
         if (m === 'draw' && !drawBuilt) { drawWrap.appendChild(drawingCanvas(data)); drawBuilt = true; }
         textWrap.style.display = m === 'text' ? '' : 'none';
         drawWrap.style.display = m === 'draw' ? '' : 'none';
-        tType.className = 'btn small' + (m === 'text' ? '' : ' secondary');
-        tDraw.className = 'btn small' + (m === 'draw' ? '' : ' secondary');
+        // formatting tools only make sense while typing
+        fmtBar.style.display = m === 'text' ? '' : 'none';
+        hiBar.style.display = m === 'text' ? '' : 'none';
+        tType.className = 'qn-modebtn' + (m === 'text' ? ' on' : '');
+        tDraw.className = 'qn-modebtn' + (m === 'draw' ? ' on' : '');
       };
       tType.onclick = () => setMode('text');
       tDraw.onclick = () => setMode('draw');
-      a(h('div', { class: 'mode-toggle' }, tType, tDraw));
-      a((() => {
-        const b = h('button', { class: 'btn small secondary', type: 'button', style: { marginBottom: '10px' } }, '📲 Share to WhatsApp');
-        b.onclick = () => shareNoteToWhatsApp(data);
-        return h('div', null, b);
-      })());
+      const waBtn = h('button', { class: 'qn-share', type: 'button', title: 'Share to WhatsApp' }, '📲', h('span', null, 'WhatsApp'));
+      waBtn.onclick = () => shareNoteToWhatsApp(data);
+      // sticky header — stays on screen while the note scrolls, so every tool is one tap away
+      const bar = h('div', { class: 'qn-bar' },
+        h('div', { class: 'qn-tools' },
+          tType, tDraw,
+          h('span', { class: 'qn-sep' }),
+          fmtBar, hiBar,
+          h('span', { class: 'qn-sep' }),
+          waBtn));
+      // sit the sticky bar flush under the (dynamically sized) app bar
+      setTimeout(() => { const ab = document.querySelector('.appbar'); if (ab) bar.style.top = ab.offsetHeight + 'px'; }, 0);
+      a(bar);
       a(textWrap);
       a(drawWrap);
       // open in whichever mode the note already uses
@@ -2956,7 +2970,10 @@ function richTextEditor(data, key, legacyPlain) {
   const hiBar = h('div', { class: 'rte-toolbar hilites' },
     h('span', { class: 'hl-label' }, 'Highlight:'),
     hilite('#fff59d'), hilite('#a5d6a7'), hilite('#f48fb1'), hilite('#90caf9'), hilite(''));
-  return h('div', null, toolbar, hiBar, ed);
+  const root = h('div', null, toolbar, hiBar, ed);
+  // expose the pieces so the Quick Note screen can lift the toolbars into a sticky header
+  root._toolbar = toolbar; root._hiBar = hiBar; root._ed = ed;
+  return root;
 }
 
 /* paint a list of vector strokes onto a 2d context (shared by editor + read-only view) */

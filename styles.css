@@ -156,6 +156,18 @@ body {
 .draw-bar { display: flex; gap: 8px; justify-content: flex-end; margin-bottom: 8px; }
 .draw-canvas { flex: 1; width: 100%; background: #fff; border-radius: 12px; touch-action: none; cursor: crosshair; }
 .mode-toggle { display: flex; gap: 8px; margin-bottom: 10px; }
+/* Quick Note sticky toolbar — stays under the app bar while the note scrolls */
+.qn-bar { position: sticky; top: calc(var(--safe-top) + 52px); z-index: 15;
+  background: var(--bg); margin: 8px -16px 12px; padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.qn-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.qn-tools .rte-toolbar { margin: 0; }
+.qn-sep { width: 1px; align-self: stretch; min-height: 30px; background: var(--line); margin: 0 2px; }
+.qn-modebtn, .qn-share { display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--card); color: var(--text);
+  border-radius: 10px; padding: 7px 11px; font-size: 14px; font-weight: 600; }
+.qn-modebtn:active, .qn-share:active { transform: scale(.95); }
+.qn-modebtn.on { border-color: var(--accent); background: rgba(109,99,255,.18); }
+.qn-share { border-color: rgba(37,211,102,.55); background: rgba(37,211,102,.14); }
 .note-pad { margin-top: 4px; }
 .pad-toolbar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 8px;
   position: sticky; top: 0; background: var(--bg); padding: 4px 0; z-index: 5; }
