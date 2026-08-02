@@ -69,8 +69,10 @@ module.exports = async (req, res) => {
   const today = new Date(Date.now() + off * 60000).toISOString().slice(0, 10);
   const prompt = kind === 'carpark'
     ? ('You are reading a photo taken in a car park — a pillar / level / zone sign, a bay marking, or the parked car with signage around it. '
-      + 'Extract the parking spot identifier. Reply with ONLY a JSON object, no markdown, exactly these keys: {"lot":"","notes":""}. '
+      + 'Extract the parking spot identifier. Reply with ONLY a JSON object, no markdown, exactly these keys: {"lot":"","place":"","notes":""}. '
       + 'lot = the full spot identifier joining everything visible, e.g. "Level B2 · Zone C · Pillar 34" (use " · " between parts). '
+      + 'place = the name of the building / mall / venue ONLY if its name or logo is actually legible in the photo '
+      + '(e.g. "1 Utama", "Sunway Pyramid", "KLCC"); leave it an empty string if no venue name is visible — never guess. '
       + 'notes = any other wayfinding detail (nearest lift/entrance, section colour), one short line. Empty strings if unreadable.')
     : buildPrompt(today);
   try {
@@ -80,7 +82,7 @@ module.exports = async (req, res) => {
     let fields;
     try { fields = JSON.parse(m[0]); } catch (e) { res.status(200).json({ error: 'bad-json' }); return; }
     const clean = s => String(s == null ? '' : s).trim();
-    if (kind === 'carpark') { res.status(200).json({ fields: { lot: clean(fields.lot), notes: clean(fields.notes) } }); return; }
+    if (kind === 'carpark') { res.status(200).json({ fields: { lot: clean(fields.lot), place: clean(fields.place), notes: clean(fields.notes) } }); return; }
     // The app's date/time inputs silently reject anything but strict YYYY-MM-DD / HH:MM —
     // normalise whatever shape the model produced ("3/8/26", "9.30am", "2026-8-3", …).
     const p2 = n => String(n).padStart(2, '0');

@@ -724,16 +724,21 @@ function buildEditor(cat, data, amOwner) {
         h('div', { class: 'hint', style: { marginTop: '6px' } }, 'One tap saves the photo, reads the lot sign, and records the time and your GPS position.')));
       a(field('Lot / spot', data, 'lot', { placeholder: 'e.g. Level B2 · Zone C · Pillar 34' }));
       a(field('Parked at', data, 'when', { type: 'datetime-local' }));
-      a(h('div', { class: 'field' }, h('label', null, 'Location'),
+      a(field('Building / place', data, 'location', { placeholder: 'e.g. 1 Utama Shopping Centre',
+        hint: 'Filled in from your GPS position — correct it here if it named the wrong place.' }));
+      a(h('div', { class: 'field' }, h('label', null, 'GPS position'),
         h('div', { class: 'hint', style: { margin: '2px 0 6px' } },
-          (typeof data.lat === 'number') ? ('📍 ' + (data.location ? data.location + ' — ' : '') + data.lat.toFixed(5) + ', ' + data.lng.toFixed(5)) : 'No GPS position yet.'),
+          (typeof data.lat === 'number')
+            ? ('📍 ' + data.lat.toFixed(5) + ', ' + data.lng.toFixed(5) + (data.address ? ' — ' + data.address : ''))
+            : 'No GPS position yet.'),
         h('button', { class: 'btn small secondary', type: 'button', onclick: async e => {
           const b = e.target; b.disabled = true; b.textContent = 'Locating…';
           const pos = await currentPosition();
           if (pos) {
             data.lat = pos.lat; data.lng = pos.lon;
             data.map = pos.lat.toFixed(6) + ',' + pos.lon.toFixed(6); data._coordSrc = data.map;
-            data.location = (await reverseGeo(pos.lat, pos.lon)) || data.location || '';
+            const w = await whereAmI(pos.lat, pos.lon);
+            if (w.name) { data.location = w.name; data.address = w.address; }
             rerenderEditor('carpark', data); toast('📍 Location updated');
           } else { b.disabled = false; b.textContent = '📍 Use my current location'; toast('⚠ GPS unavailable — allow location access'); }
         } }, '📍 Use my current location')));
@@ -2841,6 +2846,16 @@ async function reverseGeo(lat, lng) {
     return [p.name, p.street, p.city || p.district || p.county].filter(Boolean).slice(0, 3).join(', ');
   } catch (e) { return ''; }
 }
+/* The building you're standing in, e.g. "1 Utama Shopping Centre" — Google Places knows venue
+   names; OSM only knows the road outside, which is useless when you're parked inside a mall. */
+async function whereAmI(lat, lng) {
+  try {
+    const j = await fetch('/api/places?type=nearby&lat=' + lat + '&lng=' + lng).then(r => r.json());
+    const p = ((j || {}).places || [])[0];
+    if (p && p.name) return { name: p.name, address: p.address || '' };
+  } catch (e) {}
+  return { name: (await reverseGeo(lat, lng)) || '', address: '' }; // free fallback
+}
 /* Car Park one-tap capture: from a photo File, fill `data` with the saved photo, the picture's
    own timestamp, the user's GPS position (+ readable place name) and the lot read off the sign. */
 async function readParkingSnap(file, data) {
@@ -2854,13 +2869,17 @@ async function readParkingSnap(file, data) {
   if (pos) {
     data.lat = pos.lat; data.lng = pos.lon;
     data.map = pos.lat.toFixed(6) + ',' + pos.lon.toFixed(6); data._coordSrc = data.map;
-    const nearby = await reverseGeo(pos.lat, pos.lon);
-    if (nearby) data.location = nearby;
+    const w = await whereAmI(pos.lat, pos.lon);
+    if (w.name) { data.location = w.name; data.address = w.address; }
   }
   try {
     const r = await fetch('/api/scan-schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ image: dataUrl, kind: 'carpark' }) });
     const j = await r.json();
-    if (j && j.fields && j.fields.lot) { data.lot = j.fields.lot; if (j.fields.notes) data.notes = j.fields.notes; }
+    const f = (j && j.fields) || {};
+    if (f.lot) data.lot = f.lot;
+    if (f.notes) data.notes = f.notes;
+    // basements kill GPS — if we couldn't place you, use the venue name printed on the sign
+    if (f.place && !data.location) data.location = f.place;
   } catch (e) {}
   return { pos: !!pos };
 }
@@ -4387,8 +4406,10 @@ function renderCarParkScreen(listEl, items, fab) {
     }
     const d = item.data || {};
     const card = h('div', { class: 'detail-card', style: { marginTop: '12px' } }, h('h3', null, d.lot || 'My parking spot'),
+      // the building is what you actually look for when you come back — keep it up top
+      d.location ? h('div', { class: 'meta', style: { margin: '-4px 0 8px', fontSize: '15px' } }, '📍 ' + d.location) : null,
       d.when ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Parked at'), h('span', { class: 'v' }, fmtDT(d.when))) : null,
-      d.location ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Location'), h('span', { class: 'v' }, d.location)) : null,
+      d.address ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Address'), h('span', { class: 'v' }, d.address)) : null,
       d.notes ? h('div', { class: 'kv' }, h('span', { class: 'k' }, 'Notes'), h('span', { class: 'v' }, d.notes)) : null);
     (async () => { const s = await DB.getImage((d.images || [])[0]); if (s) card.appendChild(h('img', { class: 'detail-img', src: s, onclick: () => openLightbox(s) })); })();
     card.appendChild(h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '8px' } },
