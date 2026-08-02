@@ -413,6 +413,7 @@ const CATS = [
   { key: 'party', name: 'Party Planner', emoji: '🎉' },
   { key: 'trips', name: 'Trip Planner', emoji: '🧳', hidden: true }, // retired — trips now live in My Schedule (Type: Trip)
   { key: 'shopping', name: 'Grocery Planner', emoji: '🛒' },
+  { key: 'buy', name: 'Shopping', singular: 'Item', emoji: '🛍️' },
   { key: 'exercise', name: 'Exercise', singular: 'Exercise', emoji: '🏋️', hidden: true },
   { key: 'shopitem', name: 'Saved Item', emoji: '🏷️', hidden: true },
   { key: 'tripcat', name: 'Trip Area', emoji: '🏷️', hidden: true },
@@ -443,6 +444,7 @@ const CAT_GUIDE = {
   tax: { what: 'File receipts by year and category with a photo, ready for tax time.', unique: 'Auto-organises receipts by tax year and category, so filing season is just a scroll.', reminders: null },
   party: { what: 'Plan a party — guests, budget, things to buy and games — and share it live with family by email.', unique: 'Live co-planning — everyone you invite edits the same party in real time.', reminders: null },
   trips: { what: 'Plan local or overseas trips: flights, travellers and their tickets, hotel check-in/out and a packing list. Can be shared live with your group.', unique: 'Keeps each traveller\'s ticket / boarding-pass QR in one place so it\'s ready at the airport.', reminders: 'Switched on in Settings → Trip Reminders and applied to every trip — Telegram alerts timed off departure, the return flight, and hotel check-in/out.' },
+  buy: { what: 'One running list of things you need to buy — type the item, tap Add. Tick it off once you\'ve bought it, and add the shop, price or a note by tapping the item.', unique: 'Not groceries: the bigger one-off things you keep meaning to buy. Marks items Urgent or Soon and totals up roughly what the list will cost you.', reminders: null },
   shopping: { what: 'A shared grocery list for the household — whoever adds an item, everyone sees it. You can also save regular items with prices by shop.', unique: 'One list the whole household updates live, plus price-per-shop so you know where it\'s cheaper.', reminders: 'No timed reminders. It\'s a live shared list; set who it\'s shared with in Settings.' },
   recipes: { what: 'Save recipes with ingredients, step-by-step method and photos; share any recipe to WhatsApp neatly formatted.', unique: 'Shares to WhatsApp as a clean, formatted recipe — not a wall of plain text.', reminders: null },
   warranty: { what: 'Track what you bought, where, and when the warranty expires, with the receipt photo. Cards flag Active / Expiring soon / Expired.', unique: 'Works out the warranty status for you and flags anything expiring soon.', reminders: 'No Telegram push — it shows the expiry status visually in the app.' },
@@ -902,6 +904,21 @@ function buildEditor(cat, data, amOwner) {
       a(field('List name', data, 'title', { placeholder: 'e.g. Weekly groceries' }));
       a(h('div', { class: 'section-title' }, 'Items'));
       a(shoppingEditor(data));
+      break;
+    }
+    case 'buy': {
+      a(field('What do I need to buy?', data, 'title', { placeholder: 'e.g. Running shoes' }));
+      a(h('div', { class: 'row2' },
+        h('div', { class: 'field' }, h('label', null, 'How many'),
+          h('input', { type: 'number', inputmode: 'numeric', min: '1', placeholder: '1', value: data.qty || '',
+            oninput: e => data.qty = e.target.value })),
+        h('div', { class: 'field' }, h('label', null, 'Price each (RM)'),
+          h('input', { type: 'number', inputmode: 'decimal', step: '0.01', placeholder: 'e.g. 250', value: data.price || '',
+            oninput: e => data.price = e.target.value }))));
+      a(field('Where to buy', data, 'shop', { placeholder: 'e.g. Decathlon, Shopee' }));
+      a(selectField('How urgent', data, 'urgency',
+        [{ value: '', label: 'Normal' }, { value: 'soon', label: 'Need it soon' }, { value: 'urgent', label: 'Urgent' }]));
+      a(field('Notes', data, 'notes', { type: 'textarea', placeholder: 'e.g. size 9, the grey pair' }));
       break;
     }
     case 'shopitem': {
@@ -2349,6 +2366,7 @@ function summary(cat, data) {
       return { title: data.title || 'Recipe', meta: ingCount + ' ingredients · ' + (data.steps || []).length + ' steps', thumb, fav: data.fav };
     }
     case 'carpark': return { title: data.lot || 'Parking spot', meta: [data.when ? fmtDT(data.when) : '', data.location].filter(Boolean).join(' · '), thumb: (data.images || [])[0] };
+    case 'buy': return { title: data.title || 'Item', meta: [data.qty && Number(data.qty) > 1 ? '×' + data.qty : '', data.shop, data.price ? fmtMoneyMaybe(data.price) : ''].filter(Boolean).join(' · ') };
     case 'records': return { title: data.title || 'Record', meta: data.recType === 'address' ? (data.recipient || 'Address') : (data.bank || 'Bank account') };
     case 'vault': return { title: data.platform || 'Login', meta: data.username || '' };
     case 'memberships': return { title: data.title || 'Membership', meta: data.member || data.number || '', thumb: (data.images || [])[0] };
@@ -3281,6 +3299,7 @@ function homeCount(cat, items) {
     case 'party': return plural(items.filter(it => !partyIsArchived(it)).length, 'upcoming party', 'upcoming parties');
     case 'trips': return plural(items.filter(it => !(d(it).endDate && dayPassed(d(it).endDate))).length, 'upcoming trip');
     case 'shopping': return plural(items.reduce((n, it) => n + (d(it).items || []).filter(t => !t.checked).length, 0), 'item to buy', 'items to buy');
+    case 'buy': return plural(items.filter(it => !d(it).bought).length, 'item to buy', 'items to buy');
     case 'recipes': return plural(items.length, 'recipe');
     case 'warranty': return plural(items.filter(it => !(d(it).expiry && dayPassed(d(it).expiry))).length, 'active warranty', 'active warranties');
     case 'quick': return plural(items.length, 'note');
@@ -3348,6 +3367,7 @@ async function listScreen(cat, sub) {
   if (cat === 'reminder') { renderReminderScreen(listEl, items, sub); return; }
   if (cat === 'workout') { renderWorkoutScreen(listEl, items, fab, sub); return; }
   if (cat === 'carpark') { renderCarParkScreen(listEl, items, fab); return; }
+  if (cat === 'buy') { renderBuyScreen(listEl, items, fab); return; }
   if (cat === 'vault') { renderVaultScreen(listEl, items, fab); return; }
   if (cat === 'memberships') { renderMembershipList(listEl, items); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
@@ -4376,6 +4396,91 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
    unlock by re-entering your own account password. Passwords are masked until you reveal them. */
 /* Car Park — a single self-updating card. No + button: opening the screen shows your current spot
    and a big Snap button. Each snap overwrites the one card with a fresh photo/lot/time/GPS. */
+/* Shopping — one running list of things to buy. Each item is its own card, so ticking one
+   never rewrites the whole list (and can't lose anything the way a nested array can). */
+function renderBuyScreen(listEl, items, fab) {
+  if (fab) fab.onclick = () => navigate('#/edit/buy');
+  const body = h('div', { class: 'list' });
+  const refresh = async () => { try { items = await DB.listItems('buy'); } catch (e) {} draw(); };
+
+  // quick add: type a name, hit Add (or Enter) — details can be filled in later by tapping the row
+  const input = h('input', { placeholder: 'What do I need to buy?', autocapitalize: 'sentences' });
+  const addNow = async () => {
+    const name = (input.value || '').trim();
+    if (!name) return;
+    input.value = '';
+    try { await DB.saveItem({ cat: 'buy', data: { title: name, addedAt: Date.now() } }); }
+    catch (e) { toast('⚠ Not saved — check your connection'); return; }
+    await refresh();
+    input.focus();
+  };
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); addNow(); } });
+  const addBox = h('div', { class: 'buy-add' }, input,
+    h('button', { class: 'btn small', type: 'button', onclick: addNow }, 'Add'));
+
+  const lineTotal = d => (Number(d.price) || 0) * (Number(d.qty) || 1);
+
+  function row(it) {
+    const d = it.data || {};
+    const cb = h('div', { class: 'cb' + (d.bought ? ' on' : '') });
+    const bits = [d.qty && Number(d.qty) > 1 ? '×' + d.qty : '', d.shop, d.price ? fmtMoneyMaybe(d.price) : '', d.notes]
+      .filter(Boolean).join(' · ');
+    const tag = d.urgency === 'urgent' ? h('span', { class: 'buy-tag urgent' }, 'Urgent')
+      : d.urgency === 'soon' ? h('span', { class: 'buy-tag' }, 'Soon') : null;
+    const r = h('div', { class: 'check-row' + (d.bought ? ' done' : '') }, cb,
+      h('div', { class: 'ttl', onclick: () => navigate('#/edit/buy/' + it.id) },
+        d.title || 'Item', tag, bits ? h('div', { class: 'px' }, bits) : null),
+      h('button', { class: 'row-del', type: 'button', title: 'Delete', onclick: async e => {
+        e.stopPropagation();
+        if (!confirmDel('Remove "' + (d.title || 'this item') + '" from the list?')) return;
+        await DB.deleteItem('buy', it.id); await refresh();
+      } }, '🗑'));
+    cb.onclick = async () => {
+      d.bought = !d.bought; d.boughtAt = d.bought ? Date.now() : null;
+      try { await DB.saveItem({ id: it.id, cat: 'buy', data: d }); }
+      catch (e) { toast('⚠ Not saved — check your connection'); return; }
+      await refresh();
+    };
+    return r;
+  }
+
+  function draw() {
+    body.innerHTML = '';
+    body.appendChild(addBox);
+    const todo = items.filter(it => !(it.data || {}).bought);
+    const done = items.filter(it => (it.data || {}).bought)
+      .sort((a, b) => ((b.data || {}).boughtAt || 0) - ((a.data || {}).boughtAt || 0));
+    // urgent first, then the order they were added
+    const rank = it => ({ urgent: 0, soon: 1 }[(it.data || {}).urgency] != null ? { urgent: 0, soon: 1 }[(it.data || {}).urgency] : 2);
+    todo.sort((a, b) => rank(a) - rank(b) || ((a.data || {}).addedAt || 0) - ((b.data || {}).addedAt || 0));
+
+    if (!todo.length && !done.length) {
+      body.appendChild(h('div', { class: 'empty', style: { paddingTop: '30px' } }, h('div', { class: 'big' }, '🛍️'),
+        h('div', null, 'Nothing on the list. Type what you need above and tap Add.')));
+      return;
+    }
+    const est = todo.reduce((n, it) => n + lineTotal(it.data || {}), 0);
+    body.appendChild(h('div', { class: 'section-title' },
+      'To buy (' + todo.length + ')' + (est ? ' · about ' + fmtMYR(est) : '')));
+    if (!todo.length) body.appendChild(h('div', { class: 'hint', style: { margin: '0 2px 8px' } }, 'All done — nothing left to buy.'));
+    todo.forEach(it => body.appendChild(row(it)));
+
+    if (done.length) {
+      body.appendChild(h('div', { class: 'section-title' }, 'Bought (' + done.length + ')'));
+      done.forEach(it => body.appendChild(row(it)));
+      body.appendChild(h('button', { class: 'btn small secondary', type: 'button', style: { marginTop: '10px' },
+        onclick: async () => {
+          if (!confirmDel('Clear all ' + done.length + ' bought item' + (done.length === 1 ? '' : 's') + '?')) return;
+          for (const it of done) { try { await DB.deleteItem('buy', it.id); } catch (e) {} }
+          await refresh();
+        } }, '🧹 Clear bought'));
+    }
+  }
+  listEl.innerHTML = '';
+  listEl.appendChild(body);
+  draw();
+}
+
 function renderCarParkScreen(listEl, items, fab) {
   if (fab) fab.style.display = 'none';
   let item = (items && items[0]) || null;

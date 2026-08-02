@@ -273,6 +273,13 @@ body {
 .check-row.done .ttl { text-decoration: line-through; color: var(--muted); }
 .check-row .ttl { flex: 1; font-weight: 600; }
 .check-row .px { color: var(--muted); font-size: 13px; }
+/* Shopping (things to buy) */
+.buy-add { display: flex; gap: 8px; margin-bottom: 14px; }
+.buy-add input { flex: 1; min-width: 0; }
+.buy-add .btn { flex: 0 0 auto; padding-left: 18px; padding-right: 18px; }
+.buy-tag { margin-left: 7px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+  padding: 2px 7px; border-radius: 999px; background: rgba(109,99,255,.2); color: var(--accent); vertical-align: 1px; }
+.buy-tag.urgent { background: rgba(255,107,107,.18); color: #ff8a8a; }
 
 /* chips / tabs */
 .tabs { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 12px; -webkit-overflow-scrolling: touch; }
