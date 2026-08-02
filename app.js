@@ -3369,7 +3369,7 @@ async function listScreen(cat, sub) {
   if (cat === 'carpark') { renderCarParkScreen(listEl, items, fab); return; }
   if (cat === 'buy') { renderBuyScreen(listEl, items, fab); return; }
   if (cat === 'vault') { renderVaultScreen(listEl, items, fab); return; }
-  if (cat === 'memberships') { renderMembershipList(listEl, items); return; }
+  if (cat === 'memberships' || cat === 'records') { renderReorderList(listEl, cat, items); return; }
   if (cat === 'party') { renderArchiveList(listEl, 'party', items, partyIsArchived, { duplicate: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'mysched') { renderMySchedScreen(listEl, items, sub); return; }
   if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past', reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
@@ -4600,25 +4600,26 @@ function renderVaultScreen(listEl, items, fab) {
 }
 
 /* Memberships — manual ranking with ↑/↓ (sorted by data.sortIndex; you choose what's on top) */
-function renderMembershipList(listEl, items) {
+/* A plain list the user arranges by hand: ↑/↓ on every card, order kept in data.sortIndex. */
+function renderReorderList(listEl, cat, items) {
   const ord = it => (it.data && it.data.sortIndex != null) ? it.data.sortIndex : 1e9;
   async function move(i, j) {
     if (j < 0 || j >= items.length) return;
     items.forEach((it, idx) => { if (it.data.sortIndex == null) it.data.sortIndex = idx; }); // persist current order first
     const a = items[i], b = items[j];
     const t = a.data.sortIndex; a.data.sortIndex = b.data.sortIndex; b.data.sortIndex = t;
-    try { await DB.saveItem(a); await DB.saveItem(b); } catch (e) {}
+    try { await DB.saveItem(a); await DB.saveItem(b); } catch (e) { toast('⚠ Not saved — check your connection'); }
     render();
   }
   function render() {
     items.sort((a, b) => ord(a) - ord(b));
     listEl.innerHTML = '';
-    if (!items.length) { listEl.appendChild(emptyState('memberships')); return; }
+    if (!items.length) { listEl.appendChild(emptyState(cat)); return; }
     items.forEach((it, i) => {
       const up = h('button', { class: 'iconbtn small', type: 'button', title: 'Move up', style: { opacity: i === 0 ? '.3' : '1' }, onclick: (e) => { e.stopPropagation(); move(i, i - 1); } }, '↑');
       const down = h('button', { class: 'iconbtn small', type: 'button', title: 'Move down', style: { opacity: i === items.length - 1 ? '.3' : '1' }, onclick: (e) => { e.stopPropagation(); move(i, i + 1); } }, '↓');
       const actions = h('div', { style: { display: 'flex', gap: '4px' } }, up, down);
-      listEl.appendChild(buildRow('memberships', it, { action: actions }));
+      listEl.appendChild(buildRow(cat, it, { action: actions }));
     });
   }
   render();
