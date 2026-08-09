@@ -21,6 +21,20 @@ function buildPrompt(today) {
     + 'notes = any other useful details (dress code, doctor name, seat, booking number), one short line.';
 }
 
+function receiptPrompt(today) {
+  return 'You are reading a photo of a receipt, invoice or bill (usually Malaysian) that is being filed for tax relief. '
+    + 'Today is ' + today + '. IMPORTANT: slash/dot dates are Malaysian DAY/MONTH order — "3/8/26" means 3 August 2026, never March 8. '
+    + 'Reply with ONLY a JSON object, no markdown, exactly these keys: '
+    + '{"title":"","category":"","date":"YYYY-MM-DD","amount":"","notes":""}. '
+    + 'title = the merchant or clinic name and what it was for, e.g. "Klinik Pergigian Wong — scaling". '
+    + 'category = exactly one of "Dental", "Lifestyle" or "Other". Dental = dentist, orthodontist, dental clinic. '
+    + 'Lifestyle = books, sports equipment, gym membership, internet/phone bills, computers and smartphones. Other = anything else. '
+    + 'amount = the FINAL total actually paid, including any SST or service charge — digits only, e.g. "182.50" (no "RM", no commas, no thousands separators). '
+    + 'date = the invoice or receipt date. '
+    + 'notes = the invoice/receipt number plus any other useful detail, one short line. '
+    + 'Use an empty string for anything not visible in the image — never invent a value.';
+}
+
 async function askClaude(key, image, prompt) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -74,6 +88,7 @@ module.exports = async (req, res) => {
       + 'place = the name of the building / mall / venue ONLY if its name or logo is actually legible in the photo '
       + '(e.g. "1 Utama", "Sunway Pyramid", "KLCC"); leave it an empty string if no venue name is visible — never guess. '
       + 'notes = any other wayfinding detail (nearest lift/entrance, section colour), one short line. Empty strings if unreadable.')
+    : kind === 'receipt' ? receiptPrompt(today)
     : buildPrompt(today);
   try {
     const text = claudeKey ? await askClaude(claudeKey, image, prompt) : await askGemini(geminiKey, image, prompt);
@@ -94,6 +109,17 @@ module.exports = async (req, res) => {
       if (m) { let y = m[3].length === 2 ? '20' + m[3] : m[3]; return y + '-' + p2(m[2]) + '-' + p2(m[1]); }
       return '';
     };
+    if (kind === 'receipt') {
+      const CATS = ['Dental', 'Lifestyle', 'Other'];
+      const cat = CATS.find(c => c.toLowerCase() === clean(fields.category).toLowerCase()) || '';
+      const amount = clean(fields.amount).replace(/[^\d.]/g, '').replace(/\.(?=.*\.)/g, ''); // keep one decimal point
+      const date = normDate(fields.date);
+      res.status(200).json({ fields: {
+        title: clean(fields.title), category: cat, date,
+        year: date ? date.slice(0, 4) : '', amount, notes: clean(fields.notes)
+      } });
+      return;
+    }
     const normTime = s => {
       s = clean(s).toLowerCase().replace(/\./g, ':');                 // "9.30am" → "9:30am"
       const m = s.match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);

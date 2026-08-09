@@ -593,9 +593,9 @@ function shareWithEditor(obj, onChange) {
 }
 
 /* single image picker -> stores image id in obj[key] */
-function imagePicker(obj, key) {
+function imagePicker(obj, key, opts) {
   if (!Array.isArray(obj[key])) obj[key] = obj[key] ? [obj[key]] : [];
-  return imageMulti(obj, key, false);
+  return imageMulti(obj, key, false, opts || {});
 }
 function imageMulti(obj, key, multiple = true, opts = {}) {
   if (!Array.isArray(obj[key])) obj[key] = [];
@@ -608,6 +608,8 @@ function imageMulti(obj, key, multiple = true, opts = {}) {
         const data = await compressImage(f);
         const imgId = await DB.saveImage(data);
         obj[key].push(imgId); draw();
+        // let the caller react to a freshly added photo (Tax Receipts reads it and fills the form)
+        if (opts.onAdd) { try { await opts.onAdd(data, imgId); } catch (err) {} }
       } };
     if (capture) props.capture = 'environment';
     return h('label', { class: 'upload' }, icon, h('input', props));
@@ -839,6 +841,25 @@ function buildEditor(cat, data, amOwner) {
       break;
     }
     case 'tax': {
+      // snapping / uploading the receipt reads it and fills the form in (see the photo picker below)
+      const readReceipt = async (dataUrl) => {
+        toast('🧾 Reading the receipt…');
+        try {
+          const r = await fetch('/api/scan-schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: dataUrl, kind: 'receipt' }) });
+          const j = await r.json();
+          const f = (j && j.fields) || {};
+          if (!f.title && !f.amount && !f.date) { toast('⚠ Could not read that receipt — fill it in by hand'); return; }
+          if (f.title) data.title = f.title;
+          if (f.category) data.taxCat = f.category;
+          if (f.date) data.invoiceDate = f.date;
+          if (f.year) data.year = f.year;
+          if (f.amount) data.amount = f.amount;
+          if (f.notes && !data.notes) data.notes = f.notes;
+          rerenderEditor('tax', data);
+          toast('✓ Details filled in — check them before saving');
+        } catch (e) { toast('⚠ Could not read that receipt — fill it in by hand'); }
+      };
       a(field('Title', data, 'title', { placeholder: 'e.g. Dental — scaling' }));
       a(selectField('Category', data, 'taxCat',
         [{ value: '', label: '— Select —' }, { value: 'Dental', label: 'Dental' }, { value: 'Lifestyle', label: 'Lifestyle' }, { value: 'Other', label: 'Other' }]));
@@ -847,7 +868,8 @@ function buildEditor(cat, data, amOwner) {
         field('Year', data, 'year', { type: 'number', inputmode: 'numeric', placeholder: '2026' }),
         field('Amount (RM)', data, 'amount', { type: 'number', inputmode: 'decimal', placeholder: '0.00' })));
       a(h('div', { class: 'section-title' }, 'Receipt photo'));
-      a(imagePicker(data, 'images'));
+      a(imagePicker(data, 'images', { onAdd: readReceipt }));
+      a(h('div', { class: 'hint', style: { margin: '6px 2px 0' } }, 'Snap 📷 or upload ➕ the receipt and the title, category, date and amount fill themselves in.'));
       a(field('Notes', data, 'notes', { type: 'textarea' }));
       break;
     }
