@@ -26,12 +26,20 @@ module.exports = async (req, res) => {
     return;
   }
   const q = req.query || {};
+  // optional filters passed straight through (used by the Results tab to page back through history)
+  const extra = [];
+  if (/^\d{4}$/.test(String(q.season || ''))) extra.push('season=' + q.season);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(q.dateFrom || ''))) extra.push('dateFrom=' + q.dateFrom);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(String(q.dateTo || ''))) extra.push('dateTo=' + q.dateTo);
+  if (/^(FINISHED|SCHEDULED|TIMED|LIVE|IN_PLAY|PAUSED|POSTPONED)$/.test(String(q.status || ''))) extra.push('status=' + q.status);
+
   let path;
   if (q.type === 'standings') path = 'competitions/' + COMP + '/standings';
   else if (q.type === 'clstandings') path = 'competitions/CL/standings';       // Champions League table
   else if (q.type === 'match' && /^\d+$/.test(String(q.id || ''))) path = 'matches/' + q.id; // single match → goal scorers
   else if (q.type === 'team' && /^\d+$/.test(String(q.id || ''))) path = 'teams/' + q.id + '/matches'; // one club, all feed competitions
   else path = 'competitions/' + COMP + '/matches';
+  if (extra.length) path += (path.includes('?') ? '&' : '?') + extra.join('&');
   try {
     const r = await fetch('https://api.football-data.org/v4/' + path, {
       headers: { 'X-Auth-Token': key }
