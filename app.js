@@ -4673,7 +4673,124 @@ function wcFmtTime(utc) {
 /* the season a date belongs to: the PL season starting in August, so Jan–Jun belongs to the previous year */
 function wcSeasonOf(d) { return d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear() - 1; }
 
-/* one finished match, tappable to reveal what the feed actually carries for it */
+/* ---- Goal scorers and cards -------------------------------------------
+   football-data's free plan carries no match events, so the scoresheet
+   comes from ESPN's open scoreboard feed. One call covers every match
+   played on a date, so results sharing a date share a single fetch, and
+   each day is kept in memory for the rest of the session. */
+const ESPN_URL = 'https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?dates=';
+const _espnDays = new Map(); // YYYYMMDD -> the events ESPN lists for that day
+
+/* club names as the two feeds spell them, reduced to one comparable form
+   ("Brighton & Hove Albion FC" and "Brighton & Hove Albion" -> "brighton and hove albion") */
+function wcNameKey(name) {
+  return String(name || '').replace(/\s*&\s*/g, ' and ').replace(/^AFC\s+/i, '')
+    .replace(/\s+A?FC$/i, '').trim().toLowerCase();
+}
+function wcYmd(d) {
+  return d.getUTCFullYear() + String(d.getUTCMonth() + 1).padStart(2, '0') + String(d.getUTCDate()).padStart(2, '0');
+}
+async function espnDay(ymd) {
+  if (_espnDays.has(ymd)) return _espnDays.get(ymd);
+  try {
+    const r = await fetch(ESPN_URL + ymd);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const j = await r.json();
+    const events = (j && j.events) || [];
+    _espnDays.set(ymd, events); // only a real answer is worth remembering — a failed day retries
+    return events;
+  } catch (e) { return []; }
+}
+
+/* the goals and cards of one finished match, or null when the feed has no record of it */
+async function wcMatchEvents(m) {
+  const kick = new Date(m.utcDate);
+  if (isNaN(kick)) return null;
+  const home = wcNameKey(wcTeam(m.homeTeam)), away = wcNameKey(wcTeam(m.awayTeam));
+  // a late kick-off can land on the neighbouring date in ESPN's calendar
+  const days = [0, -1, 1].map(off => wcYmd(new Date(kick.getTime() + off * 864e5)));
+  for (const ymd of days) {
+    const ev = (await espnDay(ymd)).find(e => {
+      const c = (e.competitions || [])[0], teams = (c && c.competitors) || [];
+      const hn = teams.find(t => t.homeAway === 'home'), an = teams.find(t => t.homeAway === 'away');
+      return hn && an && wcNameKey(hn.team && hn.team.displayName) === home
+        && wcNameKey(an.team && an.team.displayName) === away;
+    });
+    if (ev) return espnScoresheet(ev);
+  }
+  return null;
+}
+
+function espnScoresheet(ev) {
+  const c = (ev.competitions || [])[0] || {};
+  const homeId = ((c.competitors || []).find(t => t.homeAway === 'home') || {}).id;
+  const details = (c.details || []).slice().sort((a, b) => ((a.clock || {}).value || 0) - ((b.clock || {}).value || 0));
+  const side = d => String((d.team || {}).id) === String(homeId);
+  // ESPN writes stoppage time as "90'+1'" — the usual notation is 90+1'
+  const min = d => String((d.clock || {}).displayValue || '').replace(/'(?=\s*\+)/, '');
+  const player = d => ((d.athletesInvolved || [])[0] || {}).displayName || 'Unknown';
+  return {
+    goals: details.filter(d => d.scoringPlay).map(d => ({
+      min: min(d), player: player(d), home: side(d), own: !!d.ownGoal,
+      // "Goal - Header" / "Goal - Free-kick" — a plain "Goal" needs no label
+      how: d.penaltyKick ? 'pen' : (d.ownGoal ? 'o.g.'
+        : String((d.type || {}).text || '').replace(/^Goal\s*-?\s*/i, '').trim().toLowerCase())
+    })),
+    // a card shown to the bench carries no player — nothing useful to list
+    cards: details.filter(d => (d.yellowCard || d.redCard) && (d.athletesInvolved || []).length).map(d => ({
+      min: min(d), player: player(d), home: side(d), red: !!d.redCard,
+      second: !!(d.redCard && d.yellowCard)
+    }))
+  };
+}
+
+/* one match's goals and cards, laid out as a scoresheet */
+function wcEventsView(m, ev) {
+  const [hs, as] = wcScore(m);
+  const wrap = h('div', null);
+  const missing = () => h('div', { class: 'hint' }, hs + as === 0
+    ? 'Goalless — nobody scored.'
+    : 'The scorers for this match aren’t published yet.');
+  if (!ev || !ev.goals.length) { wrap.appendChild(missing()); }
+  else {
+    // Own goals count for the other side, but feeds differ on which team they file
+    // them under — so run the tally both ways and trust the one that reaches the
+    // final score. If neither does, the goal list is incomplete: drop the running score.
+    const tally = flip => {
+      let rh = 0, ra = 0;
+      const rows = ev.goals.map(g => {
+        const forHome = (flip && g.own) ? !g.home : g.home;
+        if (forHome) rh++; else ra++;
+        return { g: g, forHome: forHome, score: rh + '–' + ra };
+      });
+      return { rows: rows, ok: rh === hs && ra === as };
+    };
+    const straight = tally(false), flipped = tally(true);
+    const best = straight.ok ? straight : (flipped.ok ? flipped : straight);
+    wrap.appendChild(h('div', { class: 'wc-sec' }, 'Goals'));
+    best.rows.forEach(r => wrap.appendChild(h('div', { class: 'wc-goal' },
+      h('span', { class: 'min' }, r.g.min),
+      h('span', { class: 'tla' }, ((r.forHome ? m.homeTeam : m.awayTeam) || {}).tla || ''),
+      h('span', { class: 'who' }, h('span', { class: 'nm' }, r.g.player),
+        r.g.how ? h('span', { class: 'tag' }, r.g.how) : null),
+      best.ok ? h('span', { class: 'rs' }, r.score) : null)));
+    if (!best.ok) wrap.appendChild(h('div', { class: 'hint', style: { marginTop: '6px' } },
+      'Showing ' + ev.goals.length + ' of the ' + (hs + as) + ' goals — the rest aren’t in the feed.'));
+  }
+  if (ev && ev.cards.length) {
+    wrap.appendChild(h('div', { class: 'wc-sec' }, 'Cards'));
+    ev.cards.forEach(c => wrap.appendChild(h('div', { class: 'wc-goal' },
+      h('span', { class: 'min' }, c.min),
+      h('span', { class: 'tla' }, ((c.home ? m.homeTeam : m.awayTeam) || {}).tla || ''),
+      h('span', { class: 'card-chip' + (c.red ? ' red' : '') }),
+      h('span', { class: 'who' }, h('span', { class: 'nm' }, c.player),
+        c.second ? h('span', { class: 'tag' }, '2nd yellow') : null))));
+  }
+  if (ev) wrap.appendChild(h('div', { class: 'hint', style: { marginTop: '8px' } }, 'Match events via ESPN.'));
+  return wrap;
+}
+
+/* one finished match, tappable to reveal its scoresheet */
 function wcResultRow(m, clubId) {
   const [hs, as] = wcScore(m);
   const ht = (m.score && m.score.halfTime) || {};
@@ -4699,6 +4816,10 @@ function wcResultRow(m, clubId) {
       built = true;
       const kv = (k, v) => v ? h('div', { class: 'kv' }, h('span', { class: 'k' }, k), h('span', { class: 'v' }, v)) : null;
       const ref = (m.referees || []).filter(r => r.name).map(r => r.name + (r.type === 'REFEREE' ? '' : ' (' + String(r.type || '').toLowerCase().replace(/_/g, ' ') + ')'));
+      // scorers load on this first tap, then stay cached for the session
+      const events = h('div', { style: { marginTop: '10px' } }, h('div', { class: 'spinner', style: { margin: '18px auto' } }));
+      wcMatchEvents(m).then(ev => { events.innerHTML = ''; events.appendChild(wcEventsView(m, ev)); })
+        .catch(() => { events.innerHTML = ''; events.appendChild(h('div', { class: 'hint' }, 'Couldn\'t load the scorers — check your connection.')); });
       det.appendChild(h('div', { class: 'detail-card', style: { margin: '0 0 8px' } },
         kv('Full time', hs + ' – ' + as),
         kv('Half time', (ht.home == null ? '—' : ht.home) + ' – ' + (ht.away == null ? '—' : ht.away)),
@@ -4706,8 +4827,7 @@ function wcResultRow(m, clubId) {
         kv('Matchday', m.matchday ? 'Matchday ' + m.matchday : null),
         kv('Venue', m.venue),
         kv('Referee', ref.length ? ref.join(', ') : null),
-        h('div', { class: 'hint', style: { marginTop: '8px' } },
-          'Goal scorers and cards aren\'t in the free football-data feed — the match detail carries no line-ups or events.')));
+        events));
     }
     det.style.display = det.style.display === 'none' || !det.style.display ? 'block' : 'none';
   };

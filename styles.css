@@ -382,3 +382,19 @@ body {
 .spinner { width: 26px; height: 26px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; margin: 40px auto; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .copy-block { background: var(--bg-2); border: 1px solid var(--line); border-radius: 12px; padding: 12px; font-size: 13px; white-space: pre-wrap; color: var(--muted); margin-top: 8px; max-height: 160px; overflow: auto; }
+
+/* --- Premier League scoresheet: goals and cards inside a result --- */
+.wc-sec { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--muted); margin: 12px 0 2px; }
+.wc-sec:first-child { margin-top: 2px; }
+.wc-goal { display: flex; align-items: baseline; gap: 8px; padding: 8px 0; border-top: 1px solid var(--line); }
+.wc-goal .min { width: 46px; flex-shrink: 0; font-size: 12px; font-weight: 700; color: var(--muted);
+  font-variant-numeric: tabular-nums; }
+.wc-goal .tla { width: 36px; flex-shrink: 0; font-size: 11px; font-weight: 800; letter-spacing: .03em; color: var(--muted); }
+.wc-goal .who { flex: 1; min-width: 0; font-size: 14.5px; }
+.wc-goal .who .nm { font-weight: 600; }
+.wc-goal .tag { display: block; font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+.wc-goal .rs { flex-shrink: 0; font-size: 13.5px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.wc-goal .card-chip { width: 10px; height: 14px; border-radius: 2px; flex-shrink: 0; align-self: center;
+  background: #f3c623; }
+.wc-goal .card-chip.red { background: #e0413b; }
