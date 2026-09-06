@@ -4675,11 +4675,14 @@ function wcSeasonOf(d) { return d.getMonth() >= 6 ? d.getFullYear() : d.getFullY
 
 /* ---- Goal scorers and cards -------------------------------------------
    football-data's free plan carries no match events, so the scoresheet
-   comes from ESPN's open scoreboard feed. One call covers every match
-   played on a date, so results sharing a date share a single fetch, and
-   each day is kept in memory for the rest of the session. */
-const ESPN_URL = 'https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard?dates=';
-const _espnDays = new Map(); // YYYYMMDD -> the events ESPN lists for that day
+   comes from ESPN's open scoreboard feed. One call covers every match a
+   competition played on a date, so matches sharing a date share a single
+   fetch. A finished day never changes, so it is kept for the session; a
+   day with a match still in play is re-read so goals arrive as they go in. */
+const ESPN_URL = 'https://site.api.espn.com/apis/site/v2/sports/soccer/';
+const ESPN_LEAGUES = { PL: 'eng.1', CL: 'uefa.champions', EL: 'uefa.europa', ELC: 'eng.2' };
+const _espnDays = new Map(); // league|YYYYMMDD -> { at, events }
+const ESPN_LIVE_MS = 25000;  // how long a cached day stays good while a match is in play
 
 /* club names as the two feeds spell them, reduced to one comparable form
    ("Brighton & Hove Albion FC" and "Brighton & Hove Albion" -> "brighton and hove albion") */
@@ -4690,32 +4693,52 @@ function wcNameKey(name) {
 function wcYmd(d) {
   return d.getUTCFullYear() + String(d.getUTCMonth() + 1).padStart(2, '0') + String(d.getUTCDate()).padStart(2, '0');
 }
-async function espnDay(ymd) {
-  if (_espnDays.has(ymd)) return _espnDays.get(ymd);
+/* which ESPN scoreboard covers this fixture — null for a competition it doesn't carry */
+function espnLeague(m) { return ESPN_LEAGUES[(m.competition && m.competition.code) || 'PL'] || null; }
+
+async function espnDay(league, ymd, fresh) {
+  const key = league + '|' + ymd;
+  const hit = _espnDays.get(key);
+  if (hit && (!fresh || Date.now() - hit.at < ESPN_LIVE_MS)) return hit.events;
   try {
-    const r = await fetch(ESPN_URL + ymd);
+    const r = await fetch(ESPN_URL + league + '/scoreboard?dates=' + ymd);
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const j = await r.json();
     const events = (j && j.events) || [];
-    _espnDays.set(ymd, events); // only a real answer is worth remembering — a failed day retries
+    _espnDays.set(key, { at: Date.now(), events }); // only a real answer is worth keeping — a failed day retries
     return events;
-  } catch (e) { return []; }
+  } catch (e) { return (hit && hit.events) || []; }
 }
 
-/* the goals and cards of one finished match, or null when the feed has no record of it */
-async function wcMatchEvents(m) {
-  const kick = new Date(m.utcDate);
-  if (isNaN(kick)) return null;
+/* the goals and cards of one match, or null when the feed has no record of it.
+   `fresh` re-reads a day that may still be changing (a match in play). */
+async function wcMatchEvents(m, fresh) {
+  const league = espnLeague(m), kick = new Date(m.utcDate);
+  if (!league || isNaN(kick)) return null;
   const home = wcNameKey(wcTeam(m.homeTeam)), away = wcNameKey(wcTeam(m.awayTeam));
+  const [hs, as] = wcScore(m);
+  const sideOf = e => {
+    const c = (e.competitions || [])[0], teams = (c && c.competitors) || [];
+    return { h: teams.find(t => t.homeAway === 'home'), a: teams.find(t => t.homeAway === 'away') };
+  };
+  const nameOf = t => wcNameKey(t && t.team && t.team.displayName);
   // a late kick-off can land on the neighbouring date in ESPN's calendar
   const days = [0, -1, 1].map(off => wcYmd(new Date(kick.getTime() + off * 864e5)));
   for (const ymd of days) {
-    const ev = (await espnDay(ymd)).find(e => {
-      const c = (e.competitions || [])[0], teams = (c && c.competitors) || [];
-      const hn = teams.find(t => t.homeAway === 'home'), an = teams.find(t => t.homeAway === 'away');
-      return hn && an && wcNameKey(hn.team && hn.team.displayName) === home
-        && wcNameKey(an.team && an.team.displayName) === away;
-    });
+    const events = await espnDay(league, ymd, fresh);
+    // both clubs named the same way — the ordinary case
+    let ev = events.find(e => { const s = sideOf(e); return s.h && s.a && nameOf(s.h) === home && nameOf(s.a) === away; });
+    // European clubs are spelt differently by the two feeds ("FC Bayern München" / "Bayern Munich"),
+    // so fall back to one club plus the scoreline — and only when that picks out a single match.
+    if (!ev) {
+      const near = events.filter(e => {
+        const s = sideOf(e);
+        if (!s.h || !s.a) return false;
+        if (nameOf(s.h) !== home && nameOf(s.a) !== away) return false;
+        return Number(s.h.score) === hs && Number(s.a.score) === as;
+      });
+      if (near.length === 1) ev = near[0];
+    }
     if (ev) return espnScoresheet(ev);
   }
   return null;
@@ -4745,11 +4768,11 @@ function espnScoresheet(ev) {
 }
 
 /* one match's goals and cards, laid out as a scoresheet */
-function wcEventsView(m, ev) {
+function wcEventsView(m, ev, live) {
   const [hs, as] = wcScore(m);
   const wrap = h('div', null);
   const missing = () => h('div', { class: 'hint' }, hs + as === 0
-    ? 'Goalless — nobody scored.'
+    ? (live ? 'No goals yet.' : 'Goalless — nobody scored.')
     : 'The scorers for this match aren’t published yet.');
   if (!ev || !ev.goals.length) { wrap.appendChild(missing()); }
   else {
@@ -4767,7 +4790,10 @@ function wcEventsView(m, ev) {
     };
     const straight = tally(false), flipped = tally(true);
     const best = straight.ok ? straight : (flipped.ok ? flipped : straight);
-    wrap.appendChild(h('div', { class: 'wc-sec' }, 'Goals'));
+    // while a match is in play the two feeds can be a goal apart, and neither score is
+    // final — so the running tally stands on its own and nothing is called missing
+    if (live) best.ok = true;
+    wrap.appendChild(h('div', { class: 'wc-sec' }, live ? 'Goals so far' : 'Goals'));
     best.rows.forEach(r => wrap.appendChild(h('div', { class: 'wc-goal' },
       h('span', { class: 'min' }, r.g.min),
       h('span', { class: 'tla' }, ((r.forHome ? m.homeTeam : m.awayTeam) || {}).tla || ''),
@@ -4893,6 +4919,10 @@ function wcFmtDateOnly(utc) {
   } catch (e) { return ''; }
 }
 
+/* which fixtures the reader has opened — the Matches tab redraws itself every 45s
+   for live scores, and an open scoresheet should survive that redraw */
+const _wcOpen = new Set();
+
 function wcMatchRow(m, showComp) {
   const [hs, as] = wcScore(m);
   const live = wcIsLive(m.status), fin = m.status === 'FINISHED';
@@ -4903,12 +4933,39 @@ function wcMatchRow(m, showComp) {
   const comp = showComp && m.competition && m.competition.name
     ? h('div', { style: { fontSize: '10.5px', color: 'var(--muted)', marginTop: '2px' } }, m.competition.name)
     : null;
-  return h('div', { class: 'wc-match' + (live ? ' is-live' : '') },
+  const row = h('div', { class: 'wc-match' + (live ? ' is-live' : '') },
     h('div', { class: 'wc-teams' },
       h('div', { class: 'wc-tm' }, wcTeam(m.homeTeam)),
       h('div', { class: 'wc-tm' }, wcTeam(m.awayTeam)),
       comp),
     h('div', { class: 'wc-right' }, badge, right));
+  if (!live && !fin) return row; // a fixture yet to kick off has nothing to open
+
+  const det = h('div', { class: 'wc-det' });
+  const wrap = h('div', null, row, det);
+  row.classList.add('wc-tap');
+  function fill() {
+    det.innerHTML = '';
+    det.appendChild(h('div', { class: 'spinner', style: { margin: '18px auto' } }));
+    wcMatchEvents(m, live).then(ev => {
+      det.innerHTML = '';
+      det.appendChild(h('div', { class: 'detail-card', style: { margin: '0 0 8px' } }, wcEventsView(m, ev, live)));
+    }).catch(() => {
+      det.innerHTML = '';
+      det.appendChild(h('div', { class: 'hint' }, 'Couldn\'t load the scorers — check your connection.'));
+    });
+  }
+  const open = _wcOpen.has(m.id);
+  det.style.display = open ? 'block' : 'none';
+  row.classList.toggle('is-open', open);
+  if (open) fill(); // a live scoresheet reloads with the row, so new goals show up
+  row.onclick = () => {
+    const nowOpen = !_wcOpen.has(m.id);
+    if (nowOpen) { _wcOpen.add(m.id); fill(); } else _wcOpen.delete(m.id);
+    det.style.display = nowOpen ? 'block' : 'none';
+    row.classList.toggle('is-open', nowOpen);
+  };
+  return wrap;
 }
 function wcMatchesView(matches, showComp) {
   if (!matches.length) return h('div', { class: 'empty' }, h('div', { class: 'big' }, '⚽'), h('div', null, 'No fixtures published yet.'));

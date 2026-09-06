@@ -398,3 +398,8 @@ body {
 .wc-goal .card-chip { width: 10px; height: 14px; border-radius: 2px; flex-shrink: 0; align-self: center;
   background: #f3c623; }
 .wc-goal .card-chip.red { background: #e0413b; }
+
+/* a live or finished fixture opens to its scoresheet */
+.wc-match.wc-tap { cursor: pointer; }
+.wc-match.wc-tap .wc-right::after { content: '▾'; font-size: 13px; line-height: 1; color: var(--muted); }
+.wc-match.wc-tap.is-open .wc-right::after { content: '▴'; }
