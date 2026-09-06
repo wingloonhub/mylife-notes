@@ -4670,6 +4670,109 @@ function wcFmtTime(utc) {
     return d.toLocaleString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }) + ' MYT';
   } catch (e) { return ''; }
 }
+/* the season a date belongs to: the PL season starting in August, so Jan–Jun belongs to the previous year */
+function wcSeasonOf(d) { return d.getMonth() >= 6 ? d.getFullYear() : d.getFullYear() - 1; }
+
+/* one finished match, tappable to reveal what the feed actually carries for it */
+function wcResultRow(m, clubId) {
+  const [hs, as] = wcScore(m);
+  const ht = (m.score && m.score.halfTime) || {};
+  const homeId = m.homeTeam && m.homeTeam.id, awayId = m.awayTeam && m.awayTeam.id;
+  // colour the row by how MY club did (only when a club is selected)
+  let outcome = '';
+  if (clubId && (homeId === clubId || awayId === clubId)) {
+    const mine = homeId === clubId ? hs : as, theirs = homeId === clubId ? as : hs;
+    outcome = mine > theirs ? 'w' : (mine < theirs ? 'l' : 'd');
+  }
+  const det = h('div', { class: 'wc-det' });
+  let built = false;
+  const row = h('div', { class: 'wc-match wc-res' + (outcome ? ' ' + outcome : '') },
+    h('div', { class: 'wc-teams' },
+      h('div', { class: 'wc-tm' + (hs > as ? ' win' : '') }, wcTeam(m.homeTeam)),
+      h('div', { class: 'wc-tm' + (as > hs ? ' win' : '') }, wcTeam(m.awayTeam)),
+      h('div', { style: { fontSize: '10.5px', color: 'var(--muted)', marginTop: '2px' } },
+        wcFmtDateOnly(m.utcDate) + (m.competition && m.competition.name ? ' · ' + m.competition.name : ''))),
+    h('div', { class: 'wc-right' }, h('span', { class: 'wc-ft' }, 'FT'), h('div', { class: 'wc-score' }, hs + ' – ' + as)));
+  const wrap = h('div', null, row, det);
+  row.onclick = () => {
+    if (!built) {
+      built = true;
+      const kv = (k, v) => v ? h('div', { class: 'kv' }, h('span', { class: 'k' }, k), h('span', { class: 'v' }, v)) : null;
+      const ref = (m.referees || []).filter(r => r.name).map(r => r.name + (r.type === 'REFEREE' ? '' : ' (' + String(r.type || '').toLowerCase().replace(/_/g, ' ') + ')'));
+      det.appendChild(h('div', { class: 'detail-card', style: { margin: '0 0 8px' } },
+        kv('Full time', hs + ' – ' + as),
+        kv('Half time', (ht.home == null ? '—' : ht.home) + ' – ' + (ht.away == null ? '—' : ht.away)),
+        kv('Kick-off', wcFmtTime(m.utcDate)),
+        kv('Matchday', m.matchday ? 'Matchday ' + m.matchday : null),
+        kv('Venue', m.venue),
+        kv('Referee', ref.length ? ref.join(', ') : null),
+        h('div', { class: 'hint', style: { marginTop: '8px' } },
+          'Goal scorers and cards aren\'t in the free football-data feed — the match detail carries no line-ups or events.')));
+    }
+    det.style.display = det.style.display === 'none' || !det.style.display ? 'block' : 'none';
+  };
+  det.style.display = 'none';
+  return wrap;
+}
+
+/* 12 months of finished matches, newest first, grouped by month — plus a season summary for my club */
+function wcResultsView(history, clubId, clubName, note) {
+  const wrap = h('div', null);
+  if (note) wrap.appendChild(h('div', { class: 'hint', style: { margin: '0 2px 10px' } }, note));
+  if (!history.length) {
+    wrap.appendChild(h('div', { class: 'empty' }, h('div', { class: 'big' }, '⚽'),
+      h('div', null, 'No finished matches in the last 12 months yet.')));
+    return wrap;
+  }
+  if (clubId) {
+    // real stats, computed from the results themselves
+    let w = 0, d = 0, l = 0, gf = 0, ga = 0;
+    history.forEach(m => {
+      const [hs, as] = wcScore(m);
+      const home = m.homeTeam && m.homeTeam.id === clubId;
+      const mine = home ? hs : as, theirs = home ? as : hs;
+      gf += mine; ga += theirs;
+      if (mine > theirs) w++; else if (mine < theirs) l++; else d++;
+    });
+    const form = history.slice(0, 6).map(m => {
+      const [hs, as] = wcScore(m);
+      const home = m.homeTeam && m.homeTeam.id === clubId;
+      const mine = home ? hs : as, theirs = home ? as : hs;
+      return mine > theirs ? 'W' : (mine < theirs ? 'L' : 'D');
+    });
+    wrap.appendChild(h('div', { class: 'detail-card', style: { marginBottom: '12px' } },
+      h('h3', null, (clubName || 'My club') + ' — last 12 months'),
+      h('div', { class: 'wc-stats' },
+        h('div', null, h('b', null, history.length), h('span', null, 'Played')),
+        h('div', null, h('b', null, w), h('span', null, 'Won')),
+        h('div', null, h('b', null, d), h('span', null, 'Drawn')),
+        h('div', null, h('b', null, l), h('span', null, 'Lost')),
+        h('div', null, h('b', null, gf), h('span', null, 'Scored')),
+        h('div', null, h('b', null, ga), h('span', null, 'Conceded')),
+        h('div', null, h('b', null, (gf - ga > 0 ? '+' : '') + (gf - ga)), h('span', null, 'Goal diff'))),
+      h('div', { style: { marginTop: '10px' } },
+        h('span', { class: 'k', style: { marginRight: '8px' } }, 'Recent form'),
+        ...form.map(f => h('span', { class: 'wc-form ' + f.toLowerCase() }, f)))));
+  }
+  // group by month, newest first
+  let curMonth = '';
+  history.forEach(m => {
+    const dt = new Date(m.utcDate);
+    const label = isNaN(dt) ? '' : dt.toLocaleDateString('en-GB', { month: 'long', year: 'numeric', timeZone: 'Asia/Kuala_Lumpur' });
+    if (label && label !== curMonth) { curMonth = label; wrap.appendChild(h('div', { class: 'wc-h' }, label)); }
+    wrap.appendChild(wcResultRow(m, clubId));
+  });
+  return wrap;
+}
+
+function wcFmtDateOnly(utc) {
+  try {
+    const d = new Date(utc);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-GB', { timeZone: 'Asia/Kuala_Lumpur', weekday: 'short', day: 'numeric', month: 'short' });
+  } catch (e) { return ''; }
+}
+
 function wcMatchRow(m, showComp) {
   const [hs, as] = wcScore(m);
   const live = wcIsLive(m.status), fin = m.status === 'FINISHED';
@@ -4745,6 +4848,7 @@ async function renderWorldCupScreen(listEl) {
   let tab = 'matches';
   let matches = null, standings = null, errMsg = null;
   let teamMatches = null, clStandings = null; // club mode: the club's fixtures (all feed competitions) + CL table
+  let history = null, histNote = '';          // Results tab: 12 months of finished matches
   let clubId = null, clubName = '';
   try { const s = await DB.getSettings(); clubId = parseInt(s.plClubId, 10) || null; clubName = s.plClubName || ''; } catch (e) {}
   const selWrap = h('div', null);
@@ -4767,9 +4871,10 @@ async function renderWorldCupScreen(listEl) {
       const v = e.target.value;
       clubId = v ? parseInt(v, 10) : null;
       clubName = v ? ((teams.find(t => String(t.id) === v) || {}).name || '') : '';
-      teamMatches = null; clStandings = null;
+      teamMatches = null; clStandings = null; history = null; // results are club-filtered too
       try { const s = await DB.getSettings(); await DB.saveSettings(Object.assign({}, s, { plClubId: clubId || '', plClubName: clubName })); } catch (err) {}
       render(); load();
+      if (tab === 'results') loadHistory();
     } },
       h('option', { value: '', selected: !clubId ? 'selected' : null }, 'All clubs'),
       ...teams.map(t => h('option', { value: String(t.id), selected: clubId === t.id ? 'selected' : null }, t.name)));
@@ -4777,8 +4882,8 @@ async function renderWorldCupScreen(listEl) {
   }
   function drawTabs() {
     tabsEl.innerHTML = '';
-    [['matches', 'Matches'], ['groups', 'Table']].forEach(([k, label]) =>
-      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); } }, label)));
+    [['matches', 'Matches'], ['results', 'Results'], ['groups', 'Table']].forEach(([k, label]) =>
+      tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''), onclick: () => { tab = k; render(); if (k === 'results' && history == null) loadHistory(); } }, label)));
   }
   function clubTableView() { // Champions League table shown only when the club is in it
     const wrap = h('div', null);
@@ -4811,6 +4916,9 @@ async function renderWorldCupScreen(listEl) {
         body.appendChild(h('div', { class: 'hint', style: { margin: '10px 2px' } },
           clubName + ' fixtures across the competitions in the data feed (Premier League, Champions League…). Domestic cups aren\'t included in the free feed.'));
       } else body.appendChild(wcMatchesView(matches));
+    } else if (tab === 'results') {
+      if (history == null) { body.appendChild(h('div', { class: 'spinner' })); return; }
+      body.appendChild(wcResultsView(history, clubId, clubName, histNote));
     } else {
       body.appendChild(wcGroupsView(standings));
       if (clubId && clStandings) body.appendChild(clubTableView());
@@ -4830,6 +4938,37 @@ async function renderWorldCupScreen(listEl) {
         }
       }
     } catch (e) { errMsg = 'Could not load — check your connection.'; }
+    render();
+  }
+  // Results tab: the PL season runs Aug→May, so a rolling 12 months always spans two seasons.
+  // Fetched on demand (first tap) so opening the screen stays fast.
+  async function loadHistory() {
+    const now = new Date();
+    const cutoff = new Date(now); cutoff.setFullYear(cutoff.getFullYear() - 1);
+    const thisSeason = wcSeasonOf(now);
+    const seasons = [thisSeason, thisSeason - 1];
+    const got = [];
+    let missed = 0;
+    for (const s of seasons) {
+      try {
+        const j = await wcFetch('matches&season=' + s + '&status=FINISHED');
+        if (j && j.error) { missed++; continue; }
+        got.push(...((j && j.matches) || []));
+      } catch (e) { missed++; }
+    }
+    const seen = new Set();
+    let list = got.filter(m => {
+      if (!m || seen.has(m.id)) return false;
+      seen.add(m.id);
+      const d = new Date(m.utcDate);
+      return !isNaN(d) && d >= cutoff && d <= now;
+    });
+    if (clubId) list = list.filter(m => (m.homeTeam && m.homeTeam.id === clubId) || (m.awayTeam && m.awayTeam.id === clubId));
+    list.sort((a, b) => (b.utcDate || '').localeCompare(a.utcDate || ''));
+    history = list;
+    histNote = missed
+      ? 'Showing what the feed allows — ' + missed + ' of the ' + seasons.length + ' seasons in this window isn\'t available on the current football-data plan.'
+      : '';
     render();
   }
   render(); // initial spinner

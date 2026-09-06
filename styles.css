@@ -222,6 +222,22 @@ body {
   letter-spacing: .03em; animation: wcpulse 1.6s ease-in-out infinite; }
 .wc-ft { font-size: 11px; font-weight: 700; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
 @keyframes wcpulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+/* Results tab: tappable result rows, my-club outcome stripe, season summary */
+.wc-match.wc-res { cursor: pointer; margin-bottom: 6px; }
+.wc-match.wc-res .wc-tm.win { font-weight: 800; }
+.wc-match.wc-res.w { border-left: 4px solid var(--green, #46c56a); }
+.wc-match.wc-res.d { border-left: 4px solid var(--muted); }
+.wc-match.wc-res.l { border-left: 4px solid #ff6b6b; }
+.wc-det .detail-card { border-radius: 12px; }
+.wc-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(64px, 1fr)); gap: 8px; margin-top: 10px; }
+.wc-stats > div { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 8px 4px; text-align: center; }
+.wc-stats b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
+.wc-stats span { font-size: 11px; color: var(--muted); }
+.wc-form { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 7px; margin-right: 5px;
+  font-size: 12px; font-weight: 800; color: #fff; }
+.wc-form.w { background: var(--green, #46c56a); }
+.wc-form.d { background: #7a7f95; }
+.wc-form.l { background: #ff6b6b; }
 .wc-table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line);
   border-radius: 12px; overflow: hidden; margin-bottom: 6px; }
 .wc-table th { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; padding: 8px 6px; text-align: center; }
