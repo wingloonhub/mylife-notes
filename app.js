@@ -2303,6 +2303,8 @@ async function renderDetail(cat, item) {
         n ? kv('Next', fmtDate(localDateStr(n))) : null,
         kv('Location', data.location), kv('Notes', data.notes)));
       if (data.map || data.location) a(mapCard(item));
+      a(h('button', { class: 'btn secondary', style: { marginTop: '4px' }, onclick: () => duplicateMySched(item) },
+        '⧉ Duplicate this ' + (isTrip ? 'trip' : 'card')));
       break;
     }
     case 'events':
@@ -3874,6 +3876,9 @@ async function renderMySchedScreen(listEl, items, sub) {
           render();
         } }, done ? '🔔' : '🔕'));
       }
+      btns.push(h('button', { class: 'iconbtn small', type: 'button', title: 'Duplicate', onclick: (e) => {
+        e.stopPropagation(); duplicateMySched(it);
+      } }, '⧉'));
       const action = btns.length ? h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...btns) : null;
       try { // one bad card must not blank the rest of the list
         const row = buildRow('mysched', it, { action });
@@ -3895,6 +3900,22 @@ async function duplicateItem(cat, it) {
   delete data.sharedWith;                       // the copy starts private
   delete data._notifiedFor; delete data._notifiedHalf; delete data._notifiedEnd;
   await DB.saveItem({ cat, data });
+}
+
+/* A copy of a card waiting in the "New …" editor. Nothing is saved (and no reminders are
+   armed) until Save — a copied schedule nearly always needs a new date first. */
+let _prefill = null;
+
+/* open the editor on a fresh copy of a My Schedule card */
+function duplicateMySched(it) {
+  const d = JSON.parse(JSON.stringify(it.data || {}));
+  // reminder bookkeeping belongs to the original — a copy carrying it would skip its own reminders
+  ['_notifiedFor', '_notifiedHalf', '_notifiedEnd', '_notifiedEnd2', '_ackKey'].forEach(k => delete d[k]);
+  d.done = false;       // reminders on, even if the original was silenced with 🔕
+  d.archived = false;
+  delete d.sharedWith;  // the copy starts private
+  _prefill = { cat: 'mysched', data: d, from: d.title || 'Schedule' };
+  navigate('#/edit/mysched');
 }
 
 function renderArchiveList(listEl, cat, items, isArchivedFn, opts = {}) {
@@ -5176,7 +5197,10 @@ async function editScreen(cat, id) {
   let item = id ? await DB.getItem(cat, id) : null;
   if (id && !item) { redirectReplace('#/cat/' + cat); return; } // editing a deleted item — skip it for Back
   let currentId = id;
-  const data = item ? JSON.parse(JSON.stringify(item.data || {})) : {};
+  // a duplicate arrives as a pre-filled new card (see duplicateMySched)
+  const copy = (!id && _prefill && _prefill.cat === cat) ? _prefill : null;
+  _prefill = null;
+  const data = item ? JSON.parse(JSON.stringify(item.data || {})) : (copy ? copy.data : {});
   // ownership of a shared item (members can edit content but not the share list)
   const amOwner = !item || !item._shared || item._amOwner === true;
   const ownerUid = item ? item._ownerUid : undefined;
@@ -5232,7 +5256,9 @@ async function editScreen(cat, id) {
     back: async () => { if (isQuick) await saveNow(); goBack(); },
     home: async () => { if (isQuick) await saveNow(); navigate('#/'); }
   });
-  mount(screen(bar, h('div', null, formHost, controls)));
+  const copyNote = copy ? h('div', { class: 'copy-note' },
+    '⧉ Copy of “' + copy.from + '” — change the date or anything else, then Save. Nothing is saved until you do.') : null;
+  mount(screen(bar, h('div', null, copyNote, formHost, controls)));
 }
 
 /* ----- DETAIL ----- */

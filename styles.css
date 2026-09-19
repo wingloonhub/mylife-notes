@@ -403,3 +403,7 @@ body {
 .wc-match.wc-tap { cursor: pointer; }
 .wc-match.wc-tap .wc-right::after { content: '▾'; font-size: 13px; line-height: 1; color: var(--muted); }
 .wc-match.wc-tap.is-open .wc-right::after { content: '▴'; }
+
+/* the editor banner shown when a card is being duplicated */
+.copy-note { font-size: 13px; line-height: 1.45; color: var(--muted); background: var(--card); border: 1px dashed var(--line);
+  border-radius: 12px; padding: 10px 12px; margin: 0 0 14px; }
