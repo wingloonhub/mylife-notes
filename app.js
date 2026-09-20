@@ -3878,9 +3878,6 @@ async function renderMySchedScreen(listEl, items, sub) {
           render();
         } }, done ? '🔔' : '🔕'));
       }
-      btns.push(h('button', { class: 'iconbtn small', type: 'button', title: 'Duplicate', onclick: (e) => {
-        e.stopPropagation(); duplicateMySched(it);
-      } }, '⧉'));
       const action = btns.length ? h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap', justifyContent: 'flex-end' } }, ...btns) : null;
       try { // one bad card must not blank the rest of the list
         const row = buildRow('mysched', it, { action });
