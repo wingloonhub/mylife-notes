@@ -2295,7 +2295,11 @@ async function renderDetail(cat, item) {
     case 'mysched': {
       const n = data.schedType === 'recur' ? myschedNextOccur(data) : null;
       const isTrip = data.cardType === 'trip';
-      a(h('div', { class: 'detail-card' }, h('h3', null, data.title || (isTrip ? 'Trip' : 'Schedule')),
+      a(h('div', { class: 'detail-card' },
+        h('div', { class: 'card-head' },
+          h('h3', null, data.title || (isTrip ? 'Trip' : 'Schedule')),
+          h('button', { class: 'iconbtn small', type: 'button', title: 'Duplicate', 'aria-label': 'Duplicate this ' + (isTrip ? 'trip' : 'card'),
+            onclick: () => duplicateMySched(item) }, '⧉')),
         data.schedType === 'recur'
           ? kv('Repeats', myschedFreqLabel(data) + (data.time ? ' · ' + fmtHM(data.time) : '') + (data.end ? '–' + fmtHM(data.end) : ''))
           : kv(isTrip ? 'Check-in' : 'When', fmtDT(data.when)),
@@ -2303,8 +2307,6 @@ async function renderDetail(cat, item) {
         n ? kv('Next', fmtDate(localDateStr(n))) : null,
         kv('Location', data.location), kv('Notes', data.notes)));
       if (data.map || data.location) a(mapCard(item));
-      a(h('button', { class: 'btn secondary', style: { marginTop: '4px' }, onclick: () => duplicateMySched(item) },
-        '⧉ Duplicate this ' + (isTrip ? 'trip' : 'card')));
       break;
     }
     case 'events':
