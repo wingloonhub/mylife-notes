@@ -412,3 +412,7 @@ body {
 .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
 .card-head h3 { margin: 0; flex: 1; min-width: 0; }
 .card-head .iconbtn { flex-shrink: 0; }
+
+/* toolbar above a hand-arranged list (Personal Records, Memberships) */
+.list-tools { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin: 0 2px 10px; }
+.list-tools-hint { font-size: 12px; color: var(--muted); }

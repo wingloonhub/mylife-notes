@@ -4642,8 +4642,11 @@ function renderVaultScreen(listEl, items, fab) {
 }
 
 /* Memberships — manual ranking with ↑/↓ (sorted by data.sortIndex; you choose what's on top) */
-/* A plain list the user arranges by hand: ↑/↓ on every card, order kept in data.sortIndex. */
+/* A plain list the user arranges by hand. The ↑/↓ buttons would crowd every card, so they
+   appear only while "Reorder" is on; the rest of the time the cards are left clean.
+   Order is kept in data.sortIndex. */
 function renderReorderList(listEl, cat, items) {
+  let reordering = false;
   const ord = it => (it.data && it.data.sortIndex != null) ? it.data.sortIndex : 1e9;
   async function move(i, j) {
     if (j < 0 || j >= items.length) return;
@@ -4657,10 +4660,20 @@ function renderReorderList(listEl, cat, items) {
     items.sort((a, b) => ord(a) - ord(b));
     listEl.innerHTML = '';
     if (!items.length) { listEl.appendChild(emptyState(cat)); return; }
+    if (items.length > 1) {
+      listEl.appendChild(h('div', { class: 'list-tools' },
+        reordering ? h('span', { class: 'list-tools-hint' }, 'Use ↑ ↓ to arrange') : null,
+        h('button', { class: 'btn small' + (reordering ? '' : ' secondary'), type: 'button',
+          onclick: () => { reordering = !reordering; render(); } },
+          reordering ? '✓ Done' : '⇅ Reorder')));
+    }
     items.forEach((it, i) => {
-      const up = h('button', { class: 'iconbtn small', type: 'button', title: 'Move up', style: { opacity: i === 0 ? '.3' : '1' }, onclick: (e) => { e.stopPropagation(); move(i, i - 1); } }, '↑');
-      const down = h('button', { class: 'iconbtn small', type: 'button', title: 'Move down', style: { opacity: i === items.length - 1 ? '.3' : '1' }, onclick: (e) => { e.stopPropagation(); move(i, i + 1); } }, '↓');
-      const actions = h('div', { style: { display: 'flex', gap: '4px' } }, up, down);
+      let actions = null;
+      if (reordering) {
+        const up = h('button', { class: 'iconbtn small', type: 'button', title: 'Move up', style: { opacity: i === 0 ? '.3' : '1' }, onclick: (e) => { e.stopPropagation(); move(i, i - 1); } }, '↑');
+        const down = h('button', { class: 'iconbtn small', type: 'button', title: 'Move down', style: { opacity: i === items.length - 1 ? '.3' : '1' }, onclick: (e) => { e.stopPropagation(); move(i, i + 1); } }, '↓');
+        actions = h('div', { style: { display: 'flex', gap: '4px' } }, up, down);
+      }
       listEl.appendChild(buildRow(cat, it, { action: actions }));
     });
   }
