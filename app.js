@@ -3401,7 +3401,7 @@ async function listScreen(cat, sub) {
   if (cat === 'events') { renderArchiveList(listEl, 'events', items, eventIsArchived, { distance: true, archiveLabel: 'Past', reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'appointments') { renderArchiveList(listEl, 'appointments', items, eventIsArchived, { distance: true, archiveLabel: 'Past', duplicateAll: true, reminderOff: true }); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'schedule') { renderScheduleScreen(listEl, items, fab, sub === 'def' ? 'schedule' : 'upcoming'); return; }
-  if (cat === 'tax') { renderTaxList(listEl, items); return; }
+  if (cat === 'tax') { renderTaxList(listEl, items, sub); return; }
   if (cat === 'trips') { renderTripScreen(listEl, items, fab, sub === 'cats' ? 'cats' : 'trips'); startLive(() => listScreen(cat, sub)); return; }
   if (cat === 'shopping') { renderShoppingScreen(listEl, items, fab, sub === 'items' ? 'items' : 'lists'); return; }
 
@@ -3522,30 +3522,76 @@ function renderCategoryManager(container) {
   });
 }
 
-function renderTaxList(listEl, items) {
+/* Receipts are filed by tax year: one tab per year (newest first) plus All years.
+   Each tab totals only what it shows, so a year's tab is what you file from. */
+function renderTaxList(listEl, items, sub) {
   if (!items.length) { listEl.appendChild(emptyState('tax')); return; }
-  const byYear = {};
-  items.forEach(it => {
-    const d = it.data || {};
-    const y = d.year || 'No year';
-    const c = d.taxCat || 'Uncategorised';
-    const amt = parseFloat(d.amount) || 0;
-    if (!byYear[y]) byYear[y] = { total: 0, cats: {} };
-    byYear[y].total += amt;
-    byYear[y].cats[c] = (byYear[y].cats[c] || 0) + amt;
+  const yearOf = it => (it.data || {}).year || 'No year';
+  const totalsFor = list => {
+    const t = { total: 0, cats: {} };
+    list.forEach(it => {
+      const d = it.data || {}, c = d.taxCat || 'Uncategorised', amt = parseFloat(d.amount) || 0;
+      t.total += amt;
+      t.cats[c] = (t.cats[c] || 0) + amt;
+    });
+    return t;
+  };
+  // newest year first; "No year" always last so a mis-scanned receipt is easy to find and fix
+  const years = [...new Set(items.map(yearOf))].sort((a, b) => {
+    if (a === 'No year') return 1;
+    if (b === 'No year') return -1;
+    return String(b).localeCompare(String(a));
   });
-  const years = Object.keys(byYear).sort().reverse();
-  const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Yearly totals (MYR)'));
-  years.forEach(y => {
-    card.appendChild(h('div', { class: 'kv' },
-      h('span', { class: 'k', style: { fontWeight: '700', color: 'var(--text)' } }, y),
-      h('span', { class: 'v' }, fmtMYR(byYear[y].total))));
-    Object.keys(byYear[y].cats).sort().forEach(c => card.appendChild(h('div', { class: 'kv', style: { paddingLeft: '14px' } },
-      h('span', { class: 'k', style: { fontSize: '12.5px' } }, c),
-      h('span', { class: 'v', style: { fontWeight: '500' } }, fmtMYR(byYear[y].cats[c])))));
-  });
-  listEl.appendChild(card);
-  for (const it of items) listEl.appendChild(buildRow('tax', it));
+  let tab = (sub && (years.includes(sub) || sub === 'all')) ? sub : years[0];
+
+  const tabsEl = h('div', { class: 'tabs' });
+  const body = h('div', null);
+  listEl.appendChild(tabsEl);
+  listEl.appendChild(body);
+
+  function draw() {
+    tabsEl.innerHTML = '';
+    [...years.map(y => [y, y + ' (' + items.filter(it => yearOf(it) === y).length + ')']), ['all', 'All years']]
+      .forEach(([k, label]) => tabsEl.appendChild(h('div', { class: 'tab' + (tab === k ? ' active' : ''),
+        onclick: () => {
+          tab = k;
+          try { history.replaceState(null, '', '#/cat/tax' + (k === years[0] ? '' : '/' + k)); } catch (e) {}
+          draw();
+        } }, label)));
+
+    body.innerHTML = '';
+    const shown = tab === 'all' ? items : items.filter(it => yearOf(it) === tab);
+    // newest receipt first within the year
+    shown.sort((a, b) => String((b.data || {}).date || '').localeCompare(String((a.data || {}).date || '')));
+
+    if (tab === 'all') {
+      const card = h('div', { class: 'detail-card' }, h('div', { class: 'section-title' }, 'Yearly totals (MYR)'));
+      years.forEach(y => {
+        const t = totalsFor(items.filter(it => yearOf(it) === y));
+        card.appendChild(h('div', { class: 'kv' },
+          h('span', { class: 'k', style: { fontWeight: '700', color: 'var(--text)' } }, y),
+          h('span', { class: 'v' }, fmtMYR(t.total))));
+        Object.keys(t.cats).sort().forEach(c => card.appendChild(h('div', { class: 'kv', style: { paddingLeft: '14px' } },
+          h('span', { class: 'k', style: { fontSize: '12.5px' } }, c),
+          h('span', { class: 'v', style: { fontWeight: '500' } }, fmtMYR(t.cats[c])))));
+      });
+      body.appendChild(card);
+    } else {
+      const t = totalsFor(shown);
+      const card = h('div', { class: 'detail-card' },
+        h('div', { class: 'section-title' }, tab + ' total (MYR)'),
+        h('div', { class: 'kv' },
+          h('span', { class: 'k', style: { fontWeight: '700', color: 'var(--text)' } },
+            shown.length + ' receipt' + (shown.length === 1 ? '' : 's')),
+          h('span', { class: 'v' }, fmtMYR(t.total))));
+      Object.keys(t.cats).sort().forEach(c => card.appendChild(h('div', { class: 'kv', style: { paddingLeft: '14px' } },
+        h('span', { class: 'k', style: { fontSize: '12.5px' } }, c),
+        h('span', { class: 'v', style: { fontWeight: '500' } }, fmtMYR(t.cats[c])))));
+      body.appendChild(card);
+    }
+    for (const it of shown) body.appendChild(buildRow('tax', it));
+  }
+  draw();
 }
 
 function emptyState(cat, msg) {
@@ -4440,10 +4486,52 @@ async function renderWorkoutScreen(listEl, items, fab, sub) {
    and a big Snap button. Each snap overwrites the one card with a fresh photo/lot/time/GPS. */
 /* Shopping — one running list of things to buy. Each item is its own card, so ticking one
    never rewrites the whole list (and can't lose anything the way a nested array can). */
+/* a ticked-off item clears itself three hours after you bought it */
+const BOUGHT_TTL_MS = 3 * 60 * 60 * 1000;
+let _buyTimer = null;
+function stopBuyTimer() { if (_buyTimer) { clearTimeout(_buyTimer); _buyTimer = null; } }
+
 function renderBuyScreen(listEl, items, fab) {
   if (fab) fab.onclick = () => navigate('#/edit/buy');
+  stopBuyTimer();
   const body = h('div', { class: 'list' });
-  const refresh = async () => { try { items = await DB.listItems('buy'); } catch (e) {} draw(); };
+  const refresh = async () => { try { items = await DB.listItems('buy'); } catch (e) {} await sweepBought(); draw(); };
+
+  /* Drop bought items once their three hours are up. An item ticked off by an older
+     version has no boughtAt — stamp it now so it gets its full three hours rather than
+     vanishing the moment this runs. Returns true when the list changed. */
+  async function sweepBought() {
+    const now = Date.now();
+    let changed = false;
+    for (const it of items.slice()) {
+      const d = it.data || {};
+      if (!d.bought) continue;
+      if (!d.boughtAt) {
+        d.boughtAt = now;
+        try { await DB.saveItem({ id: it.id, cat: 'buy', data: d }); } catch (e) {}
+        continue;
+      }
+      if (now - d.boughtAt >= BOUGHT_TTL_MS) {
+        try { await DB.deleteItem('buy', it.id); items = items.filter(x => x.id !== it.id); changed = true; }
+        catch (e) {}
+      }
+    }
+    return changed;
+  }
+
+  /* wake up exactly when the next bought item is due to go, so it disappears while you watch */
+  function scheduleSweep() {
+    stopBuyTimer();
+    const due = items.filter(it => (it.data || {}).bought && (it.data || {}).boughtAt)
+      .map(it => it.data.boughtAt + BOUGHT_TTL_MS - Date.now());
+    if (!due.length) return;
+    // setTimeout tops out at ~24.8 days; nothing here comes close, but clamp anyway
+    const next = Math.min(Math.max(1000, Math.min(...due) + 1000), 2147483647);
+    _buyTimer = setTimeout(async () => {
+      if (!location.hash.replace(/^#/, '').startsWith('/cat/buy')) { stopBuyTimer(); return; }
+      if (await sweepBought()) draw(); else scheduleSweep();
+    }, next);
+  }
 
   // quick add: type a name, hit Add (or Enter) — details can be filled in later by tapping the row
   const input = h('input', { placeholder: 'What do I need to buy?', autocapitalize: 'sentences' });
@@ -4509,6 +4597,7 @@ function renderBuyScreen(listEl, items, fab) {
 
     if (done.length) {
       body.appendChild(h('div', { class: 'section-title' }, 'Bought (' + done.length + ')'));
+      body.appendChild(h('div', { class: 'buy-note' }, 'Clears itself 3 hours after you tick it off.'));
       done.forEach(it => body.appendChild(row(it)));
       body.appendChild(h('button', { class: 'btn small secondary', type: 'button', style: { marginTop: '10px' },
         onclick: async () => {
@@ -4517,10 +4606,12 @@ function renderBuyScreen(listEl, items, fab) {
           await refresh();
         } }, '🧹 Clear bought'));
     }
+    scheduleSweep();
   }
   listEl.innerHTML = '';
   listEl.appendChild(body);
   draw();
+  sweepBought().then(changed => { if (changed) draw(); });
 }
 
 function renderCarParkScreen(listEl, items, fab) {

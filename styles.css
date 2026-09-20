@@ -416,3 +416,6 @@ body {
 /* toolbar above a hand-arranged list (Personal Records, Memberships) */
 .list-tools { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin: 0 2px 10px; }
 .list-tools-hint { font-size: 12px; color: var(--muted); }
+
+/* note under the Bought section of the Shopping list */
+.buy-note { font-size: 11.5px; color: var(--muted); margin: -4px 2px 8px; }
