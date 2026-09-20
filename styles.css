@@ -407,3 +407,8 @@ body {
 /* the editor banner shown when a card is being duplicated */
 .copy-note { font-size: 13px; line-height: 1.45; color: var(--muted); background: var(--card); border: 1px dashed var(--line);
   border-radius: 12px; padding: 10px 12px; margin: 0 0 14px; }
+
+/* card title with an action icon on the right (My Schedule detail) */
+.card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.card-head h3 { margin: 0; flex: 1; min-width: 0; }
+.card-head .iconbtn { flex-shrink: 0; }
