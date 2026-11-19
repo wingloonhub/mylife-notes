@@ -62,6 +62,59 @@ Password reset emails now work via Firebase.
 
 ---
 
+## Running — your watch's workouts (Strava)
+
+The **🏃 Running** notebook shows runs, walks and rides pulled from your watch, with
+distance, pace, duration and **heart rate**. The chain is:
+
+```
+watch → Mi Fitness → Strava → /api/strava → MyLife Hub
+```
+
+Health Connect is deliberately not involved: it only exists on the phone and has no web
+API, so using it would have forced an Android app into the middle of a web app.
+
+**On the phone (once):**
+
+1. Create a free Strava account.
+2. Mi Fitness → **Profile** → **Settings** → **Third Party Data** → **Strava**, and connect.
+   (Mi Fitness → **App settings** → **Sync with the cloud** must be on, or nothing is sent.)
+
+**Create the API keys (once):**
+
+3. Go to <https://www.strava.com/settings/api> and make an application.
+   - *Application Name:* `MyLife Hub`
+   - *Website:* your Vercel URL
+   - *Authorization Callback Domain:* **`mylife-notes.vercel.app`** — the bare domain only,
+     no `https://`, no path. Strava rejects the sign-in if this doesn't match.
+4. Copy the **Client ID** and **Client Secret** from that page.
+
+**Add them to Vercel (once):**
+
+5. Vercel → your project → **Settings → Environment Variables**:
+
+   | Name | Value |
+   |------|-------|
+   | `STRAVA_CLIENT_ID` | the Client ID |
+   | `STRAVA_CLIENT_SECRET` | the Client Secret |
+
+6. **Redeploy** so the functions pick the variables up.
+7. Open MyLife Hub → **Running** → **Connect Strava**, approve on Strava's page, and it
+   syncs straight away.
+
+Afterwards, tap **Sync now** whenever you want the latest. Only activities newer than the
+ones already stored are fetched, so a routine sync is one small request.
+
+> The client secret lives only in Vercel's environment, never in `app.js` — anything in
+> `app.js` is downloaded by every browser that opens the site. Your Strava login token is
+> handed from the callback to the app through `localStorage` on the same origin, so it is
+> never written into a URL, browser history or server log.
+
+> Only workouts recorded **after** you connected Mi Fitness to Strava will appear. These
+> links don't backfill history.
+
+---
+
 ## Event reminders
 
 Open **⚙ Settings** (top-right of the home screen) to choose how long before each event
@@ -91,5 +144,6 @@ will read your events + the lead time/Telegram chat ID from Settings and send th
 | `app.js` | Whole app (auth, storage, all notebooks) |
 | `styles.css` | Mobile-first styling |
 | `firebase-config.js` | Your Firebase keys (off by default) |
+| `api/` | Vercel serverless functions (Strava, places, link resolve, receipt scanning, reminders) |
 | `manifest.webmanifest`, `sw.js` | PWA install + offline shell |
 | `icons/` | App icons |

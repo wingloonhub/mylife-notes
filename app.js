@@ -405,6 +405,7 @@ const CATS = [
   { key: 'reminder', name: 'Reminder', singular: 'Reminder', emoji: '⏰' },
   { key: 'schedule', name: 'Weekly Schedule', emoji: '🕒', hidden: true },
   { key: 'workout', name: 'Workout', singular: 'Workout Day', emoji: '💪' },
+  { key: 'running', name: 'Running', singular: 'Activity', emoji: '🏃' },
   { key: 'carpark', name: 'Car Park', singular: 'Parking Spot', emoji: '🅿️' },
   { key: 'records', name: 'Personal Records', emoji: '🔐' },
   { key: 'memberships', name: 'Memberships', emoji: '💳' },
@@ -437,6 +438,7 @@ const CAT_GUIDE = {
   reminder: { what: 'Standalone recurring reminders. Choose Once, Weekly, Every 2 weeks or Monthly, and how often it should repeat once it goes off.', unique: 'It nags — keeps pinging every couple of hours until you actually turn it off, so nothing slips.', reminders: 'This is the whole point of the category: it fires to Telegram on the due date/time and keeps nudging (e.g. every 2 or 4 hours) until you tap "Turn off". A card only shows under the Due tab while it\'s actually going off.' },
   schedule: { what: 'Recurring weekly sessions (e.g. Piano every Tue 4–5pm). The app auto-creates the upcoming dates for you.', unique: 'Set the weekly pattern once and it rolls out the actual dates itself — plus a "before it ends" reminder for pick-ups.', reminders: 'Up to two Telegram reminders before each session starts, plus an optional reminder before it ends — handy for pick-ups.' },
   workout: { what: 'Plan workout days by weekday, each with exercises (sets × reps or seconds) and an optional video link. The Upcoming tab shows the next 7 days; tick exercises and tap Complete to log the day, tracked in Progress.', unique: 'A full training tracker: attach a demo video to each exercise and keep a completion history of every day you trained.', reminders: 'No Telegram reminders — it\'s an in-app tracker you open when you train.' },
+  running: { what: 'Your watch\'s workouts, pulled in from Strava — runs, walks and rides with distance, pace, duration and heart rate. Connect once, then tap Sync now whenever you want the latest.', unique: 'The only category fed by your watch rather than typed in: heart rate comes from the wrist, which no phone can measure.', reminders: null },
   carpark: { what: 'Remember where you parked. Snap the pillar or level sign and the card saves the photo, reads the lot number, and records the time and your GPS position.', unique: 'One tap captures everything — photo, lot, time, location — and later walks you back to your car with Google Maps.', reminders: null },
   records: { what: 'Store bank account details and addresses so they\'re easy to copy and share when needed.', unique: 'One tap copies the full bank/address details, ready to paste or WhatsApp — no retyping.', reminders: null },
   vault: { what: 'A password store — platform, username, password — kept behind your account password, which it asks for every time you open it.', unique: 'The only category locked behind your password on every open, with passwords masked until you reveal them.', reminders: null },
@@ -3317,6 +3319,17 @@ function homeCount(cat, items) {
     case 'reminder': return plural(items.filter(it => (it.data || {}).active !== false).length, 'active reminder');
     case 'schedule': return plural(items.filter(it => !scheduleIsCompleted(it)).length, 'activity', 'activities');
     case 'workout': return plural(items.length, 'workout day');
+    case 'running': {
+      // Last 7 days rather than "this week", so a Sunday-evening glance doesn't
+      // read as an empty week when Monday's run is three days behind you.
+      const since = Date.now() - 7 * 864e5;
+      const n = items.filter(it => {
+        const raw = d(it).startLocal || d(it).start;
+        const t = raw ? Date.parse(String(raw).replace(/Z$/, '')) : NaN;
+        return !isNaN(t) && t >= since;
+      }).length;
+      return plural(n, 'activity', 'activities') + ' this week';
+    }
     case 'records': return plural(items.length, 'record');
     case 'carpark': { const l = items[0]; return (l && l.data) ? ('Last: ' + (l.data.lot || 'photo saved')) : 'No spot saved'; }
     case 'vault': return plural(items.length, 'saved login');
@@ -3384,6 +3397,7 @@ async function listScreen(cat, sub) {
   const listEl = h('div', { class: 'list' }, h('div', { class: 'spinner' }));
   mount(screen(bar, listEl));
   if (cat === 'worldcup') { renderWorldCupScreen(listEl); return; } // read-only live screen, no add button
+  if (cat === 'running') { renderRunningScreen(listEl); return; }   // synced from Strava, nothing typed by hand
   const fab = h('button', { class: 'fab', onclick: () => navigate('#/edit/' + cat) }, '+');
   $app().appendChild(fab);
 
@@ -5565,6 +5579,278 @@ function startLive(renderFn) {
       setTimeout(() => { window.scrollTo(0, y); _suppressScroll = false; }, 80);
     });
   });
+}
+
+/* ============================================================
+   RUNNING — your watch's workouts, synced in from Strava.
+   ------------------------------------------------------------
+   The chain is: watch → Mi Fitness → Strava → /api/strava → here.
+   It deliberately goes nowhere near Health Connect, which has no web
+   API at all and would have forced an Android app into the middle of
+   a web app just to act as a courier.
+
+   Read-only: nothing on this screen is typed by hand, so there is no
+   + button and no editor. Re-syncing is safe — each activity is stored
+   under its Strava id, so the same workout can never land twice.
+   ============================================================ */
+const STRAVA_LS_KEY = 'mlh_strava_handoff'; // must match api/strava.js
+
+function runFmtDist(m) {
+  if (!m) return '';
+  const km = m / 1000;
+  return (km < 10 ? km.toFixed(2) : km.toFixed(1)) + ' km';
+}
+function runFmtDur(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  const hh = Math.floor(sec / 3600), mm = Math.floor((sec % 3600) / 60), ss = sec % 60;
+  return hh ? (hh + 'h ' + String(mm).padStart(2, '0') + 'm')
+            : (mm + 'm ' + String(ss).padStart(2, '0') + 's');
+}
+/* min/km — the number a runner actually reads. Strava stores metres per
+   second, which is how nobody has ever described a run. */
+function runFmtPace(distanceM, movingSec) {
+  if (!distanceM || !movingSec) return '';
+  const secPerKm = movingSec / (distanceM / 1000);
+  if (!isFinite(secPerKm) || secPerKm <= 0) return '';
+  const mm = Math.floor(secPerKm / 60), ss = Math.round(secPerKm % 60);
+  return mm + ':' + String(ss).padStart(2, '0') + '/km';
+}
+/* Strava's start_date_local carries a trailing "Z" but is already the local
+   clock time the watch recorded. Parsing it as UTC would shift every workout
+   by the timezone offset — an 7am run would read as 3pm here. */
+function runLocalDate(iso) {
+  if (!iso) return null;
+  const d = new Date(String(iso).replace(/Z$/, ''));
+  return isNaN(d.getTime()) ? null : d;
+}
+function runFmtWhen(iso) {
+  const d = runLocalDate(iso);
+  if (!d) return '';
+  return d.toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true });
+}
+function runEmoji(type) {
+  const t = String(type || '').toLowerCase();
+  if (t.includes('run')) return '🏃';
+  if (t.includes('ride') || t.includes('cycl') || t.includes('bike')) return '🚴';
+  if (t.includes('swim')) return '🏊';
+  if (t.includes('walk') || t.includes('hike')) return '🚶';
+  if (t.includes('weight') || t.includes('workout')) return '🏋️';
+  return '🏅';
+}
+
+/* Coming back from Strava's consent page, the serverless callback has left the
+   tokens in localStorage on this same origin. Picking them up here — rather
+   than reading them out of the URL — keeps the refresh token out of the query
+   string, out of browser history and out of any server log along the way. */
+async function stravaClaimHandoff() {
+  let raw = null;
+  try { raw = localStorage.getItem(STRAVA_LS_KEY); } catch (e) {}
+  if (!raw) return null;
+  try { localStorage.removeItem(STRAVA_LS_KEY); } catch (e) {} // one-time use
+  let p = null;
+  try { p = JSON.parse(raw); } catch (e) { return { error: 'bad-handoff' }; }
+  if (!p || p.error) return { error: (p && p.error) || 'bad-handoff' };
+  if (!p.refreshToken) return { error: 'no-token' };
+  try {
+    const s = await DB.getSettings();
+    await DB.saveSettings(Object.assign({}, s, {
+      stravaRefresh: p.refreshToken,
+      stravaAthlete: p.athleteName || '',
+      stravaConnectedAt: p.at || Date.now()
+    }));
+  } catch (e) { return { error: 'save-failed' }; }
+  return { ok: true };
+}
+
+/* Pull anything new from Strava and file it. Only activities newer than the
+   newest one already held are requested, so a routine sync is one small call
+   rather than a re-download of everything. */
+async function stravaSync() {
+  let s = {};
+  try { s = await DB.getSettings(); } catch (e) {}
+  if (!s.stravaRefresh) return { error: 'not-connected' };
+
+  let existing = [];
+  try { existing = await DB.listItems('running'); } catch (e) {}
+  let after = 0;
+  existing.forEach(it => {
+    const t = Date.parse((it.data && it.data.start) || '');
+    if (!isNaN(t)) after = Math.max(after, Math.floor(t / 1000));
+  });
+
+  let j = null;
+  try {
+    j = await fetch('/api/strava', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'sync', refresh_token: s.stravaRefresh, after })
+    }).then(r => r.json());
+  } catch (e) {
+    return { error: 'offline', message: String((e && e.message) || e) };
+  }
+  if (!j || j.error) return { error: (j && j.error) || 'failed', message: j && j.message };
+
+  const acts = Array.isArray(j.activities) ? j.activities : [];
+  let saved = 0;
+  for (const a of acts) {
+    if (!a || !a.stravaId) continue;
+    try { await DB.saveItem({ id: 'st_' + a.stravaId, cat: 'running', data: a }); saved++; } catch (e) {}
+  }
+
+  const patch = { stravaLastSync: Date.now() };
+  // Strava can hand back a rotated refresh token; keeping the old one after
+  // that point would lock the app out at the next sync.
+  if (j.refreshToken && j.refreshToken !== s.stravaRefresh) patch.stravaRefresh = j.refreshToken;
+  try { const s2 = await DB.getSettings(); await DB.saveSettings(Object.assign({}, s2, patch)); } catch (e) {}
+
+  return { ok: true, added: saved };
+}
+
+function stravaErrorText(err, message) {
+  if (err === 'not-configured') return 'Strava keys are not set on the server yet — add STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET in Vercel.';
+  if (err === 'not-connected') return 'Not connected to Strava yet.';
+  if (err === 'refresh-failed') return 'Strava refused the saved login. Tap Disconnect, then connect again.';
+  if (err === 'offline') return 'No connection — try again when you have signal.';
+  if (err === 'api-error') return 'Strava said: ' + (message || 'something went wrong');
+  return message || String(err || 'Something went wrong');
+}
+
+async function renderRunningScreen(listEl) {
+  // Arriving back from Strava's consent page lands us here with tokens waiting.
+  const claimed = await stravaClaimHandoff();
+
+  let settings = {};
+  try { settings = await DB.getSettings(); } catch (e) {}
+  let items = [];
+  try { items = await DB.listItems('running'); } catch (e) {}
+
+  const body = h('div', null);
+  listEl.innerHTML = '';
+  listEl.appendChild(body);
+
+  const reload = async () => {
+    try { settings = await DB.getSettings(); } catch (e) {}
+    try { items = await DB.listItems('running'); } catch (e) {}
+    draw();
+  };
+
+  const doSync = async (btn) => {
+    const label = btn.textContent;
+    btn.disabled = true; btn.textContent = 'Syncing…';
+    const r = await stravaSync();
+    btn.disabled = false; btn.textContent = label;
+    if (r.ok) toast(r.added ? ('✅ ' + r.added + ' new ' + (r.added === 1 ? 'activity' : 'activities')) : 'Up to date');
+    else toast('⚠ ' + stravaErrorText(r.error, r.message));
+    await reload();
+  };
+
+  function connectCard() {
+    return h('div', { class: 'detail-card', style: { padding: '22px 18px', textAlign: 'center' } },
+      h('div', { style: { fontSize: '44px', lineHeight: '1' } }, '🏃'),
+      h('div', { style: { fontWeight: '800', fontSize: '18px', margin: '10px 0 6px' } }, 'Bring your watch in'),
+      h('div', { style: { color: 'var(--muted)', fontSize: '14px', lineHeight: '1.6', marginBottom: '18px' } },
+        'Your watch sends workouts to Mi Fitness, Mi Fitness sends them to Strava, and this reads them from Strava. '
+        + 'Distance, pace, duration and heart rate all come through.'),
+      h('button', { class: 'btn', type: 'button', onclick: () => { location.href = '/api/strava?action=authorize'; } },
+        'Connect Strava'),
+      h('div', { class: 'hint', style: { marginTop: '14px' } },
+        'You sign in on Strava\'s own page — MyLife Hub never sees your Strava password.'));
+  }
+
+  function summary(list) {
+    // Last 7 days, because "this week" resets on a Monday and makes Sunday
+    // evening look like a wasted week when it was anything but.
+    const since = Date.now() - 7 * 864e5;
+    const recent = list.filter(a => { const d = runLocalDate(a.startLocal || a.start); return d && d.getTime() >= since; });
+    const dist = recent.reduce((n, a) => n + (a.distanceM || 0), 0);
+    const time = recent.reduce((n, a) => n + (a.movingSec || 0), 0);
+    const hrs = recent.filter(a => a.avgHr != null).map(a => a.avgHr);
+    const avgHr = hrs.length ? Math.round(hrs.reduce((n, v) => n + v, 0) / hrs.length) : null;
+    const cell = (big, small) => h('div', { style: { flex: '1', textAlign: 'center' } },
+      h('div', { style: { fontSize: '19px', fontWeight: '800' } }, big),
+      h('div', { style: { fontSize: '11.5px', color: 'var(--muted)', marginTop: '2px' } }, small));
+    return h('div', { class: 'detail-card', style: { display: 'flex', padding: '14px 10px', marginBottom: '4px' } },
+      cell(String(recent.length), 'sessions'),
+      cell(dist ? runFmtDist(dist) : '—', 'distance'),
+      cell(time ? runFmtDur(time) : '—', 'moving'),
+      cell(avgHr == null ? '—' : (avgHr + ' bpm'), 'avg HR'));
+  }
+
+  function activityRow(a) {
+    const bits = [];
+    if (a.distanceM) bits.push(runFmtDist(a.distanceM));
+    if (a.movingSec) bits.push(runFmtDur(a.movingSec));
+    const pace = runFmtPace(a.distanceM, a.movingSec);
+    if (pace) bits.push(pace);
+    const hr = a.avgHr != null
+      ? h('span', { style: { color: 'var(--red, #ff5d6c)' } }, '♥ ' + a.avgHr + (a.maxHr != null ? ' / ' + a.maxHr : '') + ' bpm')
+      : h('span', { style: { color: 'var(--muted)' } }, 'no heart rate');
+    return h('div', { class: 'row', style: { cursor: 'default' } },
+      h('div', { style: { fontSize: '24px', width: '34px', textAlign: 'center', flex: '0 0 auto' } }, runEmoji(a.type)),
+      h('div', { class: 'main' },
+        h('div', { class: 'title' }, a.name || 'Activity'),
+        h('div', { class: 'meta' }, runFmtWhen(a.startLocal || a.start)),
+        h('div', { class: 'meta', style: { marginTop: '2px' } }, bits.join(' · ')),
+        h('div', { class: 'meta', style: { marginTop: '2px' } }, hr)));
+  }
+
+  function draw() {
+    body.innerHTML = '';
+    if (!settings.stravaRefresh) { body.appendChild(connectCard()); return; }
+
+    const list = items.map(it => it.data).filter(Boolean)
+      .sort((a, b) => String(b.startLocal || b.start || '').localeCompare(String(a.startLocal || a.start || '')));
+
+    const syncBtn = h('button', { class: 'btn small secondary', type: 'button' }, 'Sync now');
+    syncBtn.onclick = () => doSync(syncBtn);
+    const last = settings.stravaLastSync
+      ? 'Last synced ' + new Date(settings.stravaLastSync).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true })
+      : 'Not synced yet';
+    body.appendChild(h('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '0 2px 12px' } },
+      h('div', { style: { flex: '1', minWidth: '0' } },
+        h('div', { style: { fontWeight: '700', fontSize: '14px' } }, settings.stravaAthlete || 'Strava connected'),
+        h('div', { style: { fontSize: '11.5px', color: 'var(--muted)', marginTop: '2px' } }, last)),
+      syncBtn));
+
+    body.appendChild(summary(list));
+
+    if (!list.length) {
+      body.appendChild(h('div', { class: 'detail-card', style: { padding: '20px 18px', textAlign: 'center' } },
+        h('div', { style: { fontSize: '15px', fontWeight: '700', marginBottom: '6px' } }, 'Nothing synced yet'),
+        h('div', { style: { color: 'var(--muted)', fontSize: '13.5px', lineHeight: '1.6' } },
+          'Record a workout on the watch, open Mi Fitness so it uploads, then tap Sync now. '
+          + 'Only workouts recorded after you connected Mi Fitness to Strava will appear.')));
+    } else {
+      body.appendChild(h('div', { class: 'section-title' }, 'Activities'));
+      const wrap = h('div', { class: 'list' });
+      list.forEach(a => wrap.appendChild(activityRow(a)));
+      body.appendChild(wrap);
+    }
+
+    const dis = h('button', { class: 'btn small danger', type: 'button', style: { marginTop: '18px' } }, 'Disconnect Strava');
+    dis.onclick = async () => {
+      if (!confirmDel('Disconnect Strava? Activities already synced stay in the app.')) return;
+      try {
+        const s = await DB.getSettings();
+        await DB.saveSettings(Object.assign({}, s, { stravaRefresh: '', stravaAthlete: '', stravaLastSync: 0 }));
+      } catch (e) {}
+      toast('Disconnected');
+      await reload();
+    };
+    body.appendChild(dis);
+  }
+
+  draw();
+
+  // Just connected? Pull straight away so the screen isn't empty on arrival.
+  if (claimed && claimed.ok) {
+    toast('✅ Strava connected');
+    const r = await stravaSync();
+    if (r && r.error) toast('⚠ ' + stravaErrorText(r.error, r.message));
+    await reload();
+  } else if (claimed && claimed.error) {
+    toast('⚠ Strava: ' + stravaErrorText(claimed.error));
+  }
 }
 
 function routeChanged() {
